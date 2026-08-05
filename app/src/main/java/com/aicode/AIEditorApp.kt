@@ -13,6 +13,7 @@ import com.aicode.feature.agent.domain.mcp.McpManager
 import com.aicode.feature.settings.data.repository.KeepaliveSettingsRepository
 import com.aicode.feature.settings.data.repository.LanguageSettingsRepository
 import com.aicode.feature.settings.data.repository.LogSettingsRepository
+import com.aicode.feature.settings.data.remote.ModelMetadataService
 import com.aicode.feature.terminal.domain.TerminalKeepaliveService
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -94,6 +95,10 @@ class AIEditorApp : Application() {
     @Inject
     lateinit var workspaceRepository: com.aicode.feature.workspace.data.repository.WorkspaceRepository
 
+    /** 模型元数据服务：启动即异步刷新 models.dev 目录（24h 缓存，失败静默，兜底内置数据）。 */
+    @Inject
+    lateinit var modelMetadataService: ModelMetadataService
+
     /** 长驻作用域：持续把持久化的日志等级同步到 FileLogger。 */
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -117,6 +122,10 @@ class AIEditorApp : Application() {
         // 让终端裸 git / AI 工具 / UI 三端共用同一份凭据与署名配置。
         appScope.launch {
             gitCredentialsFileSync.syncAll()
+        }
+        // 启动即异步刷新 models.dev 模型元数据（24h 缓存；失败静默，resolve 兜底内置 assets 数据）。
+        appScope.launch {
+            modelMetadataService.refreshFromNetworkIfStale()
         }
         // 启动即加载持久化等级，并随设置页改动实时生效（唯一同步点）。
         appScope.launch {

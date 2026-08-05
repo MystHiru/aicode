@@ -1,6 +1,7 @@
 package com.aicode.feature.settings.data.remote
 
 import android.content.Context
+import com.aicode.core.util.FileLogger
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.domain.model.ProviderType
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -16,13 +17,13 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class ModelMetadataService @Inject constructor(
-    @param:ApplicationContext private val context: Context,
-    private val client: OkHttpClient
+    @param:ApplicationContext private val context: Context
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -32,55 +33,119 @@ class ModelMetadataService @Inject constructor(
     @Volatile
     private var refreshAttemptedThisProcess = false
 
+    /** models.dev 仅作元数据增强：独立短超时 client，不可达时快速失败，不占用共享的 120s 流式超时。 */
+    private val metadataClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .build()
+
     suspend fun resolve(type: ProviderType, modelId: String): ModelMetadata = withContext(Dispatchers.IO) {
-        val catalog = loadCatalog().getOrNull().orEmpty()
-        findMetadata(catalog, type, modelId) ?: infer(type, modelId)
+        val catalog = loadCatalog()
+        findMetadata(catalog, type, modelId) ?: default(type, modelId)
     }
 
     suspend fun resolveAll(type: ProviderType, modelIds: List<String>): Map<String, ModelMetadata> =
         withContext(Dispatchers.IO) {
-            val catalog = loadCatalog().getOrNull().orEmpty()
+            val catalog = loadCatalog()
             modelIds.associateWith { modelId ->
-                findMetadata(catalog, type, modelId) ?: infer(type, modelId)
+                findMetadata(catalog, type, modelId) ?: default(type, modelId)
             }
         }
 
-    suspend fun refreshAll(type: ProviderType, modelIds: List<String>): Result<Map<String, ModelMetadata>> =
+    /**
+     * App 启动时统一调用的异步刷新：磁盘缓存未过期（<24h）则跳过；拉取成功写入内存与磁盘缓存，
+     * 失败静默（resolve 回退内置 assets 数据）。进程内只尝试一次，绝不阻塞模型请求。
+     */
+    suspend fun refreshFromNetworkIfStale() {
+        if (refreshAttemptedThisProcess) return
+        refreshAttemptedThisProcess = true
         withContext(Dispatchers.IO) {
-            refreshCatalogOncePerProcess().map { catalog ->
-                modelIds.associateWith { modelId ->
-                    findMetadata(catalog, type, modelId) ?: infer(type, modelId)
-                }
-            }
+            val diskCache = loadCatalogFromDisk()
+            if (diskCache != null && isFresh(diskCache)) return@withContext
+            fetchCatalogFromNetwork()
+        }
+    }
+
+    private fun isFresh(cache: Cache): Boolean =
+        System.currentTimeMillis() - cache.loadedAtMs < CACHE_MAX_AGE_MS
+
+    /** 纯只读链路：内存 → 磁盘缓存(24h 内) → 内置 assets → 空目录（由调用方回退默认值），绝不发网络请求。 */
+    private fun loadCatalog(): Map<String, Map<String, ModelMetadata>> {
+        cached?.let {
+            return it.catalog
         }
 
-    fun infer(type: ProviderType, modelId: String): ModelMetadata {
-        val model = modelId.lowercase()
-        val context = when {
-            "gemini-1.5" in model || "gemini-2." in model || "gemini-3" in model -> 1_000_000
-            "claude" in model -> 200_000
-            "gpt-4.1" in model || "gpt-4o" in model || "gpt-5" in model ||
-                model.startsWith("o1") || model.startsWith("o3") || model.startsWith("o4") -> 128_000
-            "deepseek" in model -> 64_000
-            "qwen" in model && ("1m" in model || "1000k" in model) -> 1_000_000
-            "qwen" in model && ("235b" in model || "coder" in model) -> 128_000
-            "kimi" in model || "moonshot" in model -> 128_000
-            "llama" in model && "128" in model -> 128_000
-            "llama" in model -> 32_000
-            else -> 128_000
+        loadCatalogFromDisk()?.takeIf { isFresh(it) }?.let {
+            cached = it
+            return it.catalog
         }
-        return ModelMetadata(
-            id = modelId,
-            providerId = type.name.lowercase(),
-            displayName = modelId,
-            contextTokens = context,
-            outputTokens = 20_000,
-            supportsTools = type != ProviderType.GEMINI || "gemini" in model,
-            supportsVision = "vision" in model || "gpt-4o" in model || "gemini" in model || "claude" in model,
-            supportsReasoning = "thinking" in model || "reason" in model || model.startsWith("o") || "deepseek" in model,
-            source = ModelMetadata.Source.INFERRED
-        )
+
+        loadCatalogFromAssets()?.let {
+            cached = it
+            return it.catalog
+        }
+
+        return emptyMap()
     }
+
+    private fun fetchCatalogFromNetwork() {
+        runCatching {
+            val request = Request.Builder()
+                .url(MODELS_DEV_URL)
+                .header("User-Agent", "aicode")
+                .get()
+                .build()
+
+            metadataClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) error("HTTP ${response.code}: ${body.take(200)}")
+                writeCatalogCache(body)
+                parseCatalog(json.parseToJsonElement(body))
+            }
+        }.onSuccess { catalog ->
+            cached = Cache(System.currentTimeMillis(), catalog)
+        }.onFailure { e ->
+            FileLogger.w(TAG, "拉取 models.dev 模型元数据失败", e)
+        }
+    }
+
+    private fun loadCatalogFromDisk(): Cache? {
+        val file = cacheFile()
+        if (!file.isFile) return null
+        return runCatching {
+            val body = file.readText(Charsets.UTF_8)
+            val loadedAtMs = file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis()
+            Cache(loadedAtMs, parseCatalog(json.parseToJsonElement(body)))
+        }.getOrNull()
+    }
+
+    private fun loadCatalogFromAssets(): Cache? = runCatching {
+        val body = context.assets.open(ASSET_FILE_NAME).bufferedReader().use { it.readText() }
+        Cache(0L, parseCatalog(json.parseToJsonElement(body)))
+    }.getOrNull()
+
+    private fun writeCatalogCache(body: String) {
+        runCatching {
+            cacheFile().writeText(body, Charsets.UTF_8)
+        }
+    }
+
+    private fun cacheFile(): File = File(context.cacheDir, CACHE_FILE_NAME)
+
+    /** 目录中匹配不到模型时的兜底：统一视为文本模型，128k 输入 / 64k 输出。 */
+    private fun default(type: ProviderType, modelId: String): ModelMetadata = ModelMetadata(
+        id = modelId,
+        providerId = type.name.lowercase(),
+        displayName = modelId,
+        contextTokens = DEFAULT_CONTEXT_TOKENS,
+        inputTokens = DEFAULT_CONTEXT_TOKENS,
+        outputTokens = DEFAULT_OUTPUT_TOKENS,
+        supportsTools = true,
+        supportsVision = false,
+        supportsReasoning = false,
+        source = ModelMetadata.Source.INFERRED
+    )
 
     private fun findMetadata(
         catalog: Map<String, Map<String, ModelMetadata>>,
@@ -102,66 +167,6 @@ class ModelMetadataService @Inject constructor(
         }
         return catalog.values.firstNotNullOfOrNull { models -> models[normalized] }
     }
-
-    private fun loadCatalog(): Result<Map<String, Map<String, ModelMetadata>>> {
-        cached?.let {
-            return Result.success(it.catalog)
-        }
-
-        loadCatalogFromDisk()?.let {
-            cached = it
-            return Result.success(it.catalog)
-        }
-
-        return fetchCatalogFromNetwork()
-    }
-
-    private fun refreshCatalogOncePerProcess(): Result<Map<String, Map<String, ModelMetadata>>> {
-        if (refreshAttemptedThisProcess) {
-            return Result.success(cached?.catalog ?: loadCatalogFromDisk()?.catalog.orEmpty())
-        }
-        refreshAttemptedThisProcess = true
-        return fetchCatalogFromNetwork()
-    }
-
-    private fun fetchCatalogFromNetwork(): Result<Map<String, Map<String, ModelMetadata>>> =
-        runCatching {
-            val request = Request.Builder()
-                .url(MODELS_DEV_URL)
-                .header("User-Agent", "aicode")
-                .get()
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) error("HTTP ${response.code}: ${body.take(200)}")
-                writeCatalogCache(body)
-                parseCatalog(json.parseToJsonElement(body))
-            }.also {
-                cached = Cache(System.currentTimeMillis(), it)
-            }
-        }
-
-    private fun loadCatalogFromDisk(): Cache? {
-        val file = cacheFile()
-        if (!file.isFile) return null
-        return runCatching {
-            val body = file.readText(Charsets.UTF_8)
-            val loadedAtMs = file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis()
-            Cache(loadedAtMs, parseCatalog(json.parseToJsonElement(body)))
-        }.getOrNull()
-    }
-
-    private fun writeCatalogCache(body: String) {
-        runCatching {
-            val file = cacheFile()
-            file.parentFile?.mkdirs()
-            file.writeText(body, Charsets.UTF_8)
-        }
-    }
-
-    private fun cacheFile(): File =
-        File(File(context.filesDir, "aicode"), CACHE_FILE_NAME)
 
     private fun parseCatalog(root: JsonElement): Map<String, Map<String, ModelMetadata>> {
         return root.jsonObject.mapValues { (providerId, providerEl) ->
@@ -195,7 +200,12 @@ class ModelMetadataService @Inject constructor(
     )
 
     private companion object {
+        const val TAG = "ModelMetadataService"
         const val MODELS_DEV_URL = "https://models.dev/api.json"
         const val CACHE_FILE_NAME = "models-dev-api.json"
+        const val ASSET_FILE_NAME = "api.official.json"
+        const val CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000L
+        const val DEFAULT_CONTEXT_TOKENS = 128_000
+        const val DEFAULT_OUTPUT_TOKENS = 64_000
     }
 }

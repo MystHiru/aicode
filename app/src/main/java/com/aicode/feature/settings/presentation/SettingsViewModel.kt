@@ -583,9 +583,6 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             val metadata = modelMetadataService.resolveAll(type, normalizedIds)
             _modelMetadata.update { current -> current + metadata }
-            modelMetadataService.refreshAll(type, normalizedIds).onSuccess { refreshed ->
-                _modelMetadata.update { current -> current + refreshed }
-            }
         }
     }
 
@@ -596,10 +593,8 @@ class SettingsViewModel @Inject constructor(
      * 不主动加载则 map 为空、所有模型都被误判为不支持图片。
      *
      * 实现要点（避免设置页卡顿）：
-     * - 单协程顺序处理各 provider：首个 resolveAll 触发 catalog 加载（网络/磁盘）并写入内存缓存，
-     *   后续 provider 命中缓存，不会并发重复拉取 models.dev。
-     * - 只调 resolveAll（用缓存/磁盘/infer），不调 refreshAll--识图页只需能力标签，
-     *   最新 catalog 的刷新留给 ProviderEditor 显式触发。
+     * - 单协程顺序处理各 provider：首个 resolveAll 触发 catalog 加载（内存/磁盘 24h 缓存/内置 assets）并写入内存缓存，
+     *   后续 provider 命中缓存。resolve 链路不发网络请求，models.dev 刷新统一由 App 启动时异步触发。
      * - 全部解析完一次性 update，避免多次 emit 导致设置页反复重组。
      */
     fun loadAllModelMetadata() {
