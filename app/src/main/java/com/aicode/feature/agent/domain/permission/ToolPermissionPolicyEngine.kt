@@ -38,6 +38,13 @@ class ToolPermissionPolicyEngine @Inject constructor(
             ToolCapability.MODIFY_AGENT_CONFIG,
             ToolCapability.MODIFY_CONTAINER_ENV
         )
+
+        /**
+         * 合并后的子代理工具：只读操作（read/list）自动放行，无需弹窗；
+         * 写操作（create/stop）走正常规则评估。
+         */
+        const val TASK_TOOL = "task"
+        private val TASK_READ_ACTIONS = setOf("read", "list")
     }
 
     enum class Verdict { ALLOW, DENY, ASK }
@@ -77,6 +84,19 @@ class ToolPermissionPolicyEngine @Inject constructor(
 
         if (capabilities == setOf(ToolCapability.READ_AGENT_CONFIG)) {
             return EvalResult(Verdict.ALLOW, emptyList())
+        }
+
+        // task 只读动作（read/list）：不放行 DENY 规则，其余直接自动放行（不弹窗）。
+        if (toolName == TASK_TOOL) {
+            val action = (args["action"] as? JsonPrimitive)?.content?.trim()?.lowercase() ?: "create"
+            if (action in TASK_READ_ACTIONS) {
+                val rules = rulesRepo.loadEffectiveForCurrentProject().filter { it.toolName == toolName }
+                val whole = rules.filter { it.pattern == PermissionRule.WHOLE_TOOL }
+                if (whole.any { it.decision == PermissionDecision.DENY }) {
+                    return EvalResult(Verdict.DENY, emptyList(), denyReason = "该工具被项目权限规则策略禁止执行")
+                }
+                return EvalResult(Verdict.ALLOW, emptyList())
+            }
         }
 
         val rules = rulesRepo.loadEffectiveForCurrentProject().filter { it.toolName == toolName }

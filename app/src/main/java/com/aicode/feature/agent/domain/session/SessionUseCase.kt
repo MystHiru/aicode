@@ -70,15 +70,49 @@ class SessionUseCase @Inject constructor(
         else clean.take(TITLE_MAX) + "…"
     }
 
-    /** 删除会话，返回需要清理的状态 id 集合，由 ViewModel 执行状态清理。 */
-    suspend fun deleteSession(id: String): String {
+    /** 删除会话及其全部子代理会话（消息 + 会话记录一并删除）。返回被删除的会话 id 列表。 */
+    suspend fun deleteSession(id: String): List<String> {
+        val deleted = mutableListOf(id)
+        // 递归收集子会话（v1 仅一层，循环即可）
+        chatSessionDao.getSubSessionsByParentOnce(id).forEach { child ->
+            agentMessageDao.deleteBySession(child.id)
+            chatSessionDao.delete(child.id)
+            deleted.add(child.id)
+        }
         agentMessageDao.deleteBySession(id)
         chatSessionDao.delete(id)
-        return id
+        return deleted
     }
 
     suspend fun getFirstSessionOfWorkspace(workspacePath: String): ChatSessionEntity? {
-        return chatSessionDao.getAllSessionsByWorkspaceOnce(workspacePath).firstOrNull()
+        return chatSessionDao.getRootSessionsByWorkspaceOnce(workspacePath).firstOrNull()
+    }
+
+    /**
+     * 创建子代理会话，继承父会话的 provider/model/reasoningEffort/workspacePath。
+     * @param title 子会话标题（由 task 描述派生）
+     * @param parentId 父会话 id
+     * @param subagentType 子代理类型 id（如 coder / researcher）
+     */
+    fun newSubSessionEntity(
+        title: String,
+        parentId: String,
+        parent: ChatSessionEntity,
+        subagentType: String
+    ): ChatSessionEntity {
+        val now = System.currentTimeMillis()
+        return ChatSessionEntity(
+            id = UUID.randomUUID().toString(),
+            title = title,
+            workspacePath = parent.workspacePath,
+            createdAt = now,
+            updatedAt = now,
+            providerId = parent.providerId,
+            model = parent.model,
+            reasoningEffort = parent.reasoningEffort,
+            parentId = parentId,
+            subagentType = subagentType
+        )
     }
 
     suspend fun upsertSession(entity: ChatSessionEntity) {

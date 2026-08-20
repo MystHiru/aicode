@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -16,12 +17,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.PushPin
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,8 +44,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.feature.settings.presentation.component.SettingsDivider
 import com.aicode.feature.settings.presentation.component.SettingsGroup
@@ -69,8 +73,8 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 侧边栏内容：按最后回复时间分组的会话卡片列表（设置页风格），底部「设置」入口卡片。
- * 由 AIChatPanel 的 ModalNavigationDrawer 承载，支持左上角按钮点击或右滑打开。
+ * 侧边栏内容：顶部 Tab 切换「会话」/「子代理」，底部「设置」入口卡片。
+ * Tab0 为现有会话列表（已过滤掉子会话）；Tab1 为当前会话的子代理列表。
  */
 @Composable
 fun ChatDrawerContent(
@@ -82,9 +86,11 @@ fun ChatDrawerContent(
     onRename: (ChatSession, String) -> Unit,
     onTogglePin: (ChatSession) -> Unit,
     onExport: (ChatSession) -> Unit,
+    subSessions: List<ChatSession> = emptyList(),
     onNavigateToSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var selectedTab by remember { mutableStateOf(0) }
     var pendingDelete by remember { mutableStateOf<ChatSession?>(null) }
     var pendingRename by remember { mutableStateOf<ChatSession?>(null) }
     var menuSession by remember { mutableStateOf<ChatSession?>(null) }
@@ -111,51 +117,29 @@ fun ChatDrawerContent(
             .padding(bottom = Spacing.xl),
         verticalArrangement = Arrangement.spacedBy(Spacing.sm)
     ) {
+        // 顶部 Tab 切换
+        DrawerTopTabs(
+            selected = selectedTab,
+            onSelect = { selectedTab = it }
+        )
+
         Box(modifier = Modifier.weight(1f)) {
-            if (sessions.isEmpty()) {
-                Text(
-                    stringResource(R.string.chat_no_sessions_hint),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.md)
+            when (selectedTab) {
+                0 -> SessionListTab(
+                    sessions = sessions,
+                    currentSessionId = currentSessionId,
+                    agentStates = agentStates,
+                    listState = listState,
+                    onSelect = onSelect,
+                    onLongClick = { menuSession = it }
                 )
-            } else {
-                val groups = remember(sessions) {
-                    val now = System.currentTimeMillis()
-                    val pinned = sessions.filter { it.isPinned }
-                    val unpinned = sessions.filterNot { it.isPinned }
-                    buildList {
-                        if (pinned.isNotEmpty()) add(SessionGroup("pinned", pinned))
-                        addAll(buildSessionGroups(unpinned, now))
-                    }
-                }
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(groups, key = { it.groupKey }) { group ->
-                        SettingsGroupHeader(
-                            text = sessionGroupLabel(group.groupKey, group.sessions.first())
-                        )
-                        Column {
-                            group.sessions.forEachIndexed { index, session ->
-                                if (index > 0) {
-                                    if (group.groupKey == "pinned") Spacer(Modifier.height(Spacing.sm)) else SettingsDivider()
-                                }
-                                val state = agentStates[session.id]
-                                val isExecuting = state is AgentUIState.Loading || state is AgentUIState.Streaming
-                                ChatSessionRow(
-                                    session = session,
-                                    selected = session.id == currentSessionId,
-                                    isExecuting = isExecuting,
-                                    pinned = session.isPinned,
-                                    onClick = { onSelect(session) },
-                                    onLongClick = { menuSession = session }
-                                )
-                            }
-                        }
-                    }
-                }
+                1 -> SubAgentListTab(
+                    subSessions = subSessions,
+                    currentSessionId = currentSessionId,
+                    agentStates = agentStates,
+                    onSelect = onSelect,
+                    onLongClick = { menuSession = it }
+                )
             }
         }
 
@@ -235,6 +219,164 @@ fun ChatDrawerContent(
                 TextButton(onClick = { pendingRename = null }) { Text(stringResource(R.string.common_cancel)) }
             }
         )
+    }
+}
+
+/** 侧边栏顶部 Tab 切换条（会话 / 子代理），胶囊选中样式。 */
+@Composable
+private fun DrawerTopTabs(
+    selected: Int,
+    onSelect: (Int) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                RoundedCornerShape(Radius.pill)
+            )
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        DrawerTabItem(
+            label = stringResource(R.string.subagent_tab_sessions),
+            selected = selected == 0,
+            onClick = { onSelect(0) },
+            modifier = Modifier.weight(1f)
+        )
+        DrawerTabItem(
+            label = stringResource(R.string.subagent_tab_subagents),
+            selected = selected == 1,
+            onClick = { onSelect(1) },
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+private fun DrawerTabItem(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(Radius.pill),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+        modifier = modifier
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp)
+        )
+    }
+}
+
+/** Tab0：根会话列表（按最后回复时间分组），与旧版侧边栏一致。 */
+@Composable
+private fun SessionListTab(
+    sessions: List<ChatSession>,
+    currentSessionId: String?,
+    agentStates: Map<String, AgentUIState>,
+    listState: LazyListState,
+    onSelect: (ChatSession) -> Unit,
+    onLongClick: (ChatSession) -> Unit
+) {
+    if (sessions.isEmpty()) {
+        Text(
+            stringResource(R.string.chat_no_sessions_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.md)
+        )
+        return
+    }
+    val groups = remember(sessions) {
+        val now = System.currentTimeMillis()
+        val pinned = sessions.filter { it.isPinned }
+        val unpinned = sessions.filterNot { it.isPinned }
+        buildList {
+            if (pinned.isNotEmpty()) add(SessionGroup("pinned", pinned))
+            addAll(buildSessionGroups(unpinned, now))
+        }
+    }
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        items(groups, key = { it.groupKey }) { group ->
+            SettingsGroupHeader(
+                text = sessionGroupLabel(group.groupKey, group.sessions.first())
+            )
+            Column {
+                group.sessions.forEachIndexed { index, session ->
+                    if (index > 0) {
+                        if (group.groupKey == "pinned") Spacer(Modifier.height(Spacing.sm)) else SettingsDivider()
+                    }
+                    val state = agentStates[session.id]
+                    val isExecuting = state is AgentUIState.Loading || state is AgentUIState.Streaming
+                    ChatSessionRow(
+                        session = session,
+                        selected = session.id == currentSessionId,
+                        isExecuting = isExecuting,
+                        pinned = session.isPinned,
+                        onClick = { onSelect(session) },
+                        onLongClick = { onLongClick(session) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Tab1：当前会话的子代理列表。点击进入子会话（与普通会话一样），长按删除。
+ * 使用与主会话列表相同的 [ChatSessionRow] 风格。
+ */
+@Composable
+private fun SubAgentListTab(
+    subSessions: List<ChatSession>,
+    currentSessionId: String?,
+    agentStates: Map<String, AgentUIState>,
+    onSelect: (ChatSession) -> Unit,
+    onLongClick: (ChatSession) -> Unit
+) {
+    if (subSessions.isEmpty()) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                stringResource(R.string.subagent_no_subagents),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        return
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(top = Spacing.sm)
+    ) {
+        items(subSessions, key = { it.id }) { session ->
+            val state = agentStates[session.id]
+            val isExecuting = state is AgentUIState.Loading || state is AgentUIState.Streaming
+            ChatSessionRow(
+                session = session,
+                selected = session.id == currentSessionId,
+                isExecuting = isExecuting,
+                pinned = false,
+                onClick = { onSelect(session) },
+                onLongClick = { onLongClick(session) }
+            )
+            SettingsDivider()
+        }
     }
 }
 

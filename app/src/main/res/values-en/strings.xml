@@ -399,6 +399,11 @@
     <string name="chat_export_session_done">Session exported</string>
     <string name="chat_export_session_failed">Export failed</string>
 
+    <!-- Subagent -->
+    <string name="subagent_tab_sessions">Chats</string>
+    <string name="subagent_tab_subagents">Subagents</string>
+    <string name="subagent_no_subagents">No subagents yet in this session</string>
+
     <!-- Chat Input Bar -->
     <string name="chat_input_placeholder">Type a message to chat with AI…</string>
     <string name="chat_queue_hint">AI is busy, press enter to queue the message</string>

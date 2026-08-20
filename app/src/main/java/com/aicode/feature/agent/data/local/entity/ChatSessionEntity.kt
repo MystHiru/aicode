@@ -20,7 +20,11 @@ data class ChatSessionEntity(
     val totalInputTokens: Int = 0,
     val totalOutputTokens: Int = 0,
     val lastInputTokens: Int = 0,
-    val isPinned: Boolean = false
+    val isPinned: Boolean = false,
+    /** 子代理会话：父会话 id；null 表示普通根会话。 */
+    val parentId: String? = null,
+    /** 子代理会话：派生子代理的类型（如 coder / researcher）；null 表示普通根会话。 */
+    val subagentType: String? = null
 ) {
     fun toDomain(): ChatSession = ChatSession(
         id = id,
@@ -35,7 +39,9 @@ data class ChatSessionEntity(
         totalInputTokens = totalInputTokens,
         totalOutputTokens = totalOutputTokens,
         lastInputTokens = lastInputTokens,
-        isPinned = isPinned
+        isPinned = isPinned,
+        parentId = parentId,
+        subagentType = subagentType
     )
 
     companion object {
@@ -52,7 +58,9 @@ data class ChatSessionEntity(
             totalInputTokens = session.totalInputTokens,
             totalOutputTokens = session.totalOutputTokens,
             lastInputTokens = session.lastInputTokens,
-            isPinned = session.isPinned
+            isPinned = session.isPinned,
+            parentId = session.parentId,
+            subagentType = session.subagentType
         )
     }
 }

@@ -15,8 +15,22 @@ interface ChatSessionDao {
     @Query("SELECT * FROM chat_sessions WHERE workspacePath = :workspacePath ORDER BY isPinned DESC, updatedAt DESC")
     fun getAllSessionsByWorkspace(workspacePath: String): Flow<List<ChatSessionEntity>>
 
+    @Query("SELECT * FROM chat_sessions WHERE workspacePath = :workspacePath AND parentId IS NULL ORDER BY isPinned DESC, updatedAt DESC")
+    fun getRootSessionsByWorkspace(workspacePath: String): Flow<List<ChatSessionEntity>>
+
     @Query("SELECT * FROM chat_sessions WHERE workspacePath = :workspacePath ORDER BY isPinned DESC, updatedAt DESC")
     suspend fun getAllSessionsByWorkspaceOnce(workspacePath: String): List<ChatSessionEntity>
+
+    @Query("SELECT * FROM chat_sessions WHERE workspacePath = :workspacePath AND parentId IS NULL ORDER BY isPinned DESC, updatedAt DESC")
+    suspend fun getRootSessionsByWorkspaceOnce(workspacePath: String): List<ChatSessionEntity>
+
+    /** 指定父会话的全部子会话（子代理），按最近更新降序。 */
+    @Query("SELECT * FROM chat_sessions WHERE parentId = :parentId ORDER BY updatedAt DESC")
+    fun getSubSessionsByParent(parentId: String): Flow<List<ChatSessionEntity>>
+
+    /** 指定父会话的全部子会话（子代理），一次性查询。 */
+    @Query("SELECT * FROM chat_sessions WHERE parentId = :parentId ORDER BY updatedAt DESC")
+    suspend fun getSubSessionsByParentOnce(parentId: String): List<ChatSessionEntity>
 
     @Query("SELECT * FROM chat_sessions")
     suspend fun getAllOnce(): List<ChatSessionEntity>
@@ -30,6 +44,10 @@ interface ChatSessionDao {
 
     @Query("SELECT * FROM chat_sessions WHERE id = :id")
     suspend fun getById(id: String): ChatSessionEntity?
+
+    /** 单个会话的实时流（根会话与子会话通用）。 */
+    @Query("SELECT * FROM chat_sessions WHERE id = :id")
+    fun getByIdFlow(id: String): Flow<ChatSessionEntity?>
 
     @Query("UPDATE chat_sessions SET title = :title WHERE id = :id")
     suspend fun updateTitle(id: String, title: String)

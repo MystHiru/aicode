@@ -34,6 +34,9 @@ import com.aicode.feature.agent.domain.permission.PermissionChoice
 import com.aicode.feature.agent.domain.mcp.McpManager
 import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.agent.domain.plugin.applyChatMessage
+import com.aicode.feature.agent.domain.subagent.SubAgentEvent
+import com.aicode.feature.agent.domain.subagent.SubAgentEventBus
+import com.aicode.feature.agent.domain.subagent.SubAgentEventType
 import com.aicode.feature.agent.domain.workflow.AgentWorkflow
 import com.aicode.feature.terminal.domain.TabFinishedEvent
 import com.aicode.feature.terminal.domain.TAIL_LINES
@@ -74,7 +77,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -113,6 +118,7 @@ class AIAgentViewModel @Inject constructor(
     private val mcpManager: McpManager,
     private val agentSoundSettings: AgentSoundSettingsRepository,
     private val pluginManager: PluginHookGateway,
+    private val subAgentEventBus: SubAgentEventBus,
     val fileAccess: FileAccessProvider,
     @param:ApplicationContext private val context: Context
 ) : ViewModel(), SlashCommandContext {
@@ -169,32 +175,47 @@ class AIAgentViewModel @Inject constructor(
     val sessions: StateFlow<List<ChatSession>> = _currentWorkspace
         .flatMapLatest { path ->
             if (path.isBlank()) flowOf(emptyList())
-            else chatSessionDao.getAllSessionsByWorkspace(path)
+            else chatSessionDao.getRootSessionsByWorkspace(path)
                 .map { list -> list.map { it.toDomain() } }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val currentSessionMode: StateFlow<AgentMode> = combine(
-        _currentSessionId, sessions
-    ) { id, list ->
-        list.find { it.id == id }?.mode ?: AgentMode.BUILD
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, AgentMode.BUILD)
+    /** 当前会话（锚定父会话）的子代理会话列表（侧边栏 Tab2）。当前会话变化时自动切换；
+     * 若当前会话本身是子代理，则锚定到其父会话，保证进入子会话后仍能看到同一批子代理列表。 */
+    val subSessions: StateFlow<List<ChatSession>> = _currentSessionId
+        .flatMapLatest { id ->
+            if (id == null) flowOf(emptyList())
+            else flow {
+                val entity = chatSessionDao.getById(id)
+                val anchorId = entity?.parentId ?: id
+                emitAll(
+                    chatSessionDao.getSubSessionsByParent(anchorId)
+                        .map { list -> list.map { it.toDomain() } }
+                )
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 当前会话完整信息（根会话与子会话通用；null 表示尚未解析出会话）。 */
+    val currentSessionState: StateFlow<ChatSession?> = _currentSessionId
+        .flatMapLatest { id ->
+            if (id == null) flowOf(null)
+            else chatSessionDao.getByIdFlow(id).map { it?.toDomain() }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val currentSessionMode: StateFlow<AgentMode> = currentSessionState.map { it?.mode ?: AgentMode.BUILD }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, AgentMode.BUILD)
 
     /** 当前会话的思考强度（默认 MEDIUM）。 */
     val currentSessionReasoningEffort: StateFlow<ReasoningEffort> =
-        combine(
-            _currentSessionId, sessions
-        ) { id, list ->
-            list.find { it.id == id }?.reasoningEffort ?: ReasoningEffort.MEDIUM
-        }.stateIn(viewModelScope, SharingStarted.Eagerly, ReasoningEffort.MEDIUM)
+        currentSessionState.map { it?.reasoningEffort ?: ReasoningEffort.MEDIUM }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, ReasoningEffort.MEDIUM)
 
     /** 当前会话绑定的 providerId/model（null 表示未绑定，回退全局 active provider）。 */
-    val currentSessionProviderModel: StateFlow<Pair<String?, String?>> = combine(
-        _currentSessionId, sessions
-    ) { id, list ->
-        val s = list.find { it.id == id }
-        (s?.providerId ?: "") to (s?.model ?: "")
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, null as String? to null as String?)
+    val currentSessionProviderModel: StateFlow<Pair<String?, String?>> =
+        currentSessionState.map { s -> (s?.providerId ?: "") to (s?.model ?: "") }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null as String? to null as String?)
 
     /**
      * 当前会话的消息状态：会话切换时自动切换到对应历史，并携带所属会话 id 与 loaded 标志，
@@ -397,6 +418,80 @@ class AIAgentViewModel @Inject constructor(
             terminalSessionManager.tabFinishedEvents.collect { event ->
                 handleBackgroundCommandFinished(event)
             }
+        }
+
+        // 订阅子代理生命周期事件（类比 terminal 的 notify=true 异步回调）：
+        // - SPAWNED：task 工具已创建子会话并替用户发消息，这里在子会话上自动启动 AI 工作流；
+        // - STOPPED：task(action="stop") 请求停止子代理，取消对应会话的 AI 任务；
+        // - COMPLETED/FAILED：由子会话工作流结束时发出（见 handleSubAgentFinished），注入父会话通知。
+        viewModelScope.launch {
+            subAgentEventBus.events.collect { event ->
+                when (event.type) {
+                    SubAgentEventType.SPAWNED -> spawnSubAgentWorkflow(event)
+                    SubAgentEventType.STOPPED -> stopAgentSession(event.subSessionId)
+                    SubAgentEventType.COMPLETED, SubAgentEventType.FAILED -> {
+                        enqueueSubAgentNotification(event)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 子代理已创建（task 工具已创建子会话）：在子会话上启动 AI 工作流。
+     * 消息由 executeAgentRequestStream 统一落库（与用户手动发消息一致），
+     * 标题保留 task 传入的 description（skipTitleUpdate）。
+     */
+    private suspend fun spawnSubAgentWorkflow(event: SubAgentEvent) {
+        val parentSession = sessionUseCase.getSessionById(event.parentSessionId)
+        if (parentSession == null) {
+            FileLogger.w(TAG, "子代理父会话不存在: ${event.parentSessionId}")
+            return
+        }
+        // 子会话可能已被用户删除，跳过
+        if (sessionUseCase.getSessionById(event.subSessionId) == null) {
+            FileLogger.w(TAG, "子代理会话已被删除，跳过启动: ${event.subSessionId}")
+            return
+        }
+        // 子代理运行中不允许重复启动（同一会话已有活跃 job）
+        if (sessionJobs[event.subSessionId]?.isActive == true) return
+
+        executeAgentRequestStream(
+            request = event.detail,
+            projectRoot = parentSession.workspacePath,
+            targetSessionId = event.subSessionId,
+            skipTitleUpdate = true
+        )
+    }
+
+    /**
+     * 子代理完成/失败通知：向父会话注入一条后台任务完成通知（user 消息），
+     * 父代理据此得知子代理结束，可 task(action="read") 取回结果。与 terminal 后台通知同机制。
+     * 通知 XML 中保留子代理 id 供 AI 直接 read；summary 用子代理标题（description）展示，用户侧更可读。
+     */
+    private fun enqueueSubAgentNotification(event: SubAgentEvent) {
+        val status = if (event.type == SubAgentEventType.FAILED) "failed" else "completed"
+        viewModelScope.launch {
+            val title = sessionUseCase.getSessionById(event.subSessionId)?.title ?: "子代理"
+            val notification = buildString {
+                appendLine(BACKGROUND_NOTIFICATION_PREFIX)
+                appendLine("这是一条子代理完成事件，不是来自用户的消息。")
+                appendLine("不要将其视为用户的确认、同意或对任何待处理问题的回答。")
+                appendLine()
+                appendLine("<subagent-notification>")
+                appendLine("  <subagent-id>${event.subSessionId}</subagent-id>")
+                appendLine("  <subagent-title>$title</subagent-title>")
+                appendLine("  <status>$status</status>")
+                appendLine("  <summary>子代理「$title」已${if (event.type == SubAgentEventType.FAILED) "执行失败" else "执行完成"}</summary>")
+                appendLine("</subagent-notification>")
+                appendLine()
+                append("可用 task(action=\"read\", id=\"${event.subSessionId}\") 读取子代理的最后输出。")
+            }
+            enqueueAgentRequest(
+                request = notification,
+                projectRoot = _currentWorkspace.value,
+                targetSessionId = event.parentSessionId
+            )
         }
     }
 
@@ -621,7 +716,9 @@ class AIAgentViewModel @Inject constructor(
         inputImages: List<AgentImage> = emptyList(),
         inputAttachments: List<AgentAttachment> = emptyList(),
         targetSessionId: String? = null,
-        isAutoTrigger: Boolean = false
+        isAutoTrigger: Boolean = false,
+        /** 子代理等场景：已预设会话标题，跳过首条消息的标题推导/生成，保留预设标题。 */
+        skipTitleUpdate: Boolean = false
     ): Job = viewModelScope.launch {
         val sessionId = targetSessionId ?: ensureSession()
         if (sessionId.isBlank()) {
@@ -661,7 +758,7 @@ class AIAgentViewModel @Inject constructor(
                 val effectiveRequest = pluginManager.applyChatMessage(sessionId, userMsgId, request)
                 messagePersistenceUseCase.persist(sessionId, MessageRole.USER, effectiveRequest, id = userMsgId, attachments = inputAttachments)
                 checkpointManager.createCheckpoint(sessionId, userMsgId, effectiveRequest)
-                if (isFirst) {
+                if (isFirst && !skipTitleUpdate) {
                     sessionUseCase.updateTitle(sessionId, sessionUseCase.deriveTitle(effectiveRequest))
                     // 后台异步用 LLM 生成更贴切的标题替换临时标题；失败/取不到时保留临时标题
                     viewModelScope.launch {
@@ -687,10 +784,14 @@ class AIAgentViewModel @Inject constructor(
                 reasoningEffort = sessionDomain?.reasoningEffort?.apiValue
             )
 
+            val isSub = sessionUseCase.getSessionById(sessionId)?.parentId != null
+            val allTools = toolRegistry.getAvailableTools()
+            val tools = if (isSub) allTools.filterNot { it.name == "task" } else allTools
+
             agentWorkflow.executeEvents(
                 userRequest = modelRequest,
                 context = agentContext,
-                tools = toolRegistry.getAvailableTools()
+                tools = tools
             ).collect { event ->
                 when (event) {
                     is AgentEvent.AssistantDelta -> {
@@ -796,10 +897,35 @@ class AIAgentViewModel @Inject constructor(
                         failed = true
                         setCompacting(sessionId, false)
                         setAgentState(sessionId, AgentUIState.Error(event.error))
+                        // 子代理会话失败时通知父会话
+                        if (isSub) {
+                            sessionUseCase.getSessionById(sessionId)?.parentId?.let { parentId ->
+                                subAgentEventBus.emit(
+                                    SubAgentEvent(
+                                        subSessionId = sessionId,
+                                        parentSessionId = parentId,
+                                        type = SubAgentEventType.FAILED,
+                                        detail = event.error
+                                    )
+                                )
+                            }
+                        }
                     }
                     AgentEvent.Completed -> {
                         setRetryState(sessionId, null)
                         setCompacting(sessionId, false)
+                        // 子代理会话完成时通知父会话（异步回调）
+                        if (isSub) {
+                            sessionUseCase.getSessionById(sessionId)?.parentId?.let { parentId ->
+                                subAgentEventBus.emit(
+                                    SubAgentEvent(
+                                        subSessionId = sessionId,
+                                        parentSessionId = parentId,
+                                        type = SubAgentEventType.COMPLETED
+                                    )
+                                )
+                            }
+                        }
                         // 仅当 App 不在前台时发 agent 完成通知（避免打扰正在看对话的用户）。
                         val inForeground = ProcessLifecycleOwner.get().lifecycle.currentState
                             .isAtLeast(Lifecycle.State.STARTED)
@@ -904,6 +1030,14 @@ class AIAgentViewModel @Inject constructor(
 
     fun stopAgent() {
         val sessionId = _currentSessionId.value ?: return
+        stopAgentSession(sessionId)
+    }
+
+    /**
+     * 停止指定会话的 AI 任务（子代理停止/用户手动停止共用）。
+     * 取消 job 并把未完成的流式内容落库为「已停止」；队列下一条照常执行。
+     */
+    fun stopAgentSession(sessionId: String) {
         val job = sessionJobs[sessionId] ?: return
         if (!job.isActive) return
         val runningTools = _runningTools.value[sessionId]?.values?.toList() ?: emptyList()
@@ -1144,18 +1278,21 @@ class AIAgentViewModel @Inject constructor(
 
     fun deleteSession(id: String) = viewModelScope.launch {
         checkpointManager.clearSessionCheckpoints(id)
-        sessionUseCase.deleteSession(id)
+        val deletedIds = sessionUseCase.deleteSession(id)
 
-        sessionJobs[id]?.cancel()
-        sessionJobs.remove(id)
-        _agentStates.value = _agentStates.value - id
-        _streamingTexts.value = _streamingTexts.value - id
-        _streamingReasonings.value = _streamingReasonings.value - id
-        _runningTools.value = _runningTools.value - id
-        _retryStates.value = _retryStates.value - id
-        _queuedRequests.value = _queuedRequests.value - id
+        deletedIds.forEach { sid ->
+            sessionJobs[sid]?.cancel()
+            sessionJobs.remove(sid)
+            _agentStates.value = _agentStates.value - sid
+            _streamingTexts.value = _streamingTexts.value - sid
+            _streamingReasonings.value = _streamingReasonings.value - sid
+            _runningTools.value = _runningTools.value - sid
+            _retryStates.value = _retryStates.value - sid
+            _queuedRequests.value = _queuedRequests.value - sid
+            pendingMergedNotifications.remove(sid)
+        }
 
-        if (_currentSessionId.value == id) {
+        if (_currentSessionId.value in deletedIds) {
             val ws = _currentWorkspace.value
             if (ws.isBlank()) {
                 _currentSessionId.value = null

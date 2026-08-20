@@ -284,6 +284,7 @@ fun AppNavigation() {
     val sessions by agentViewModel.sessions.collectAsStateWithLifecycle()
     val currentSessionId by agentViewModel.currentSessionId.collectAsStateWithLifecycle()
     val agentStates by agentViewModel.agentStates.collectAsStateWithLifecycle()
+    val subSessions by agentViewModel.subSessions.collectAsStateWithLifecycle()
 
     // ── 导出会话：SAF 保存文件 ──
     var pendingExportSessionId by remember { mutableStateOf<String?>(null) }
@@ -328,6 +329,7 @@ fun AppNavigation() {
                     sessions = sessions,
                     currentSessionId = currentSessionId,
                     agentStates = agentStates,
+                    subSessions = subSessions,
                     onSelect = {
                         agentViewModel.selectSession(it.id)
                         scope.launch { drawerState.close() }
