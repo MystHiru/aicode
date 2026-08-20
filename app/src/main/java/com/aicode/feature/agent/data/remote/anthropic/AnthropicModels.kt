@@ -8,6 +8,8 @@ data class AnthropicMessageRequest(
     val max_tokens: Int = 16384,
     // 开启 extended thinking 时不能携带 temperature（官方要求），置 null 由 Gson 跳过该字段。
     val temperature: Float? = null,
+    val top_p: Float? = null,
+    val top_k: Int? = null,
     val thinking: AnthropicThinkingConfig? = null,
     // adaptive thinking 的 effort 档位（新模型，如 opus-4.7+/sonnet-5）。
     val output_config: AnthropicOutputConfig? = null,

@@ -10,6 +10,7 @@ import com.aicode.feature.agent.domain.model.CONTEXT_COMPACTION_MARKER
 import com.aicode.feature.agent.domain.model.CONTEXT_SUMMARY_LEGACY_PREFIX
 import com.aicode.feature.agent.domain.model.id
 import com.aicode.feature.agent.domain.prompt.SystemPromptProvider
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.agent.domain.provider.AIProvider
 import com.aicode.feature.agent.domain.provider.AIResponse
 import com.aicode.feature.agent.presentation.MessageRole
@@ -20,13 +21,21 @@ import android.os.SystemClock
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 @Singleton
 class ContextCompactor @Inject constructor(
     private val agentMessageDao: AgentMessageDao,
     private val modelMetadataService: ModelMetadataService,
     private val systemPromptProvider: SystemPromptProvider,
-    private val llmCallRecordDao: LlmCallRecordDao
+    private val llmCallRecordDao: LlmCallRecordDao,
+    private val pluginManager: PluginHookGateway
 ) {
 
     private companion object {
@@ -110,8 +119,26 @@ class ContextCompactor @Inject constructor(
         }
         // 压缩请求：head 原始消息数组 + 末尾一条压缩指令（Codex 式），tools 不发送。
         // 消息数组保留真实角色结构（user/assistant/tool 配对），比文本化拼接更利于模型理解。
+        val summaryInstruction = buildSummaryInstruction(previousSummary)
+        // 压缩上下文注入 hook：插件可追加需跨压缩保留的上下文，或整体替换压缩指令。
+        val compactingResult = pluginManager.dispatchHook(
+            "experimental.session.compacting",
+            buildJsonObject { put("sessionID", sessionId ?: "") },
+            buildJsonObject { putJsonArray("context") { add(summaryInstruction) } }
+        )
+        val finalInstruction = run {
+            val prompt = (compactingResult.output["prompt"] as? JsonPrimitive)?.contentOrNull
+            if (!prompt.isNullOrBlank()) {
+                prompt
+            } else {
+                val ctx = (compactingResult.output["context"] as? JsonArray)
+                    ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                    .orEmpty()
+                if (ctx.isEmpty()) summaryInstruction else ctx.joinToString("\n\n")
+            }
+        }
         val summaryRequestMessages = headForSummary.trimLeadingForCompaction() + listOf(
-            AgentMessage.UserMessage(content = buildSummaryInstruction(previousSummary))
+            AgentMessage.UserMessage(content = finalInstruction)
         )
 
         // 调用统计埋点：压缩也是一次真实 LLM 调用（独立于主循环，kind=compaction）。

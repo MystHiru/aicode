@@ -9,15 +9,18 @@ import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
 import com.aicode.feature.agent.domain.tool.ToolResult
 import com.aicode.core.util.FileLogger
 import com.aicode.core.util.LineDiff
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import javax.inject.Inject
 
 private const val TAG = "FileTools"
@@ -125,7 +128,8 @@ class ReadFileTool @Inject constructor(
  * overwrite=false 且目标已存在时报错，可用于安全地新建文件。
  */
 class WriteFileTool @Inject constructor(
-    private val fileAccess: FileAccessProvider
+    private val fileAccess: FileAccessProvider,
+    private val pluginGateway: PluginHookGateway
 ) : AgentTool() {
     override val name = "writeFile"
     override val description = "向指定路径写入完整文件内容。若文件存在则根据 overwrite 决定是否覆盖。支持写入工作区文件或容器系统文件。局部修改推荐使用 editFile。"
@@ -192,6 +196,10 @@ class WriteFileTool @Inject constructor(
             ))
 
             FileLogger.v(TAG, "write_file 成功 path=$path created=${!existed} lines=${content.lines().size} (+$added -$removed)")
+            pluginGateway.notifyEvent("file.edited", buildJsonObject {
+                put("tool", name)
+                put("path", fileAccess.toDisplayPath(path))
+            })
             ToolResult.Success(
                 JsonObject(mapOf(
                     "path" to JsonPrimitive(fileAccess.toDisplayPath(path)),

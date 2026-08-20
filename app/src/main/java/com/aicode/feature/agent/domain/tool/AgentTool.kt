@@ -35,6 +35,11 @@ fun ToolResult.toTransportString(): String {
     return ToolResultTransportJson.encodeToString(this)
 }
 
+/** 从 [ToolResult.toTransportString] 的传输串解析回 [ToolResult]；解析失败返回 null。 */
+fun parseToolResult(raw: String): ToolResult? = runCatching {
+    ToolResultTransportJson.decodeFromString(ToolResult.serializer(), raw)
+}.getOrNull()
+
 data class ToolParameter(
     val name: String,
     val type: ParameterType,

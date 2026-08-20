@@ -60,6 +60,7 @@ import com.aicode.R
 import com.aicode.feature.agent.domain.mcp.McpServerEntry
 import com.aicode.feature.agent.domain.mcp.McpServerConfig
 import com.aicode.feature.agent.domain.mcp.McpServerStatus
+import com.aicode.feature.agent.domain.plugin.PluginDescriptor
 import com.aicode.feature.agent.presentation.component.MarkdownContent
 import com.aicode.feature.agent.presentation.component.MarkdownRenderCache
 import com.aicode.feature.backup.presentation.BackupSection
@@ -85,6 +86,7 @@ import compose.icons.feathericons.Image
 import compose.icons.feathericons.Info
 import compose.icons.feathericons.Lock
 import compose.icons.feathericons.Moon
+import compose.icons.feathericons.Package
 import compose.icons.feathericons.Plus
 import compose.icons.feathericons.RefreshCw
 import compose.icons.feathericons.Save
@@ -103,6 +105,7 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     DefaultModels(R.string.settings_default_models),
     Mcp(R.string.settings_mcp),
     Skills(R.string.settings_skills),
+    Plugins(R.string.settings_plugins),
     SkillDetail(R.string.settings_skills),
     Container(R.string.settings_container),
     ContainerDownloads(R.string.container_download_image),
@@ -129,6 +132,9 @@ fun SettingsScreen(
     val mcpStatuses by viewModel.mcpStatuses.collectAsStateWithLifecycle()
     val mcpReloading by viewModel.mcpReloading.collectAsStateWithLifecycle()
     val skills by viewModel.skills.collectAsStateWithLifecycle()
+    val pluginStatus by viewModel.pluginStatus.collectAsStateWithLifecycle()
+    val pluginList by viewModel.pluginList.collectAsStateWithLifecycle()
+    val pluginReloading by viewModel.pluginReloading.collectAsStateWithLifecycle()
     val globalRules by viewModel.globalRules.collectAsStateWithLifecycle()
     val projectRules by viewModel.projectRules.collectAsStateWithLifecycle()
     val currentProjectName by viewModel.currentProjectName.collectAsStateWithLifecycle()
@@ -178,6 +184,8 @@ fun SettingsScreen(
     var editingMcp by remember { mutableStateOf<McpServerEntry?>(null) }
     var selectedSkill by remember { mutableStateOf<SkillUiEntry?>(null) }
     var skillToDelete by remember { mutableStateOf<SkillUiEntry?>(null) }
+    var selectedPlugin by remember { mutableStateOf<PluginDescriptor?>(null) }
+    var pluginToDelete by remember { mutableStateOf<PluginDescriptor?>(null) }
     // 技能正文 Markdown 解析缓存：详情页多次进入复用，避免重复解析卡顿
     val skillMarkdownCache = remember { MarkdownRenderCache() }
     var showContainerAddSheet by remember { mutableStateOf(false) }
@@ -340,6 +348,20 @@ fun SettingsScreen(
                                 )
                             }
                         }
+                        SettingsSection.Plugins -> {
+                            IconButton(onClick = { viewModel.reloadPlugins() }) {
+                                if (pluginReloading) {
+                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Icon(
+                                        FeatherIcons.RefreshCw,
+                                        contentDescription = stringResource(R.string.plugins_reload),
+                                        tint = MaterialTheme.colorScheme.onBackground,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
+                        }
                         else -> {}
                     }
                 }
@@ -418,6 +440,12 @@ fun SettingsScreen(
                         selectedSkill = it
                         section = SettingsSection.SkillDetail
                     }
+                )
+                SettingsSection.Plugins -> PluginsSection(
+                    status = pluginStatus,
+                    plugins = pluginList,
+                    onOpenDetail = { selectedPlugin = it },
+                    onDelete = { pluginToDelete = it }
                 )
                 SettingsSection.SkillDetail -> selectedSkill?.let { entry ->
                     SkillDetailSection(
@@ -595,6 +623,35 @@ fun SettingsScreen(
         )
     }
 
+    selectedPlugin?.let { plugin ->
+        PluginDetailDialog(
+            plugin = plugin,
+            tools = viewModel.getPluginTools(plugin.name),
+            onDismiss = { selectedPlugin = null },
+            onDelete = {
+                pluginToDelete = plugin
+                selectedPlugin = null
+            }
+        )
+    }
+
+    pluginToDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pluginToDelete = null },
+            title = { Text(stringResource(R.string.plugins_delete_confirm_title)) },
+            text = { Text(stringResource(R.string.plugins_delete_confirm_msg, target.name)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deletePlugin(target)
+                    pluginToDelete = null
+                }) { Text(stringResource(R.string.common_delete), color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pluginToDelete = null }) { Text(stringResource(R.string.common_cancel)) }
+            }
+        )
+    }
+
     // 「容器与镜像」使用说明公告：首次进入（或内容更新后）自动弹出，右上角 Info 按钮可随时重看。
     if (showContainerAnnouncement) {
         val dismiss = {
@@ -707,6 +764,11 @@ internal fun SettingsMenu(
                 icon = FeatherIcons.Book,
                 title = stringResource(SettingsSection.Skills.titleRes),
                 onClick = { onOpen(SettingsSection.Skills) }
+            )
+            SettingsRow(
+                icon = FeatherIcons.Package,
+                title = stringResource(SettingsSection.Plugins.titleRes),
+                onClick = { onOpen(SettingsSection.Plugins) }
             )
         }
 

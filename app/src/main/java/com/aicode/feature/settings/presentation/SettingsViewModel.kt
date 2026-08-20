@@ -24,6 +24,10 @@ import com.aicode.feature.agent.domain.mcp.McpServerConfig
 import com.aicode.feature.agent.domain.mcp.McpServerEntry
 import com.aicode.feature.agent.domain.mcp.McpServerStatus
 import com.aicode.feature.agent.domain.mcp.McpToolDescriptor
+import com.aicode.feature.agent.domain.plugin.PluginDescriptor
+import com.aicode.feature.agent.domain.plugin.PluginManager
+import com.aicode.feature.agent.domain.plugin.PluginRuntimeStatus
+import com.aicode.feature.agent.domain.plugin.PluginToolDescriptor
 import com.aicode.feature.agent.domain.permission.PermissionRule
 import com.aicode.feature.agent.domain.permission.PermissionRulesRepository
 import com.aicode.feature.agent.domain.skill.SkillConfigRepository
@@ -212,6 +216,7 @@ class SettingsViewModel @Inject constructor(
     private val languageSettingsRepository: LanguageSettingsRepository,
     private val mcpConfigRepository: McpConfigRepository,
     private val mcpManager: McpManager,
+    private val pluginManager: PluginManager,
     private val permissionRulesRepository: PermissionRulesRepository,
     private val skillRepository: SkillRepository,
     private val skillConfigRepository: SkillConfigRepository,
@@ -316,6 +321,13 @@ class SettingsViewModel @Inject constructor(
 
     private val _mcpReloading = MutableStateFlow(false)
     val mcpReloading: StateFlow<Boolean> = _mcpReloading.asStateFlow()
+
+    /** 插件运行时状态与已加载插件列表（设置页展示）。 */
+    val pluginStatus: StateFlow<PluginRuntimeStatus> = pluginManager.status
+    private val _pluginList = MutableStateFlow<List<PluginDescriptor>>(emptyList())
+    val pluginList: StateFlow<List<PluginDescriptor>> = _pluginList.asStateFlow()
+    private val _pluginReloading = MutableStateFlow(false)
+    val pluginReloading: StateFlow<Boolean> = _pluginReloading.asStateFlow()
 
     private val _fetchState = MutableStateFlow<FetchState>(FetchState.Idle)
     val fetchState: StateFlow<FetchState> = _fetchState.asStateFlow()
@@ -480,6 +492,17 @@ class SettingsViewModel @Inject constructor(
             launch {
                 titleModelSettingsRepository.modelFlow.collectLatest {
                     _titleModel.value = it
+                }
+            }
+
+            // 插件列表跟随运行时状态自动刷新：App 启动自动 reload 成功后无需手动点重载
+            launch {
+                pluginManager.status.collect { status ->
+                    if (status.state == PluginRuntimeStatus.State.RUNNING) {
+                        _pluginList.value = pluginManager.currentPlugins()
+                    } else if (status.state != PluginRuntimeStatus.State.STARTING) {
+                        _pluginList.value = emptyList()
+                    }
                 }
             }
 
@@ -686,6 +709,50 @@ class SettingsViewModel @Inject constructor(
                 _mcpReloading.value = false
             }
         }
+    }
+
+    /** 重载插件运行时（扫描插件目录 + npm 安装 + 重启伴生进程 + 同步工具）。 */
+    fun reloadPlugins() {
+        viewModelScope.launch {
+            _pluginReloading.value = true
+            try {
+                pluginManager.reload()
+                _pluginList.value = pluginManager.currentPlugins()
+            } finally {
+                _pluginReloading.value = false
+            }
+        }
+    }
+
+    /** 删除插件并刷新列表。 */
+    fun deletePlugin(plugin: PluginDescriptor) {
+        viewModelScope.launch {
+            _pluginReloading.value = true
+            try {
+                pluginManager.deletePlugin(plugin)
+                _pluginList.value = pluginManager.currentPlugins()
+            } finally {
+                _pluginReloading.value = false
+            }
+        }
+    }
+
+    /** 启用/禁用插件并刷新列表。 */
+    fun setPluginDisabled(plugin: PluginDescriptor, disabled: Boolean) {
+        viewModelScope.launch {
+            _pluginReloading.value = true
+            try {
+                pluginManager.setPluginDisabled(plugin, disabled)
+                _pluginList.value = pluginManager.currentPlugins()
+            } finally {
+                _pluginReloading.value = false
+            }
+        }
+    }
+
+    /** 获取插件注册的工具列表详情。 */
+    fun getPluginTools(pluginName: String): List<PluginToolDescriptor> {
+        return pluginManager.getPluginTools(pluginName)
     }
 
     /** 仅重连指定 server（编辑弹窗右上角刷新工具用）。 */

@@ -5,19 +5,23 @@ import com.aicode.feature.agent.data.local.entity.AgentMessageEntity
 import com.aicode.feature.agent.domain.model.AgentMessage
 import com.aicode.feature.agent.domain.model.CONTEXT_COMPACTION_MARKER
 import com.aicode.feature.agent.domain.model.CONTEXT_SUMMARY_LEGACY_PREFIX
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.agent.domain.tool.ToolCall
 import com.aicode.feature.agent.presentation.AgentAttachment
 import com.aicode.feature.agent.presentation.MessageRole
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class MessagePersistenceUseCase @Inject constructor(
-    private val agentMessageDao: AgentMessageDao
+    private val agentMessageDao: AgentMessageDao,
+    private val pluginGateway: PluginHookGateway
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -70,6 +74,11 @@ class MessagePersistenceUseCase @Inject constructor(
                 isCompacted = isCompacted
             )
         )
+        pluginGateway.notifyEvent("message.created", buildJsonObject {
+            put("sessionID", sessionId)
+            put("messageID", id)
+            put("role", role.name.lowercase())
+        })
     }
 
     suspend fun updateContent(messageId: String, newContent: String) {

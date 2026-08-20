@@ -6,6 +6,11 @@ import com.aicode.feature.agent.domain.model.AgentImage
 import com.aicode.feature.agent.domain.model.AgentMessage
 import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ToolCall
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
+import com.aicode.feature.agent.domain.plugin.PluginRequestParams
+import com.aicode.feature.agent.domain.plugin.applyChatHeaders
+import com.aicode.feature.agent.domain.plugin.applyChatParams
+import com.aicode.feature.agent.domain.plugin.toPlainValue
 import com.google.gson.JsonParser
 import com.google.gson.JsonObject
 import javax.inject.Inject
@@ -39,6 +44,9 @@ class GeminiAdapter @Inject constructor(
     private fun extraHeaders(): Map<String, String> =
         if (userAgent.isNotBlank()) mapOf("User-Agent" to userAgent) else emptyMap()
 
+    /** 插件运行时（chat.headers / chat.params hook 分发用）；由工作流 createStandaloneProvider 注入。 */
+    var pluginManager: PluginHookGateway? = null
+
     override suspend fun complete(
         systemPrompt: String,
         messages: List<AgentMessage>,
@@ -66,7 +74,17 @@ class GeminiAdapter @Inject constructor(
         if (toolDefs != null) {
             request["tools"] = toolDefs
         }
-        buildThinkingConfig(reasoningEffort)?.let { request["generationConfig"] = mapOf("thinkingConfig" to it) }
+        // 插件请求头/参数改写：chat.headers / chat.params（temperature/topP/topK/maxOutputTokens 并入 generationConfig）。
+        val pluginHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "GEMINI") ?: emptyMap()
+        val pluginParams = pluginManager?.applyChatParams(logSessionId, model) ?: PluginRequestParams()
+        val generationConfig = mutableMapOf<String, Any>()
+        buildThinkingConfig(reasoningEffort)?.let { generationConfig["thinkingConfig"] = it }
+        pluginParams.temperature?.let { generationConfig["temperature"] = it }
+        pluginParams.topP?.let { generationConfig["topP"] = it }
+        pluginParams.topK?.let { generationConfig["topK"] = it }
+        pluginParams.maxOutputTokens?.let { generationConfig["maxOutputTokens"] = it }
+        if (generationConfig.isNotEmpty()) request["generationConfig"] = generationConfig
+        pluginParams.options.forEach { (k, v) -> request[k] = v.toPlainValue() ?: "" }
 
         val url = if (useFullUrl) {
             baseUrl
@@ -82,7 +100,7 @@ class GeminiAdapter @Inject constructor(
 
         val response = try {
             retryStaircase {
-                api.generateContent(url = url, apiKey = apiKey, extraHeaders = extraHeaders(), request = request)
+                api.generateContent(url = url, apiKey = apiKey, extraHeaders = extraHeaders() + pluginHeaders, request = request)
             }
         } catch (e: CancellationException) {
             throw e
@@ -158,7 +176,17 @@ class GeminiAdapter @Inject constructor(
         if (toolDefs != null) {
             request["tools"] = toolDefs
         }
-        buildThinkingConfig(reasoningEffort)?.let { request["generationConfig"] = mapOf("thinkingConfig" to it) }
+        // 插件请求头/参数改写：chat.headers / chat.params（temperature/topP/topK/maxOutputTokens 并入 generationConfig）。
+        val pluginHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "GEMINI") ?: emptyMap()
+        val pluginParams = pluginManager?.applyChatParams(logSessionId, model) ?: PluginRequestParams()
+        val generationConfig = mutableMapOf<String, Any>()
+        buildThinkingConfig(reasoningEffort)?.let { generationConfig["thinkingConfig"] = it }
+        pluginParams.temperature?.let { generationConfig["temperature"] = it }
+        pluginParams.topP?.let { generationConfig["topP"] = it }
+        pluginParams.topK?.let { generationConfig["topK"] = it }
+        pluginParams.maxOutputTokens?.let { generationConfig["maxOutputTokens"] = it }
+        if (generationConfig.isNotEmpty()) request["generationConfig"] = generationConfig
+        pluginParams.options.forEach { (k, v) -> request[k] = v.toPlainValue() ?: "" }
 
         val url = if (useFullUrl) {
             baseUrl
@@ -184,7 +212,7 @@ class GeminiAdapter @Inject constructor(
                 var streamOutputTokens = 0
                 var streamCachedInputTokens = 0
 
-                val body = api.streamGenerateContent(url = url, apiKey = apiKey, extraHeaders = extraHeaders(), request = request)
+                val body = api.streamGenerateContent(url = url, apiKey = apiKey, extraHeaders = extraHeaders() + pluginHeaders, request = request)
 
                 body.use { rb ->
                     // 首字节超时 watchdog：60s 内未收到首个内容块则关闭流，触发可重试的 IOException。

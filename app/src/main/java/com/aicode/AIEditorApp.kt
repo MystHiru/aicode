@@ -13,6 +13,8 @@ import com.aicode.core.util.FileLogger
 import net.schmizz.sshj.common.SecurityUtils
 import com.aicode.feature.agent.domain.container.ContainerInstaller
 import com.aicode.feature.agent.domain.mcp.McpManager
+import com.aicode.feature.agent.domain.plugin.PluginConfigRepository
+import com.aicode.feature.agent.domain.plugin.PluginManager
 import com.aicode.feature.settings.data.repository.KeepaliveSettingsRepository
 import com.aicode.feature.settings.data.repository.LanguageSettingsRepository
 import com.aicode.feature.settings.data.repository.LogSettingsRepository
@@ -87,6 +89,14 @@ class AIEditorApp : Application(), Configuration.Provider {
     @Inject
     lateinit var mcpManager: McpManager
 
+    /** 插件运行时总管：启动即加载容器内插件并同步工具与 Hook。 */
+    @Inject
+    lateinit var pluginManager: PluginManager
+
+    /** 插件配置仓库：启动即监听 plugins.json / package.json 外部直接编辑，改动数秒内刷新并重载。 */
+    @Inject
+    lateinit var pluginConfigRepository: PluginConfigRepository
+
     /** MCP 配置仓库：启动即监听 mcp.json 外部直接编辑，改动数秒内刷新列表并触发重连。 */
     @Inject
     lateinit var mcpConfigRepository: com.aicode.feature.agent.domain.mcp.McpConfigRepository
@@ -154,6 +164,10 @@ class AIEditorApp : Application(), Configuration.Provider {
         // 用户自定义覆盖放在 ~/.aicode/prompts.custom/，同名即覆盖，不被升级覆盖。
         appScope.launch {
             ContainerInstaller.extractPrompts(this@AIEditorApp)
+        }
+        // 启动即释放插件运行时到 ~/.aicode/plugin-runtime/（覆盖式，随 App 升级更新）。
+        appScope.launch {
+            ContainerInstaller.extractPluginRuntime(this@AIEditorApp)
         }
         // 启动即释放套餐余量示例脚本等内置脚本到 ~/.aicode/scripts/
         appScope.launch {
@@ -224,10 +238,13 @@ class AIEditorApp : Application(), Configuration.Provider {
         }
         // 连接已配置的 MCP server，把其工具注册进 ToolRegistry（内部自有 scope，失败不影响启动）。
         mcpManager.start()
-        // 启动即监听 mcp.json / permissions.json 的外部直接编辑：改动数秒内刷新设置页列表并重连。
+        // 启动即加载插件运行时（容器内 Node 伴生进程 + UDS 连接 + 工具同步，失败不影响启动）。
+        pluginManager.start()
+        // 启动即监听 mcp.json / permissions.json / plugins.json 的外部直接编辑：改动数秒内刷新设置页列表并重连。
         appScope.launch { mcpConfigRepository.startWatching() }
         appScope.launch { permissionRulesRepository.startWatching() }
         appScope.launch { skillConfigRepository.startWatching() }
+        appScope.launch { pluginConfigRepository.startWatching() }
         // 语言切换由 MainActivity 的 attachBaseContext + recreate() 统一管理。
         // MainActivity 继承 ComponentActivity（非 AppCompatActivity），
         // AppCompatDelegate.setApplicationLocales 的自动 recreate 不生效，

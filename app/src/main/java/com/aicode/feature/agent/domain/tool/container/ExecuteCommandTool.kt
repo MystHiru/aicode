@@ -4,6 +4,7 @@ import com.aicode.feature.agent.domain.container.BoundedOutput
 import com.aicode.feature.agent.domain.container.CommandEngine
 import com.aicode.feature.agent.domain.container.CommandEvent
 import com.aicode.core.util.FileLogger
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.PendingToolPermission
@@ -18,10 +19,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import javax.inject.Inject
 
 /**
@@ -35,7 +40,8 @@ import javax.inject.Inject
  */
 class ExecuteCommandTool @Inject constructor(
     private val commandEngine: CommandEngine,
-    private val workspaceRepository: WorkspaceRepository
+    private val workspaceRepository: WorkspaceRepository,
+    private val pluginManager: PluginHookGateway
 ) : AgentTool(), StreamingAgentTool {
     private companion object {
         const val TAG = "ExecuteCommandTool"
@@ -73,6 +79,23 @@ class ExecuteCommandTool @Inject constructor(
         return seconds.coerceIn(1L, MAX_TIMEOUT_SECONDS) * 1000L
     }
 
+    /** shell.env hook：把插件注入的环境变量以 export 前缀拼到命令前（兼容本地/远程执行后端）。 */
+    private suspend fun buildEnvPrefixed(command: String, cwd: String, sessionId: String? = null): String {
+        val result = pluginManager.dispatchHook(
+            "shell.env",
+            buildJsonObject { put("cwd", cwd); put("sessionID", sessionId ?: ""); put("callID", "") },
+            buildJsonObject { putJsonObject("env") { } }
+        )
+        val env = (result.output["env"] as? JsonObject)?.mapNotNull { (k, v) ->
+            (v as? JsonPrimitive)?.contentOrNull?.let { k to it }
+        }?.toMap().orEmpty()
+        if (env.isEmpty()) return command
+        val prefix = env.entries.joinToString(" ") { (k, v) ->
+            "export $k='${v.replace("'", "'\\''")}';"
+        }
+        return "$prefix $command"
+    }
+
     override fun buildPermissionRequest(
         callId: String,
         args: Map<String, JsonElement>,
@@ -99,7 +122,7 @@ class ExecuteCommandTool @Inject constructor(
             val workdir = workspaceRepository.currentPath()
             val timeoutMs = resolveTimeoutMs(args)
             FileLogger.d(TAG, "execute_command (timeout=${timeoutMs}ms): $command")
-            val output = commandEngine.runCommandSync(command, workdir, timeoutMs)
+            val output = commandEngine.runCommandSync(buildEnvPrefixed(command, workdir), workdir, timeoutMs)
             FileLogger.v(TAG, "execute_command 完成，输出 ${output.length} 字符")
             ToolResult.Success(JsonPrimitive(output))
         } catch (e: CancellationException) {
@@ -131,7 +154,7 @@ class ExecuteCommandTool @Inject constructor(
             val workdir = workspaceRepository.currentPath()
             val timeoutMs = resolveTimeoutMs(args)
             FileLogger.d(TAG, "execute_command(流式, timeout=${timeoutMs}ms): $command")
-            commandEngine.runCommandStream(command, workdir, timeoutMs).collect { event ->
+            commandEngine.runCommandStream(buildEnvPrefixed(command, workdir, context.sessionId), workdir, timeoutMs).collect { event ->
                 when (event) {
                     is CommandEvent.Line -> {
                         accumulated.append(event.text)

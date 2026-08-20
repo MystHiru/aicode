@@ -25,6 +25,8 @@ import com.aicode.feature.agent.domain.container.SharedPrefsSshHostKeyStore
 import com.aicode.feature.agent.domain.container.SharedPrefsSshLoginKeyStore
 import com.aicode.feature.agent.domain.container.SshHostKeyStore
 import com.aicode.feature.agent.domain.container.SshLoginKeyStore
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
+import com.aicode.feature.agent.domain.plugin.PluginManager
 import com.aicode.feature.settings.data.repository.ExecutionMode
 import com.aicode.feature.settings.data.repository.ExecutionModeHolder
 import com.aicode.feature.agent.domain.tool.file.ReadFileTool
@@ -283,6 +285,10 @@ object AgentModule {
 
     @Provides
     @Singleton
+    fun providePluginHookGateway(pluginManager: PluginManager): PluginHookGateway = pluginManager
+
+    @Provides
+    @Singleton
     fun provideAgentWorkflow(
         toolRegistry: ToolRegistry,
         aiProviderRepository: AIProviderRepository,
@@ -302,7 +308,8 @@ object AgentModule {
         sessionUseCase: SessionUseCase,
         messagePersistenceUseCase: MessagePersistenceUseCase,
         checkpointManager: CheckpointManager,
-        llmCallRecordDao: LlmCallRecordDao
+        llmCallRecordDao: LlmCallRecordDao,
+        pluginManager: PluginHookGateway
     ): AgentWorkflow {
         return StatefulAgentWorkflow(
             toolRegistry,
@@ -323,7 +330,8 @@ object AgentModule {
             sessionUseCase,
             messagePersistenceUseCase,
             checkpointManager,
-            llmCallRecordDao
+            llmCallRecordDao,
+            pluginManager
         )
     }
 }

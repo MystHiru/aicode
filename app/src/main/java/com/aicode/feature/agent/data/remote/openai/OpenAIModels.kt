@@ -4,6 +4,8 @@ data class ChatCompletionRequest(
     val model: String,
     val messages: List<OpenAIChatMessage>,
     val temperature: Float = 0.7f,
+    val top_p: Float? = null,
+    val max_tokens: Int? = null,
     val reasoning_effort: String? = null,
     val tools: List<OpenAIToolDefinition>? = null,
     val tool_choice: String? = null,

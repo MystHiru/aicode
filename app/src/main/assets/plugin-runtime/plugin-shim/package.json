@@ -1,0 +1,8 @@
+{
+  "name": "@opencode-ai/plugin",
+  "version": "0.0.0-aicode",
+  "description": "AiCode 插件兼容层：对齐 @opencode-ai/plugin 的 API 表面（由 AICODE 插件运行时注入，仅供容器内插件 import 使用）",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts"
+}

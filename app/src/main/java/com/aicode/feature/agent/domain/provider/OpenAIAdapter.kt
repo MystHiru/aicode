@@ -11,6 +11,11 @@ import com.aicode.feature.agent.domain.model.AgentImage
 import com.aicode.feature.agent.domain.model.AgentMessage
 import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ToolCall
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
+import com.aicode.feature.agent.domain.plugin.PluginRequestParams
+import com.aicode.feature.agent.domain.plugin.applyChatHeaders
+import com.aicode.feature.agent.domain.plugin.applyChatParams
+import com.aicode.feature.agent.domain.plugin.toPlainValue
 import com.google.gson.JsonParser
 import javax.inject.Inject
 import kotlin.coroutines.coroutineContext
@@ -54,6 +59,9 @@ class OpenAIAdapter @Inject constructor(
     private fun extraHeaders(): Map<String, String> =
         if (userAgent.isNotBlank()) mapOf("User-Agent" to userAgent) else emptyMap()
 
+    /** 插件运行时（chat.headers / chat.params hook 分发用）；由工作流 createStandaloneProvider 注入。 */
+    var pluginManager: PluginHookGateway? = null
+
     override suspend fun complete(
         systemPrompt: String,
         messages: List<AgentMessage>,
@@ -79,12 +87,19 @@ class OpenAIAdapter @Inject constructor(
         }
 
         val url = if (useFullUrl) baseUrl else joinUrl(baseUrl, defaultProviderApiPath(ProviderType.OPENAI))
+        // 插件请求头/参数改写：chat.headers / chat.params。
+        val pluginHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "OPENAI") ?: emptyMap()
+        val pluginParams = pluginManager?.applyChatParams(logSessionId, model) ?: PluginRequestParams()
         if (useResponseApi) {
             val request = mutableMapOf<String, Any?>(
                 "model" to model,
                 "input" to openAIMessages,
                 "tools" to toolDefs
             )
+            pluginParams.temperature?.let { request["temperature"] = it }
+            pluginParams.topP?.let { request["top_p"] = it }
+            pluginParams.maxOutputTokens?.let { request["max_output_tokens"] = it }
+            pluginParams.options.forEach { (k, v) -> request[k] = v.toPlainValue() }
             reasoningEffort?.let { request["reasoning"] = mapOf("effort" to it) }
             // Responses API 官方原生支持 prompt_cache_key：同会话路由到同一缓存 shard。
             logSessionId?.let { request["prompt_cache_key"] = it }
@@ -92,7 +107,7 @@ class OpenAIAdapter @Inject constructor(
 
             val response = try {
                 retryStaircase {
-                    api.createResponses(url = url, authorization = "Bearer $apiKey", extraHeaders = extraHeaders(), request = request)
+                    api.createResponses(url = url, authorization = "Bearer $apiKey", extraHeaders = extraHeaders() + pluginHeaders, request = request)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -137,6 +152,9 @@ class OpenAIAdapter @Inject constructor(
         val request = ChatCompletionRequest(
             model = model,
             messages = openAIMessages,
+            temperature = pluginParams.temperature ?: 0.7f,
+            top_p = pluginParams.topP,
+            max_tokens = pluginParams.maxOutputTokens,
             reasoning_effort = reasoningEffort,
             tools = toolDefs,
             tool_choice = if (toolDefs != null) "auto" else null,
@@ -147,7 +165,7 @@ class OpenAIAdapter @Inject constructor(
 
         val response = try {
             retryStaircase {
-                api.createChatCompletion(url = url, authorization = "Bearer $apiKey", extraHeaders = extraHeaders(), request = request)
+                api.createChatCompletion(url = url, authorization = "Bearer $apiKey", extraHeaders = extraHeaders() + pluginHeaders, request = request)
             }
         } catch (e: CancellationException) {
             throw e
@@ -192,6 +210,9 @@ class OpenAIAdapter @Inject constructor(
         }
 
         val url = if (useFullUrl) baseUrl else joinUrl(baseUrl, defaultProviderApiPath(ProviderType.OPENAI))
+        // 插件请求头/参数改写：chat.headers / chat.params。
+        val pluginHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "OPENAI") ?: emptyMap()
+        val pluginParams = pluginManager?.applyChatParams(logSessionId, model) ?: PluginRequestParams()
         
         if (useResponseApi) {
             val request = mutableMapOf<String, Any?>(
@@ -200,6 +221,10 @@ class OpenAIAdapter @Inject constructor(
                 "tools" to toolDefs,
                 "stream" to true
             )
+            pluginParams.temperature?.let { request["temperature"] = it }
+            pluginParams.topP?.let { request["top_p"] = it }
+            pluginParams.maxOutputTokens?.let { request["max_output_tokens"] = it }
+            pluginParams.options.forEach { (k, v) -> request[k] = v.toPlainValue() }
             reasoningEffort?.let { request["reasoning"] = mapOf("effort" to it) }
             logSessionId?.let { request["prompt_cache_key"] = it }
             AILogger.logRequest(logSessionId, "OpenAI", model, "POST", url, request)
@@ -216,7 +241,7 @@ class OpenAIAdapter @Inject constructor(
                     val body = api.streamResponses(
                         url = url,
                         authorization = "Bearer $apiKey",
-                        extraHeaders = extraHeaders(),
+                        extraHeaders = extraHeaders() + pluginHeaders,
                         request = request
                     )
 
@@ -313,6 +338,9 @@ class OpenAIAdapter @Inject constructor(
         val request = ChatCompletionRequest(
             model = model,
             messages = openAIMessages,
+            temperature = pluginParams.temperature ?: 0.7f,
+            top_p = pluginParams.topP,
+            max_tokens = pluginParams.maxOutputTokens,
             reasoning_effort = reasoningEffort,
             tools = toolDefs,
             tool_choice = if (toolDefs != null) "auto" else null,
@@ -339,7 +367,7 @@ class OpenAIAdapter @Inject constructor(
             val body = api.streamChatCompletion(
                 url = url,
                 authorization = "Bearer $apiKey",
-                extraHeaders = extraHeaders(),
+                extraHeaders = extraHeaders() + pluginHeaders,
                 request = request
             )
 

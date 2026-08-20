@@ -5,7 +5,10 @@ import com.aicode.feature.agent.data.local.dao.AgentMessageDao
 import com.aicode.feature.agent.data.local.dao.ChatSessionDao
 import com.aicode.feature.agent.data.local.entity.ChatSessionEntity
 import com.aicode.feature.agent.domain.model.ReasoningEffort
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.agent.presentation.MessageRole
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -13,7 +16,8 @@ import javax.inject.Singleton
 @Singleton
 class SessionUseCase @Inject constructor(
     private val chatSessionDao: ChatSessionDao,
-    private val agentMessageDao: AgentMessageDao
+    private val agentMessageDao: AgentMessageDao,
+    private val pluginGateway: PluginHookGateway
 ) {
     companion object {
         private const val TAG = "SessionUseCase"
@@ -83,10 +87,12 @@ class SessionUseCase @Inject constructor(
 
     suspend fun updateTitle(sessionId: String, title: String) {
         chatSessionDao.updateTitle(sessionId, title)
+        pluginGateway.notifyEvent("session.updated", buildJsonObject { put("sessionID", sessionId) })
     }
 
     suspend fun updatePinned(sessionId: String, pinned: Boolean) {
         chatSessionDao.updatePinned(sessionId, pinned)
+        pluginGateway.notifyEvent("session.updated", buildJsonObject { put("sessionID", sessionId) })
     }
 
     suspend fun touch(sessionId: String, timestamp: Long) {
@@ -100,14 +106,17 @@ class SessionUseCase @Inject constructor(
     suspend fun updateMode(sessionId: String, mode: String) {
         val s = chatSessionDao.getById(sessionId) ?: return
         chatSessionDao.upsert(s.copy(mode = mode))
+        pluginGateway.notifyEvent("session.updated", buildJsonObject { put("sessionID", sessionId) })
     }
 
     suspend fun updateProviderModel(sessionId: String, providerId: String?, model: String?) {
         chatSessionDao.updateProviderModel(sessionId, providerId, model)
+        pluginGateway.notifyEvent("session.updated", buildJsonObject { put("sessionID", sessionId) })
     }
 
     suspend fun updateReasoningEffort(sessionId: String, effort: String) {
         chatSessionDao.updateReasoningEffort(sessionId, effort)
+        pluginGateway.notifyEvent("session.updated", buildJsonObject { put("sessionID", sessionId) })
     }
 
     suspend fun isSessionEmpty(sessionId: String): Boolean {

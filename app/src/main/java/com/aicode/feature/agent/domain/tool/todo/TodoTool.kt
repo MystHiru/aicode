@@ -5,6 +5,7 @@ import com.aicode.feature.agent.data.local.dao.TodoItemDao
 import com.aicode.feature.agent.data.local.entity.TodoItemEntity
 import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.model.TodoStatus
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.agent.domain.tool.AbstractContextualTool
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.ToolParameter
@@ -15,10 +16,12 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import java.util.UUID
 import javax.inject.Inject
 
@@ -29,7 +32,8 @@ import javax.inject.Inject
  * AI 不需要查询或记忆 todo_id，也不需要区分创建、更新、删除动作。
  */
 class TodoTool @Inject constructor(
-    private val todoItemDao: TodoItemDao
+    private val todoItemDao: TodoItemDao,
+    private val pluginGateway: PluginHookGateway
 ) : AbstractContextualTool() {
 
     private companion object {
@@ -128,6 +132,10 @@ class TodoTool @Inject constructor(
             todoItemDao.upsertAll(entities)
         }
         FileLogger.d(TAG, "todo replace: 同步了 ${entities.size} 项待办")
+        pluginGateway.notifyEvent("todo.updated", buildJsonObject {
+            put("sessionID", sessionId)
+            put("count", JsonPrimitive(entities.size))
+        })
 
         return listTodos(sessionId)
     }

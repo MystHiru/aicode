@@ -9,6 +9,7 @@ import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
 import com.aicode.feature.agent.domain.tool.ToolResult
 import com.aicode.core.util.FileLogger
 import com.aicode.core.util.LineDiff
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -16,8 +17,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import javax.inject.Inject
 
 private const val TAG = "EditFileTool"
@@ -40,7 +43,8 @@ private const val TAG = "EditFileTool"
  * 上下文，或对该编辑显式设置 replace_all=true 才会全部替换。
  */
 class EditFileTool @Inject constructor(
-    private val fileAccess: FileAccessProvider
+    private val fileAccess: FileAccessProvider,
+    private val pluginGateway: PluginHookGateway
 ) : AgentTool() {
     override val name = "editFile"
     override val description =
@@ -178,6 +182,10 @@ class EditFileTool @Inject constructor(
             })
 
             FileLogger.v(TAG, "edit_file 成功 path=$path edits=${edits.size} replacements=$totalReplacements")
+            pluginGateway.notifyEvent("file.edited", buildJsonObject {
+                put("tool", name)
+                put("path", fileAccess.toDisplayPath(path))
+            })
             ToolResult.Success(
                 JsonObject(mapOf(
                     "status" to JsonPrimitive("edited"),

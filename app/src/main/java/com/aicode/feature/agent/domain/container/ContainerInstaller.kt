@@ -85,6 +85,20 @@ class ContainerInstaller @Inject constructor(
         }
 
         /**
+         * 从 assets 提取插件运行时（runner.mjs / sdk.mjs / plugin-shim）到 ~/.aicode/plugin-runtime/。
+         * 每次启动全量覆盖，使 App 升级后运行时随之更新。
+         */
+        fun extractPluginRuntime(context: Context) {
+            val destDir = File(File(context.filesDir, "aicode"), "plugin-runtime")
+            destDir.mkdirs()
+            runCatching {
+                extractPromptsRecursive(context, "plugin-runtime", destDir)
+            }.onFailure {
+                FileLogger.w(TAG, "提取插件运行时失败: ${it.message}", it)
+            }
+        }
+
+        /**
          * 从 assets 提取内置脚本（如套餐余量 demo_balance.py）到 ~/.aicode/scripts/。
          * 若文件已存在则不覆盖，以保留用户的修改。
          */

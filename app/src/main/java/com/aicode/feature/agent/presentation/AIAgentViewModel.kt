@@ -32,6 +32,8 @@ import com.aicode.feature.agent.domain.model.ChatSession
 import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.agent.domain.permission.PermissionChoice
 import com.aicode.feature.agent.domain.mcp.McpManager
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
+import com.aicode.feature.agent.domain.plugin.applyChatMessage
 import com.aicode.feature.agent.domain.workflow.AgentWorkflow
 import com.aicode.feature.terminal.domain.TabFinishedEvent
 import com.aicode.feature.terminal.domain.TAIL_LINES
@@ -77,6 +79,12 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import java.io.OutputStream
 import java.util.UUID
 import javax.inject.Inject
@@ -104,6 +112,7 @@ class AIAgentViewModel @Inject constructor(
     private val backupManager: BackupManager,
     private val mcpManager: McpManager,
     private val agentSoundSettings: AgentSoundSettingsRepository,
+    private val pluginManager: PluginHookGateway,
     val fileAccess: FileAccessProvider,
     @param:ApplicationContext private val context: Context
 ) : ViewModel(), SlashCommandContext {
@@ -576,9 +585,26 @@ class AIAgentViewModel @Inject constructor(
         viewModelScope.launch {
             _runningCommandSessions.value = _runningCommandSessions.value + sessionId
             try {
-                messagePersistenceUseCase.persist(sessionId, MessageRole.USER, input)
+                // command.execute.before hook：插件可改写参数或置空阻止执行。
+                val result = pluginManager.dispatchHook(
+                    "command.execute.before",
+                    buildJsonObject {
+                        put("command", command.trigger)
+                        put("sessionID", sessionId)
+                        put("arguments", input)
+                    },
+                    buildJsonObject { put("args", input) }
+                )
+                val effectiveArgs = (result.output["args"] as? JsonPrimitive)?.contentOrNull ?: input
+                if (effectiveArgs.isBlank()) return@launch
+                messagePersistenceUseCase.persist(sessionId, MessageRole.USER, effectiveArgs)
                 sessionUseCase.touch(sessionId, messagePersistenceUseCase.nextTimestamp())
                 command.execute(this@AIAgentViewModel)
+                pluginManager.notifyEvent("command.executed", buildJsonObject {
+                    put("command", command.trigger)
+                    put("sessionID", sessionId)
+                    put("arguments", effectiveArgs)
+                })
             } finally {
                 _runningCommandSessions.value = _runningCommandSessions.value - sessionId
                 processNextInQueue(sessionId)
@@ -631,10 +657,12 @@ class AIAgentViewModel @Inject constructor(
 
             if (!isAutoTrigger) {
                 val userMsgId = UUID.randomUUID().toString()
-                messagePersistenceUseCase.persist(sessionId, MessageRole.USER, request, id = userMsgId, attachments = inputAttachments)
-                checkpointManager.createCheckpoint(sessionId, userMsgId, request)
+                // chat.message hook：插件可改写用户输入（落库前）。
+                val effectiveRequest = pluginManager.applyChatMessage(sessionId, userMsgId, request)
+                messagePersistenceUseCase.persist(sessionId, MessageRole.USER, effectiveRequest, id = userMsgId, attachments = inputAttachments)
+                checkpointManager.createCheckpoint(sessionId, userMsgId, effectiveRequest)
                 if (isFirst) {
-                    sessionUseCase.updateTitle(sessionId, sessionUseCase.deriveTitle(request))
+                    sessionUseCase.updateTitle(sessionId, sessionUseCase.deriveTitle(effectiveRequest))
                     // 后台异步用 LLM 生成更贴切的标题替换临时标题；失败/取不到时保留临时标题
                     viewModelScope.launch {
                         agentWorkflow.generateTitle(sessionId, request)?.let { sessionUseCase.updateTitle(sessionId, it) }
@@ -1264,7 +1292,9 @@ class AIAgentViewModel @Inject constructor(
             providerId = providerId,
             model = model,
             reasoningEffort = effort
-        )
+        ).also {
+            pluginManager.notifyEvent("session.created", mapOf("sessionID" to JsonPrimitive(it.id)))
+        }
     }
 
     // endregion
@@ -1287,6 +1317,29 @@ class AIAgentViewModel @Inject constructor(
         } catch (e: Exception) {
             FileLogger.e(TAG, "删除消息失败", e)
         }
+    }
+
+    /** 把工作流事件转发给插件（fire-and-forget，不阻塞工作流）。 */
+    private fun notifyPluginEvent(sessionId: String, event: AgentEvent) {
+        val type = when (event) {
+            is AgentEvent.Completed -> "session.idle"
+            is AgentEvent.Failed -> "session.error"
+            is AgentEvent.ModeChanged -> "mode.changed"
+            is AgentEvent.ToolCallStarted -> "tool.started"
+            is AgentEvent.ToolCallFinished -> "tool.finished"
+            is AgentEvent.CompactionStarted -> "compaction.started"
+            AgentEvent.CompactionFinished -> "compaction.finished"
+            is AgentEvent.CompactionFailed -> "compaction.failed"
+            is AgentEvent.Retrying -> "llm.retrying"
+            else -> null
+        } ?: return
+        pluginManager.notifyEvent(
+            type,
+            mapOf(
+                "sessionID" to JsonPrimitive(sessionId),
+                "type" to JsonPrimitive(type)
+            )
+        )
     }
 
     private fun detectLanguage(filePath: String): String {

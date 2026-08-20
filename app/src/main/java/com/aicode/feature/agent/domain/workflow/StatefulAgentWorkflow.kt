@@ -19,12 +19,14 @@ import com.aicode.feature.agent.domain.tool.StreamingAgentTool
 import com.aicode.feature.agent.domain.tool.ToolCall
 import com.aicode.feature.agent.domain.tool.mode.PlanApprovalChoice
 import com.aicode.feature.agent.domain.tool.mode.PlanApprovalManager
+import com.aicode.feature.agent.domain.tool.ToolCapability
 import com.aicode.feature.agent.domain.tool.ToolPermissionManager
 import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
 import com.aicode.feature.agent.domain.tool.ToolRegistry
 import com.aicode.feature.agent.domain.tool.ToolResult
 import com.aicode.feature.agent.domain.tool.ToolOutputStore
 import com.aicode.feature.agent.domain.tool.ToolStreamEvent
+import com.aicode.feature.agent.domain.tool.parseToolResult
 import com.aicode.feature.agent.domain.tool.toTransportString
 import com.aicode.feature.agent.presentation.AgentAttachment
 import com.aicode.feature.settings.data.remote.ModelMetadataService
@@ -40,6 +42,7 @@ import com.aicode.feature.agent.data.local.entity.LlmCallRecordEntity
 import com.aicode.feature.agent.domain.provider.AnthropicAdapter
 import com.aicode.feature.agent.domain.provider.GeminiAdapter
 import com.aicode.feature.agent.domain.provider.OpenAIAdapter
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.settings.domain.model.ProviderType
 import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import kotlinx.coroutines.CancellationException
@@ -49,15 +52,57 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import android.os.SystemClock
 import javax.inject.Inject
+
+/** AgentMessage 的 JSON 序列化实例（消息转换 hook 用）。 */
+private val AgentMessageJson = kotlinx.serialization.json.Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = true
+}
+
+/** 普通 Kotlin 值 → JsonElement（工具 Schema Map → JSON，供 tool.definition hook 传给插件）。 */
+private fun anyToJsonElement(value: Any?): JsonElement = when (value) {
+    null -> JsonNull
+    is JsonElement -> value
+    is String -> JsonPrimitive(value)
+    is Boolean -> JsonPrimitive(value)
+    is Number -> JsonPrimitive(value)
+    is Map<*, *> -> JsonObject(
+        value.entries.associate { (k, v) -> k.toString() to anyToJsonElement(v) }
+    )
+    is Iterable<*> -> JsonArray(value.map { anyToJsonElement(it) })
+    else -> JsonPrimitive(value.toString())
+}
+
+/** JsonElement → 普通 Kotlin 值（插件改写的 JSON Schema 转回 Map）。 */
+private fun jsonToAny(element: JsonElement): Any? = when (element) {
+    is JsonNull -> null
+    is JsonPrimitive -> when {
+        element.isString -> element.content
+        element.booleanOrNull != null -> element.booleanOrNull
+        element.longOrNull != null -> element.longOrNull
+        element.doubleOrNull != null -> element.doubleOrNull
+        else -> element.content
+    }
+    is JsonArray -> element.map { jsonToAny(it) }
+    is JsonObject -> element.mapValues { (_, v) -> jsonToAny(v) }
+}
 
 /**
  * 阶段三重构 (完全版)：基于不可变状态 (Immutable State) 与 MVI 架构的 Agent 工作流引擎。
@@ -83,7 +128,8 @@ class StatefulAgentWorkflow @Inject constructor(
     private val sessionUseCase: SessionUseCase,
     private val messagePersistenceUseCase: MessagePersistenceUseCase,
     private val checkpointManager: CheckpointManager,
-    private val llmCallRecordDao: LlmCallRecordDao
+    private val llmCallRecordDao: LlmCallRecordDao,
+    private val pluginManager: PluginHookGateway
 ) : AgentWorkflow {
 
     private companion object {
@@ -225,10 +271,14 @@ class StatefulAgentWorkflow @Inject constructor(
         val provider: AIProvider = when (config.type) {
             ProviderType.ANTHROPIC -> AnthropicAdapter(anthropicApi).also {
                 it.cacheBreakpointsEnabled = config.anthropicCacheBreakpoints
+                it.pluginManager = pluginManager
             }
-            ProviderType.GEMINI -> GeminiAdapter(geminiApi)
+            ProviderType.GEMINI -> GeminiAdapter(geminiApi).also {
+                it.pluginManager = pluginManager
+            }
             else -> OpenAIAdapter(openAIApi).also {
                 it.chatCacheKeyEnabled = config.openaiChatCacheKey
+                it.pluginManager = pluginManager
             }
         }
         provider.apiKey = config.apiKey
@@ -409,6 +459,8 @@ class StatefulAgentWorkflow @Inject constructor(
 
         val systemPrompt = promptProvider.build(currentContext)
         val aiProvider = getEffectiveProvider(currentContext.sessionId)
+        // 系统提示词转换 hook：插件可向 system 注入额外上下文（⚠️ 修改会打断隐式前缀缓存）。
+        val effectiveSystemPrompt = applySystemTransform(systemPrompt, currentContext.sessionId, aiProvider.model)
         // 压缩失败后本轮（本次用户请求内）不再重复尝试压缩，避免每次 LLM 调用都白试一次。
         var compactionAttemptFailed = false
 
@@ -451,7 +503,11 @@ class StatefulAgentWorkflow @Inject constructor(
                             // 发送前按实际模型的视觉能力处理图片（同 execute 路径）。
                             val supportsVision = activeModelSupportsVision(currentContext.sessionId)
                             val messagesToSend = sanitizeImagesForModel(compactedMessages, supportsVision)
-                            providerInUse.completeStream(systemPrompt, messagesToSend, currentTools, currentContext.reasoningEffort).collect { chunk ->
+                            // 历史消息转换 hook：插件可裁剪、脱敏消息。
+                            val effectiveMessages = applyMessagesTransform(messagesToSend, currentContext.sessionId)
+                            // 工具定义转换 hook：插件可改写工具描述与参数 Schema（发给模型前）。
+                            val definedTools = applyToolDefinition(currentTools)
+                            providerInUse.completeStream(effectiveSystemPrompt, effectiveMessages, definedTools, currentContext.reasoningEffort).collect { chunk ->
                                 when (chunk) {
                                     is AIStreamChunk.TextDelta -> {
                                         if (ttfbElapsed == null) ttfbElapsed = SystemClock.elapsedRealtime() - callStartElapsed
@@ -532,7 +588,7 @@ class StatefulAgentWorkflow @Inject constructor(
                     is AgentSideEffect.RequestPermission -> {
                         val tool = toolRegistry.getTool(effect.toolCall.name)
                         val argsPreview = JsonObject(effect.toolCall.arguments).toString().take(500)
-                        val checkResult = requestPermissionIfNeeded(tool, effect.toolCall.id, effect.toolCall.arguments, argsPreview, currentContext.mode)
+                        val checkResult = requestPermissionIfNeeded(tool, effect.toolCall.id, effect.toolCall.arguments, argsPreview, currentContext.mode, currentContext.sessionId)
 
                         if (!checkResult.approved) {
                             val rawResult = ToolResult.Error(checkResult.denyReason, checkResult.errorCode).toTransportString()
@@ -640,16 +696,109 @@ class StatefulAgentWorkflow @Inject constructor(
         send(AgentEvent.Completed)
     }
 
+    /** 系统提示词转换 hook：插件可向 system 注入额外上下文（⚠️ 修改会打断隐式前缀缓存）。 */
+    private suspend fun applySystemTransform(system: String, sessionId: String?, model: String): String {
+        val result = pluginManager.dispatchHook(
+            "experimental.chat.system.transform",
+            buildJsonObject { put("sessionID", sessionId ?: ""); put("model", model) },
+            buildJsonObject { putJsonArray("system") { add(system) } }
+        )
+        val parts = (result.output["system"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
+        return if (parts.isEmpty()) system else parts.joinToString("\n\n")
+    }
+
+    /** 历史消息转换 hook：插件可裁剪、脱敏消息。output 为 AiCode 消息模型数组。 */
+    private suspend fun applyMessagesTransform(messages: List<AgentMessage>, sessionId: String?): List<AgentMessage> {
+        val result = pluginManager.dispatchHook(
+            "experimental.chat.messages.transform",
+            buildJsonObject { put("sessionID", sessionId ?: "") },
+            buildJsonObject { putJsonArray("messages") { messages.forEach { add(AgentMessageJson.encodeToJsonElement(it)) } } }
+        )
+        val arr = (result.output["messages"] as? JsonArray) ?: return messages
+        val transformed = arr.mapNotNull { runCatching { AgentMessageJson.decodeFromJsonElement(AgentMessage.serializer(), it) }.getOrNull() }
+        return if (transformed.isEmpty()) messages else transformed
+    }
+
+    /** 工具定义转换 hook：插件可改写工具的描述与参数 Schema（发给模型前）。 */
+    private suspend fun applyToolDefinition(tools: List<AgentTool>): List<AgentTool> {
+        return tools.map { tool ->
+            val result = pluginManager.dispatchHook(
+                "tool.definition",
+                buildJsonObject { put("toolID", tool.name) },
+                buildJsonObject {
+                    put("description", tool.description)
+                    put("parameters", anyToJsonElement(tool.toJsonSchema()))
+                }
+            )
+            val newDesc = (result.output["description"] as? JsonPrimitive)?.contentOrNull
+            val newParams = (result.output["parameters"] as? JsonObject)?.takeIf { it.isNotEmpty() }
+            if (newDesc == null && newParams == null) return@map tool
+            object : AgentTool() {
+                override val name: String = tool.name
+                override val description: String = newDesc ?: tool.description
+                override val parameters: Map<String, com.aicode.feature.agent.domain.tool.ToolParameter> = tool.parameters
+                override val permissionPolicy: ToolPermissionPolicy = tool.permissionPolicy
+                override val capabilities: Set<ToolCapability> = tool.capabilities
+                override fun effectiveCapabilities(args: Map<String, JsonElement>): Set<ToolCapability> =
+                    tool.effectiveCapabilities(args)
+                override suspend fun execute(args: Map<String, JsonElement>): ToolResult = tool.execute(args)
+                override suspend fun executeWithContext(
+                    args: Map<String, JsonElement>,
+                    context: com.aicode.feature.agent.domain.model.AgentContext
+                ): ToolResult = tool.executeWithContext(args, context)
+                override fun buildPermissionRequest(
+                    callId: String,
+                    args: Map<String, JsonElement>,
+                    argsPreview: String
+                ): com.aicode.feature.agent.domain.tool.PendingToolPermission =
+                    tool.buildPermissionRequest(callId, args, argsPreview)
+                override fun toJsonSchema(): Map<String, Any> = newParams?.let { p ->
+                    @Suppress("UNCHECKED_CAST")
+                    (jsonToAny(p) as? Map<String, Any>) ?: tool.toJsonSchema()
+                } ?: tool.toJsonSchema()
+            }
+        }
+    }
+
     private suspend fun runToolSync(tool: AgentTool?, toolCall: ToolCall, context: AgentContext): ToolRunResult {
         val name = toolCall.name
         if (tool == null) {
             return ToolRunResult(ToolResult.Error("工具 $name 不存在", "TOOL_NOT_FOUND").toTransportString(), true)
         }
+        // 工具执行前拦截 hook：插件可改写参数或抛错阻止（errors 非空则按执行失败处理）。
+        val beforeResult = pluginManager.dispatchHook(
+            "tool.execute.before",
+            buildJsonObject { put("tool", name); put("sessionID", context.sessionId ?: ""); put("callID", toolCall.id) },
+            buildJsonObject { put("args", JsonObject(toolCall.arguments)) }
+        )
+        if (beforeResult.errors.isNotEmpty()) {
+            val msg = beforeResult.errors.joinToString("; ") { "[${it.plugin}] ${it.error}" }
+            return ToolRunResult(ToolResult.Error("工具执行被插件拦截: $msg", "PLUGIN_BLOCKED").toTransportString(), true)
+        }
+        val effectiveArgs = (beforeResult.output["args"] as? JsonObject)?.toMap() ?: toolCall.arguments
         return try {
-            val result = tool.executeWithContext(toolCall.arguments, context)
-            val attachments = if (name == "sendFile") extractAttachments(result) else emptyList()
-            val images = if (result is ToolResult.Success) result.images else emptyList()
-            val transportResult = if (attachments.isNotEmpty()) stripAttachments(result) else result
+            val result = tool.executeWithContext(effectiveArgs, context)
+            // 工具执行后处理 hook：插件可改写输出。
+            val afterResult = pluginManager.dispatchHook(
+                "tool.execute.after",
+                buildJsonObject {
+                    put("tool", name)
+                    put("sessionID", context.sessionId ?: "")
+                    put("callID", toolCall.id)
+                    put("args", JsonObject(effectiveArgs))
+                },
+                buildJsonObject {
+                    put("title", name)
+                    put("output", result.toTransportString())
+                    put("metadata", buildJsonObject { })
+                }
+            )
+            val processedResult = (afterResult.output["output"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                ?.let { parseToolResult(it) }
+                ?: result
+            val attachments = if (name == "sendFile") extractAttachments(processedResult) else emptyList()
+            val images = if (processedResult is ToolResult.Success) processedResult.images else emptyList()
+            val transportResult = if (attachments.isNotEmpty()) stripAttachments(processedResult) else processedResult
             val processed = toolOutputStore.process(name, toolCall.id, transportResult)
             ToolRunResult(processed.toTransportString(), processed is ToolResult.Error, attachments, images)
         } catch (e: CancellationException) {
@@ -694,12 +843,14 @@ class StatefulAgentWorkflow @Inject constructor(
      */
     private suspend fun resolveCompactionFallbackProvider(sessionId: String? = null): AIProvider? {
         val providerId = compactionModelSettingsRepository.getCompactionProviderId().trim()
-        if (providerId.isEmpty()) return null
         val model = compactionModelSettingsRepository.getCompactionModel().trim()
-        if (model.isEmpty()) return null
-        val config = aiProviderRepository.getProviderById(providerId) ?: return null
-        if (!config.isEnabled || config.apiKey.isBlank()) return null
-        return createStandaloneProvider(config.copy(selectedModel = model), sessionId)
+        if (providerId.isNotEmpty() && model.isNotEmpty()) {
+            val config = aiProviderRepository.getProviderById(providerId) ?: return null
+            if (!config.isEnabled || config.apiKey.isBlank()) return null
+            return createStandaloneProvider(config.copy(selectedModel = model), sessionId)
+        }
+        // 用户未配置压缩专用模型：查询插件 small_model 建议（无建议则沿用聊天模型）。
+        return resolvePluginSmallModelProvider(sessionId)
     }
 
     /**
@@ -708,11 +859,30 @@ class StatefulAgentWorkflow @Inject constructor(
      */
     private suspend fun resolveTitleFallbackProvider(sessionId: String?): AIProvider? {
         val providerId = titleModelSettingsRepository.getTitleProviderId().trim()
-        if (providerId.isEmpty()) return null
         val model = titleModelSettingsRepository.getTitleModel().trim()
-        if (model.isEmpty()) return null
-        val config = aiProviderRepository.getProviderById(providerId) ?: return null
+        if (providerId.isNotEmpty() && model.isNotEmpty()) {
+            val config = aiProviderRepository.getProviderById(providerId) ?: return null
+            if (!config.isEnabled || config.apiKey.isBlank()) return null
+            return createStandaloneProvider(config.copy(selectedModel = model), sessionId)
+        }
+        // 用户未配置标题专用模型：查询插件 small_model 建议（无建议则沿用聊天模型）。
+        return resolvePluginSmallModelProvider(sessionId)
+    }
+
+    /**
+     * 轻量任务小模型建议（experimental.provider.small_model）：用户未配置压缩/标题专用模型时，
+     * 向插件查询当前 provider 的小模型建议，用建议模型构建独立 provider；无建议则返回 null（沿用聊天模型）。
+     */
+    private suspend fun resolvePluginSmallModelProvider(sessionId: String? = null): AIProvider? {
+        val config = resolveProviderConfig(sessionId) ?: return null
         if (!config.isEnabled || config.apiKey.isBlank()) return null
+        val results = pluginManager.dispatchReturnHook(
+            "experimental.provider.small_model",
+            buildJsonObject { put("provider", config.id) }
+        )
+        val model = results.mapNotNull { el ->
+            ((el as? JsonObject)?.get("model") as? JsonPrimitive)?.contentOrNull
+        }.firstOrNull { it.isNotBlank() } ?: return null
         return createStandaloneProvider(config.copy(selectedModel = model), sessionId)
     }
 
@@ -745,7 +915,18 @@ class StatefulAgentWorkflow @Inject constructor(
         var lastEmitMs = 0L
         var finalResult: ToolResult? = null
         try {
-            tool.executeStream(toolCall.arguments, context).collect { ev ->
+            // 工具执行前拦截 hook（与 runToolSync 一致）。
+            val beforeResult = pluginManager.dispatchHook(
+                "tool.execute.before",
+                buildJsonObject { put("tool", toolCall.name); put("sessionID", context.sessionId ?: ""); put("callID", toolCall.id) },
+                buildJsonObject { put("args", JsonObject(toolCall.arguments)) }
+            )
+            if (beforeResult.errors.isNotEmpty()) {
+                val msg = beforeResult.errors.joinToString("; ") { "[${it.plugin}] ${it.error}" }
+                return ToolRunResult(ToolResult.Error("工具执行被插件拦截: $msg", "PLUGIN_BLOCKED").toTransportString(), true)
+            }
+            val effectiveArgs = (beforeResult.output["args"] as? JsonObject)?.toMap() ?: toolCall.arguments
+            tool.executeStream(effectiveArgs, context).collect { ev ->
                 when (ev) {
                     is ToolStreamEvent.Progress -> {
                         live.append(ev.chunk).append('\n')
@@ -762,8 +943,26 @@ class StatefulAgentWorkflow @Inject constructor(
                 }
             }
             val result = finalResult ?: ToolResult.Error("流式工具未返回结果", "MISSING_STREAM_RESULT")
-            val processed = toolOutputStore.process(toolCall.name, toolCall.id, result)
-            val images = if (result is ToolResult.Success) result.images else emptyList()
+            // 工具执行后处理 hook。
+            val afterResult = pluginManager.dispatchHook(
+                "tool.execute.after",
+                buildJsonObject {
+                    put("tool", toolCall.name)
+                    put("sessionID", context.sessionId ?: "")
+                    put("callID", toolCall.id)
+                    put("args", JsonObject(effectiveArgs))
+                },
+                buildJsonObject {
+                    put("title", toolCall.name)
+                    put("output", result.toTransportString())
+                    put("metadata", buildJsonObject { })
+                }
+            )
+            val processedResult = (afterResult.output["output"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                ?.let { parseToolResult(it) }
+                ?: result
+            val processed = toolOutputStore.process(toolCall.name, toolCall.id, processedResult)
+            val images = if (processed is ToolResult.Success) processed.images else emptyList()
             return ToolRunResult(processed.toTransportString(), processed is ToolResult.Error, images = images)
         } catch (e: CancellationException) {
             throw e
@@ -858,7 +1057,8 @@ class StatefulAgentWorkflow @Inject constructor(
         callId: String,
         arguments: Map<String, kotlinx.serialization.json.JsonElement>,
         argsPreview: String,
-        mode: com.aicode.feature.agent.domain.model.AgentMode
+        mode: com.aicode.feature.agent.domain.model.AgentMode,
+        sessionId: String?
     ): PermissionCheckResult {
         if (tool == null) {
             return PermissionCheckResult(true)
@@ -871,6 +1071,21 @@ class StatefulAgentWorkflow @Inject constructor(
             if (targetModeStr == AgentMode.BUILD.name) {
                 return PermissionCheckResult(true)
             }
+        }
+
+        // 权限拦截 hook：插件可自动化允许/拒绝（allow 跳过弹窗与策略拒绝，deny 直接拒绝）。
+        val permResult = pluginManager.dispatchHook(
+            "permission.ask",
+            buildJsonObject {
+                put("tool", tool.name)
+                put("args", JsonObject(arguments))
+                put("mode", mode.name)
+            },
+            buildJsonObject { put("status", "ask") }
+        )
+        when ((permResult.output["status"] as? JsonPrimitive)?.contentOrNull) {
+            "allow" -> return PermissionCheckResult(true)
+            "deny" -> return PermissionCheckResult(false, "插件拒绝执行该工具", "PLUGIN_DENIED")
         }
 
         val eval = policyEngine.evaluate(tool, tool.name, arguments, mode)
@@ -893,7 +1108,19 @@ class StatefulAgentWorkflow @Inject constructor(
                         rememberablePatterns = eval.rememberablePatterns,
                         rememberDisabledReason = eval.rememberDisabledReason
                     )
-                when (permissionManager.awaitApproval(request)) {
+                pluginManager.notifyEvent("permission.asked", buildJsonObject {
+                    put("tool", tool.name)
+                    put("sessionID", sessionId ?: "")
+                    put("callID", callId)
+                })
+                val choice = permissionManager.awaitApproval(request)
+                pluginManager.notifyEvent("permission.replied", buildJsonObject {
+                    put("tool", tool.name)
+                    put("sessionID", sessionId ?: "")
+                    put("callID", callId)
+                    put("choice", choice.name.lowercase())
+                })
+                when (choice) {
                     PermissionChoice.REJECT -> PermissionCheckResult(false, "用户拒绝执行该工具", "USER_REJECTED")
                     PermissionChoice.ONCE -> PermissionCheckResult(true)
                     PermissionChoice.ALWAYS -> {

@@ -3,6 +3,7 @@ package com.aicode.feature.settings.data.remote
 import android.content.Context
 import android.content.SharedPreferences
 import com.aicode.core.util.FileLogger
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.settings.data.local.CustomModelMetadataStore
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.domain.model.ProviderType
@@ -13,12 +14,17 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -29,7 +35,8 @@ import javax.inject.Singleton
 @Singleton
 class ModelMetadataService @Inject constructor(
     @param:ApplicationContext private val context: Context,
-    private val customModelMetadataStore: CustomModelMetadataStore
+    private val customModelMetadataStore: CustomModelMetadataStore,
+    private val pluginManager: PluginHookGateway
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -55,7 +62,9 @@ class ModelMetadataService @Inject constructor(
         withContext(Dispatchers.IO) {
             val catalog = loadCatalog()
             val auto = findMetadata(catalog, type, modelId) ?: default(type, modelId)
-            mergeCustom(providerId, modelId, auto)
+            val plugin = pluginModelMetadata(providerId, modelId)
+            val merged = if (plugin != null) mergeModelMetadata(modelId, auto, plugin) else auto
+            mergeCustom(providerId, modelId, merged)
         }
 
     suspend fun resolveAll(providerId: String, type: ProviderType, modelIds: List<String>): Map<String, ModelMetadata> =
@@ -63,9 +72,33 @@ class ModelMetadataService @Inject constructor(
             val catalog = loadCatalog()
             modelIds.associateWith { modelId ->
                 val auto = findMetadata(catalog, type, modelId) ?: default(type, modelId)
-                mergeCustom(providerId, modelId, auto)
+                val plugin = pluginModelMetadata(providerId, modelId)
+                val merged = if (plugin != null) mergeModelMetadata(modelId, auto, plugin) else auto
+                mergeCustom(providerId, modelId, merged)
             }
         }
+
+    /** provider.models hook：插件提供的模型元数据（优先于 models.dev 拉取，仍低于用户自定义）。 */
+    private suspend fun pluginModelMetadata(providerId: String, modelId: String): ModelMetadata? {
+        if (providerId.isBlank()) return null
+        val results = pluginManager.dispatchReturnHook(
+            "provider.models",
+            buildJsonObject { put("provider", providerId) }
+        )
+        for (r in results) {
+            val obj = r as? JsonObject ?: continue
+            val meta = obj[modelId] as? JsonObject ?: continue
+            return ModelMetadata(
+                id = modelId,
+                providerId = providerId,
+                contextTokens = (meta["contextTokens"] as? JsonPrimitive)?.intOrNull ?: 0,
+                supportsVision = (meta["supportsVision"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                supportsReasoning = (meta["supportsReasoning"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                source = ModelMetadata.Source.INFERRED
+            )
+        }
+        return null
+    }
 
     /** 自定义元数据优先于自动解析（拉取/内置）结果；providerId 为空（未关联配置）时跳过合并。 */
     private suspend fun mergeCustom(providerId: String, modelId: String, auto: ModelMetadata): ModelMetadata {
