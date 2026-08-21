@@ -33,6 +33,9 @@ import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.agent.domain.permission.PermissionChoice
 import com.aicode.feature.agent.domain.mcp.McpManager
 import com.aicode.feature.agent.domain.plugin.PluginHookGateway
+import com.aicode.feature.agent.domain.plugin.PluginSessionCommand
+import com.aicode.feature.agent.domain.plugin.PluginSessionCommandBus
+import com.aicode.feature.agent.domain.plugin.SessionActivityRegistry
 import com.aicode.feature.agent.domain.plugin.applyChatMessage
 import com.aicode.feature.agent.domain.subagent.SubAgentEvent
 import com.aicode.feature.agent.domain.subagent.SubAgentEventBus
@@ -84,11 +87,13 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import java.io.OutputStream
 import java.util.UUID
@@ -119,6 +124,8 @@ class AIAgentViewModel @Inject constructor(
     private val agentSoundSettings: AgentSoundSettingsRepository,
     private val pluginManager: PluginHookGateway,
     private val subAgentEventBus: SubAgentEventBus,
+    private val sessionActivityRegistry: SessionActivityRegistry,
+    private val pluginSessionCommandBus: PluginSessionCommandBus,
     val fileAccess: FileAccessProvider,
     @param:ApplicationContext private val context: Context
 ) : ViewModel(), SlashCommandContext {
@@ -435,6 +442,50 @@ class AIAgentViewModel @Inject constructor(
                 }
             }
         }
+
+        // 订阅插件 session 命令（client.session.prompt/delete）：驱动目标会话或删除会话。
+        viewModelScope.launch {
+            pluginSessionCommandBus.commands.collect { command ->
+                when (command) {
+                    is PluginSessionCommand.Prompt -> handlePluginPrompt(command)
+                    is PluginSessionCommand.Delete -> deleteSession(command.sessionId)
+                }
+            }
+        }
+    }
+
+    /**
+     * 插件 client.session.prompt 执行：noReply 仅注入上下文；否则驱动目标会话工作流。
+     * 宿主侧已用 registry 校验过会话未在运行，这里再查 sessionJobs 双保险，
+     * 避免竞态窗口内两个 prompt 并发跑同一会话。
+     */
+    private suspend fun handlePluginPrompt(command: PluginSessionCommand.Prompt) {
+        if (sessionJobs[command.sessionId]?.isActive == true) {
+            FileLogger.w(TAG, "插件 prompt 被拒绝（会话运行中）: ${command.sessionId}")
+            return
+        }
+        if (command.noReply) {
+            messagePersistenceUseCase.persist(command.sessionId, MessageRole.USER, command.text)
+            sessionUseCase.touch(command.sessionId, messagePersistenceUseCase.nextTimestamp())
+            return
+        }
+        command.model?.let { (providerId, model) ->
+            sessionUseCase.updateProviderModel(command.sessionId, providerId, model)
+        }
+        val isSub = sessionUseCase.getSessionById(command.sessionId)?.parentId != null
+        executeAgentRequestStream(
+            request = command.text,
+            targetSessionId = command.sessionId,
+            skipTitleUpdate = isSub
+        )
+    }
+
+    /** 向插件派发会话运行状态事件（对齐 opencode session.status）。 */
+    private fun notifyPluginSessionStatus(sessionId: String, status: String) {
+        pluginManager.notifyEvent("session.status", buildJsonObject {
+            put("sessionID", sessionId)
+            putJsonObject("status") { put("type", status) }
+        })
     }
 
     /**
@@ -681,6 +732,7 @@ class AIAgentViewModel @Inject constructor(
             _runningCommandSessions.value = _runningCommandSessions.value + sessionId
             try {
                 // command.execute.before hook：插件可改写参数或置空阻止执行。
+                // output 对齐 opencode：{ parts: Part[] }（text part 数组），取回第一个 text part 的文本。
                 val result = pluginManager.dispatchHook(
                     "command.execute.before",
                     buildJsonObject {
@@ -688,9 +740,26 @@ class AIAgentViewModel @Inject constructor(
                         put("sessionID", sessionId)
                         put("arguments", input)
                     },
-                    buildJsonObject { put("args", input) }
+                    buildJsonObject {
+                        putJsonArray("parts") {
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", input)
+                            })
+                        }
+                    }
                 )
-                val effectiveArgs = (result.output["args"] as? JsonPrimitive)?.contentOrNull ?: input
+                val effectiveArgs = (result.output["parts"] as? JsonArray)
+                    ?.mapNotNull { el ->
+                        val obj = el as? JsonObject ?: return@mapNotNull null
+                        if ((obj["type"] as? JsonPrimitive)?.content == "text") {
+                            (obj["text"] as? JsonPrimitive)?.contentOrNull
+                        } else null
+                    }
+                    ?.filter { it.isNotBlank() }
+                    ?.joinToString("\n")
+                    ?.ifBlank { null }
+                    ?: input
                 if (effectiveArgs.isBlank()) return@launch
                 messagePersistenceUseCase.persist(sessionId, MessageRole.USER, effectiveArgs)
                 sessionUseCase.touch(sessionId, messagePersistenceUseCase.nextTimestamp())
@@ -754,8 +823,13 @@ class AIAgentViewModel @Inject constructor(
 
             if (!isAutoTrigger) {
                 val userMsgId = UUID.randomUUID().toString()
-                // chat.message hook：插件可改写用户输入（落库前）。
-                val effectiveRequest = pluginManager.applyChatMessage(sessionId, userMsgId, request)
+                // chat.message hook：插件可改写用户输入（落库前）。output 对齐 opencode {message, parts}。
+                val effectiveRequest = pluginManager.applyChatMessage(
+                    sessionId, userMsgId, request,
+                    agent = currentSession?.subagentType,
+                    providerId = currentSession?.providerId,
+                    model = currentSession?.model
+                )
                 messagePersistenceUseCase.persist(sessionId, MessageRole.USER, effectiveRequest, id = userMsgId, attachments = inputAttachments)
                 checkpointManager.createCheckpoint(sessionId, userMsgId, effectiveRequest)
                 if (isFirst && !skipTitleUpdate) {
@@ -967,6 +1041,8 @@ class AIAgentViewModel @Inject constructor(
             FileLogger.d(TAG, "stream finally: sid=$sessionId isOwnJob=$isOwnJob state=${_agentStates.value[sessionId]}")
             if (isOwnJob) {
                 sessionJobs.remove(sessionId)
+                sessionActivityRegistry.remove(sessionId)
+                notifyPluginSessionStatus(sessionId, "idle")
             }
             _runningTools.value = _runningTools.value - sessionId
             setStreamingText(sessionId, null)
@@ -992,6 +1068,8 @@ class AIAgentViewModel @Inject constructor(
         // 先结束的 job 把状态置 Idle/Result 覆盖仍在跑的 job 的 Streaming。
         if (targetSessionId != null && slashCommandRegistry.findExact(request) == null) {
             sessionJobs[targetSessionId] = job
+            sessionActivityRegistry.add(targetSessionId)
+            notifyPluginSessionStatus(targetSessionId, "busy")
         }
     }
 
@@ -1018,6 +1096,7 @@ class AIAgentViewModel @Inject constructor(
         val jobs = sessionJobs.values.filter { it.isActive }
         jobs.forEach { it.cancel() }
         sessionJobs.clear()
+        sessionActivityRegistry.clear()
         pendingMergedNotifications.clear()
         _queuedRequests.value = emptyMap()
         _runningCommandSessions.value = emptySet()
@@ -1283,6 +1362,7 @@ class AIAgentViewModel @Inject constructor(
         deletedIds.forEach { sid ->
             sessionJobs[sid]?.cancel()
             sessionJobs.remove(sid)
+            sessionActivityRegistry.remove(sid)
             _agentStates.value = _agentStates.value - sid
             _streamingTexts.value = _streamingTexts.value - sid
             _streamingReasonings.value = _streamingReasonings.value - sid
@@ -1430,7 +1510,13 @@ class AIAgentViewModel @Inject constructor(
             model = model,
             reasoningEffort = effort
         ).also {
-            pluginManager.notifyEvent("session.created", mapOf("sessionID" to JsonPrimitive(it.id)))
+            pluginManager.notifyEvent(
+                "session.created",
+                mapOf(
+                    "sessionID" to JsonPrimitive(it.id),
+                    "title" to JsonPrimitive(it.title)
+                )
+            )
         }
     }
 

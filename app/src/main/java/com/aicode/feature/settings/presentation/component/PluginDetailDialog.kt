@@ -556,8 +556,15 @@ internal fun hookDescription(hookName: String): String = when (hookName) {
     "provider.models" -> stringResource(R.string.plugins_hook_provider_models_desc)
     "tool.execute.before" -> stringResource(R.string.plugins_hook_tool_before_desc)
     "tool.execute.after" -> stringResource(R.string.plugins_hook_tool_after_desc)
+    "tool.definition" -> stringResource(R.string.plugins_hook_tool_definition_desc)
+    "experimental.chat.system.transform" -> stringResource(R.string.plugins_hook_system_transform_desc)
+    "experimental.chat.messages.transform" -> stringResource(R.string.plugins_hook_messages_transform_desc)
+    "experimental.session.compacting" -> stringResource(R.string.plugins_hook_compacting_desc)
+    "shell.env" -> stringResource(R.string.plugins_hook_shell_env_desc)
+    "permission.ask" -> stringResource(R.string.plugins_hook_permission_ask_desc)
+    "command.execute.before" -> stringResource(R.string.plugins_hook_command_before_desc)
     "event" -> stringResource(R.string.plugins_hook_event_desc)
-    "small_model" -> stringResource(R.string.plugins_hook_small_model_desc)
+    "experimental.provider.small_model" -> stringResource(R.string.plugins_hook_small_model_desc)
     "dispose" -> stringResource(R.string.plugins_hook_dispose_desc)
     else -> hookName
 }

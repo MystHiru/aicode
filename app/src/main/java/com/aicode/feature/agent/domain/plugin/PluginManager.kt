@@ -27,7 +27,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import java.io.File
-import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Provider
@@ -50,7 +49,7 @@ data class PluginRuntimeStatus(
  *
  * 与 [com.aicode.feature.agent.domain.mcp.McpManager] 同构：
  * - 跟随当前工作区切换自动重载（插件目录与项目级 plugins.json 随工作区变化）；
- * - 监听 plugins.json / package.json 外部编辑自动重载（npm 依赖变化时先 npm install）；
+ * - 监听 plugins.json / package.json 外部编辑自动重载（npm 依赖变化时提示手动安装后重载）；
  * - 工具经 [PluginToolBridge] 注册进 [ToolRegistry]（同名覆盖内置工具，重载时恢复）。
  */
 @Singleton
@@ -72,6 +71,9 @@ class PluginManager @Inject constructor(
 
         /** 容器内插件运行时路径（aicodeDir 绑定到容器 /root/.aicode）。 */
         const val CONTAINER_RUNTIME_DIR = "/root/.aicode/plugin-runtime"
+
+        /** socket 文件独立子目录（与运行时脚本分开，便于识别与清理）。 */
+        const val CONTAINER_SOCKET_DIR = "$CONTAINER_RUNTIME_DIR/socket"
         const val RUNNER_FILE = "runner.mjs"
 
         /** 容器内工作区路径（工作区绑定到容器 /root/workspace）。 */
@@ -103,7 +105,7 @@ class PluginManager @Inject constructor(
                 reload()
             }
         }
-        // 配置文件被外部（容器内/手工）直接编辑：数秒内自动重载（含 npm 依赖变化触发 npm install）。
+        // 配置文件被外部（容器内/手工）直接编辑：数秒内自动重载（npm 依赖变化时提示手动安装）。
         scope.launch {
             configRepository.externalChanges.collect {
                 FileLogger.i(TAG, "检测到插件配置外部变更，自动重载")
@@ -126,7 +128,7 @@ class PluginManager @Inject constructor(
         }
     }
 
-    /** 重新加载插件运行时：npm install（如需）→ 重启进程 → 连接 → 同步工具。 */
+    /** 重新加载插件运行时：检测 npm 依赖（缺失仅提示，需手动安装）→ 重启进程 → 连接 → 同步工具。 */
     suspend fun reload() = reloadMutex.withLock {
         teardown()
         val cfg = configRepository.getEffectiveConfig()
@@ -151,12 +153,17 @@ class PluginManager @Inject constructor(
             }
 
             // 2. 启动插件伴生进程（优先 bun，容器内未安装则回退 node）
-            // socket 落在 plugin-runtime 目录：与容器内 AICODE_SOCK（/root/.aicode/plugin-runtime/<name>）对齐。
-            val socketName = "plugin-${UUID.randomUUID()}.sock"
-            val hostSocket = File(File(containerInstaller.aicodeDir, "plugin-runtime"), socketName)
+            // socket 落在 plugin-runtime/socket 子目录：与容器内 AICODE_SOCK（/root/.aicode/plugin-runtime/socket/plugin.sock）对齐。
+            // 固定文件名而非 UUID：宿主侧 LocalSocket 路径受 AF_UNIX sun_path 108 字节限制，
+            // 带 36 位 UUID 的宿主路径（/data/user/0/... 前缀已 66 字节）会超出；单例运行时无并发冲突。
+            val socketName = "plugin.sock"
+            val hostSocket = File(File(File(containerInstaller.aicodeDir, "plugin-runtime"), "socket"), socketName)
+            hostSocket.parentFile?.mkdirs()
+            // 清掉上次异常退出的残留 sock，避免 waitForSocket 把旧文件误判为就绪
+            hostSocket.delete()
             socketHostFile = hostSocket
             val env = mapOf(
-                "AICODE_SOCK" to "$CONTAINER_RUNTIME_DIR/$socketName",
+                "AICODE_SOCK" to "$CONTAINER_SOCKET_DIR/$socketName",
                 "AICODE_WORKSPACE" to CONTAINER_WORKSPACE
             )
             val runtimeBin = resolveRuntimeBin(projectPath, runtimeProfile)
@@ -200,7 +207,8 @@ class PluginManager @Inject constructor(
                 pluginCount = okCount,
                 failedCount = failedCount
             )
-            FileLogger.i(TAG, "插件运行时就绪：$okCount 个插件、$toolCount 个工具" + if (failedCount > 0) "、$failedCount 个加载失败" else "")
+            val pluginDetail = c.plugins.filter { it.error == null }.joinToString { "${it.name}@${it.source}" }
+            FileLogger.i(TAG, "插件运行时就绪：$okCount 个插件（$pluginDetail）、$toolCount 个工具" + if (failedCount > 0) "、$failedCount 个加载失败" else "")
         } catch (e: CancellationException) {
             // 协程取消（如工作区切换触发 collectLatest 重载）：不吞取消，交由上层感知。
             teardown()
@@ -274,7 +282,8 @@ class PluginManager @Inject constructor(
     /** 运行时是否可用（已连接且状态 RUNNING）。 */
     override fun isRunning(): Boolean = client != null && _status.value.state == PluginRuntimeStatus.State.RUNNING
 
-    /** plugins.json 声明的 npm 插件是否已在全局/项目 node_modules 安装（手动安装模式下仅提示，不自动装）。 */
+    /** plugins.json 声明的 npm 插件是否已在全局/项目 node_modules 安装（手动安装模式下仅提示，不自动装）。
+     *  以包目录内存在 package.json 判定已安装，避免 node_modules 存在但缺包时误判。 */
     private fun missingNpmDeps(projectPath: String, plugins: List<String>): List<String> {
         if (plugins.isEmpty()) return emptyList()
         val globalNm = File(containerInstaller.aicodeDir, "node_modules")
@@ -284,7 +293,7 @@ class PluginManager @Inject constructor(
             val pkgDir = { nm: File ->
                 if (pkg.startsWith("@") && parts.size >= 2) File(File(nm, parts[0]), parts[1]) else File(nm, parts[0])
             }
-            !pkgDir(globalNm).isDirectory && !pkgDir(projectNm).isDirectory
+            !File(pkgDir(globalNm), "package.json").isFile && !File(pkgDir(projectNm), "package.json").isFile
         }
     }
 
@@ -357,6 +366,7 @@ class PluginManager @Inject constructor(
         replacedTools.clear()
         runCatching { process?.destroy() }
         process = null
+        // 清理本次 socket（固定名 plugin.sock；异常退出残留由下次启动前删除）。
         socketHostFile?.let { runCatching { it.delete() } }
         socketHostFile = null
     }

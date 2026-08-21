@@ -31,7 +31,12 @@ globalThis.__aicode_sdk = sdk;
 
 // ── 2. 确保 @opencode-ai/plugin shim 可解析 ──
 ensureShim(path.join(AICODE_HOME, 'node_modules'));
-if (AICODE_WORKSPACE) ensureShim(path.join(AICODE_WORKSPACE, '.aicode', 'node_modules'));
+// 项目级 shim 仅当项目 .aicode/plugins 下存在本地插件时才创建：项目级本地插件
+// import '@opencode-ai/plugin' 时 Node 从插件文件位置向上解析 node_modules，必须在本项目
+// 放 shim；仅有全局插件（或无选中工作区）时无需在项目目录创建，避免污染工作区。
+if (AICODE_WORKSPACE && hasLocalPluginFiles(AICODE_WORKSPACE)) {
+  ensureShim(path.join(AICODE_WORKSPACE, '.aicode', 'node_modules'));
+}
 
 // ── 3. 加载插件 ──
 const { plugins, failed: failedPlugins } = await loadPlugins();
@@ -56,6 +61,8 @@ if (!AICODE_SOCK) {
 if (fs.existsSync(AICODE_SOCK)) {
   try { fs.unlinkSync(AICODE_SOCK); } catch (e) { /* 忽略 */ }
 }
+// 确保 socket 父目录存在（宿主可能未提前创建，容器内兜底自建）
+try { fs.mkdirSync(path.dirname(AICODE_SOCK), { recursive: true }); } catch (e) { /* 忽略 */ }
 const server = net.createServer((socket) => {
   setHostSocket(socket);
   const rl = readline.createInterface({ input: socket, crlfDelay: Infinity });
@@ -139,7 +146,8 @@ async function handleMessage(msg, socket) {
       if (msg.error) {
         pendingReq.reject(new Error(`[AiCode] host 请求失败 [${msg.error.code}] ${msg.error.message}`));
       } else {
-        pendingReq.resolve(msg.result || {});
+        // 注意不能用 `msg.result || {}`：result 为 false/0/空数组等合法值时会被错误替换
+        pendingReq.resolve(msg.result !== undefined ? msg.result : {});
       }
     } else {
       console.error(`收到无匹配的 host 响应 id=${id}`);
@@ -160,6 +168,7 @@ async function handleMessage(msg, socket) {
           name,
           description: t.def.description,
           parameters: toolParams(t.def),
+          plugin: t.plugin,
         }));
         writeLine(socket, { id, result: { tools: list } });
         break;
@@ -172,11 +181,13 @@ async function handleMessage(msg, socket) {
           break;
         }
         try {
+          const start = Date.now();
+          console.log(`[${t.plugin}] 执行工具 ${name} args=${JSON.stringify(args || {}).slice(0, 200)}`);
           const raw = await t.def.execute(args || {}, {
             directory: AICODE_WORKSPACE,
             worktree: AICODE_WORKSPACE,
             sessionID,
-            client: createClient(),
+            client: createClient(t.plugin),
             // opencode 工具上下文兼容：AiCode 无交互确认/进度机制，ask 自动允许（工具
             // 执行仍受宿主权限层管控）、metadata/push 为 no-op；abort 给永不中断的信号。
             abort: new AbortController().signal,
@@ -184,8 +195,10 @@ async function handleMessage(msg, socket) {
             metadata: () => {},
             push: () => {},
           });
+          console.log(`[${t.plugin}] 工具 ${name} 执行成功 耗时=${Date.now() - start}ms`);
           writeLine(socket, { id, result: { result: { status: 'success', data: normalizeResult(raw) } } });
         } catch (e) {
+          console.error(`[${t.plugin}] 工具 ${name} 执行失败: ${e?.message || e}`);
           writeLine(socket, { id, result: { result: { status: 'error', message: String(e?.message || e), code: 'PLUGIN_TOOL_ERROR' } } });
         }
         break;
@@ -264,6 +277,7 @@ async function dispatchEvent(event) {
   const handlers = hookHandlers.get('event') || [];
   for (const h of handlers) {
     try {
+      console.log(`[${h.plugin}] event: ${event?.type || ''}`);
       await h.fn({ event: event || {} });
     } catch (e) {
       console.error(`[${h.plugin}] event 处理失败: ${e?.message || e}`);
@@ -294,8 +308,9 @@ function getHostSocket() {
   return new Promise((resolve) => hostWaiters.push(() => resolve(hostSocket)));
 }
 
-/** 向 Kotlin 宿主发送 JSON-RPC 请求并等待响应。socket 未就绪时等待连接建立。 */
-function hostRequest(method, params = {}) {
+/** 向 Kotlin 宿主发送 JSON-RPC 请求并等待响应。socket 未就绪时等待连接建立。
+ *  pluginName 非空时在消息顶层携带 plugin 字段，宿主日志可区分请求来源。 */
+function hostRequest(method, params = {}, pluginName) {
   return new Promise((resolve, reject) => {
     const id = ++hostIdCounter;
     const timer = setTimeout(() => {
@@ -317,6 +332,7 @@ function hostRequest(method, params = {}) {
       }
       const msg = { jsonrpc: '2.0', id, method };
       if (params && typeof params === 'object') msg.params = params;
+      if (pluginName) msg.plugin = pluginName;
       sock.write(JSON.stringify(msg) + '\n');
     }).catch((e) => {
       hostPending.delete(id);
@@ -331,60 +347,102 @@ function unsupported(name, reason) {
   return () => Promise.reject(new Error(`[AiCode] client.${name} 不支持：${reason}`));
 }
 
-/** 构造插件可见的 SDK client：形状对齐 @opencode-ai/sdk（fields 风格 { data } 包装）。 */
-function createClient() {
+/** 构造插件可见的 SDK client：形状对齐 @opencode-ai/sdk（fields 风格 { data } 包装）。
+ *  pluginName 为发起请求的插件名，随 hostRequest 传给宿主用于日志区分。 */
+function createClient(pluginName) {
   const c = {};
-  // app：结构化日志 / 列出 agent（不支持）
+  /** 带插件名的宿主请求（消息顶层携带 plugin 字段）。 */
+  const host = (method, params = {}) => hostRequest(method, params, pluginName);
+  // app：结构化日志 / 列出可用 agent（对齐 opencode GET /agent，只读列表）
   c.app = {
     log: async ({ body } = {}) => {
-      await hostRequest('client.app.log', { body: body || {} });
+      await host('client.app.log', { body: body || {} });
       return { data: true };
     },
-    agents: unsupported('app.agents', 'AiCode 无 agent 概念'),
+    agents: async () => {
+      const r = await host('client.app.agents.list', {});
+      return { data: r };
+    },
   };
   // global：健康检查（本地实现）
   c.global = {
     health: async () => ({ data: { healthy: true, version: 'aicode' } }),
   };
-  // project：本地实现（project 参数已有同样信息）
+  // project：本地实现（project 参数已有同样信息），形状对齐 opencode SDK Project
   c.project = {
-    get: async () => ({
-      data: {
-        id: AICODE_WORKSPACE ? projectHash(AICODE_WORKSPACE) : 'global',
-        name: path.basename(AICODE_WORKSPACE || ''),
-        directory: AICODE_WORKSPACE,
-        vcs: fs.existsSync(path.join(AICODE_WORKSPACE || '', '.git')) ? 'git' : undefined,
-      },
-    }),
+    get: async () => {
+      const dir = AICODE_WORKSPACE;
+      const hasGit = fs.existsSync(path.join(dir || '', '.git'));
+      return {
+        data: {
+          id: dir ? projectHash(dir) : 'global',
+          worktree: dir || '',
+          vcsDir: hasGit ? path.join(dir, '.git') : undefined,
+          vcs: hasGit ? 'git' : undefined,
+          time: { created: 0 },
+        },
+      };
+    },
   };
-  // session：会话信息与消息
+  // session：会话信息与消息（只读 + 子代理相关写操作，签名对齐 opencode SDK）
   c.session = {
     get: async ({ path } = {}) => ({
-      data: await hostRequest('client.session.get', { id: path?.id }),
+      data: await host('client.session.get', { id: path?.id }),
     }),
     list: async () => ({
-      data: await hostRequest('client.session.list', {}),
+      data: await host('client.session.list', {}),
     }),
     messages: async ({ path } = {}) => ({
-      data: await hostRequest('client.session.messages', { id: path?.id }),
+      data: await host('client.session.messages', { id: path?.id }),
     }),
-    prompt: unsupported('session.prompt', '插件不能代发 AI 对话（安全边界）'),
-    delete: unsupported('session.delete', '插件不能删除会话'),
-    update: unsupported('session.update', '插件不能修改会话'),
+    // 子会话（子代理）列表
+    children: async ({ path } = {}) => ({
+      data: await host('client.session.children', { id: path?.id }),
+    }),
+    // 创建会话；body.parentID 存在时创建子代理会话（继承父会话 provider/model）
+    create: async ({ body } = {}) => ({
+      data: await host('client.session.create', { body: body || {} }),
+    }),
+    // 向会话发送消息：text part 拼接为消息文本；subtask part 由宿主创建子代理并派发；noReply=true 仅注入上下文不触发 AI。
+    // AiCode 的 prompt 本就异步派发（立即返回），与 opencode prompt_async 语义一致，返回 void。
+    prompt: async ({ path, body } = {}) => {
+      await host('client.session.prompt', { id: path?.id, body: body || {} });
+      return { data: undefined };
+    },
+    // opencode promptAsync 别名：AiCode 的 prompt 本就异步派发（立即返回），语义一致
+    promptAsync: async ({ path, body } = {}) => {
+      await host('client.session.prompt', { id: path?.id, body: body || {} });
+      return { data: undefined };
+    },
+    // 运行中（busy）的会话 id 列表
+    status: async () => ({
+      data: await host('client.session.status', {}),
+    }),
+    delete: async ({ path } = {}) => ({
+      data: await host('client.session.delete', { id: path?.id }),
+    }),
+    update: async ({ path, body } = {}) => ({
+      data: await host('client.session.update', { id: path?.id, body: body || {} }),
+    }),
   };
   // files：工作区文件读写。runner 与工作区同容器，Node fs 即最终事实，本地实现
   // （Sandbox 与宿主工具权限并不保护不可信插件读写容器文件系统，这里限定在工作区内防越界）。
+  // 返回形状对齐 opencode：FileContent（read）/ FileNode[]（list）。
   c.files = {
     read: async ({ path: p } = {}) => {
       const full = safeWorkspacePath(p?.filePath);
       if (full === null) throw new Error(`[AiCode] client.files.read 路径超出工作区: ${p?.filePath}`);
       const stat = await fs.promises.stat(full);
+      if (stat.isDirectory()) {
+        return { data: { type: 'text', content: '' } };
+      }
+      const buf = await fs.promises.readFile(full);
+      // 二进制检测：内容含 NUL 字节视为 binary（对齐 opencode FileContent.type）
+      const isBinary = buf.includes(0);
       return {
-        data: {
-          type: stat.isDirectory() ? 'directory' : 'file',
-          content: stat.isDirectory() ? '' : await fs.promises.readFile(full, 'utf-8'),
-          filePath: p?.filePath,
-        },
+        data: isBinary
+          ? { type: 'binary', content: buf.toString('base64'), encoding: 'base64' }
+          : { type: 'text', content: buf.toString('utf-8') },
       };
     },
     write: async ({ path: p, body } = {}) => {
@@ -398,11 +456,14 @@ function createClient() {
       const full = safeWorkspacePath(p?.dirPath || '.');
       if (full === null) throw new Error(`[AiCode] client.files.list 路径超出工作区: ${p?.dirPath}`);
       const entries = await fs.promises.readdir(full, { withFileTypes: true });
+      const rel = p?.dirPath || '.';
       return {
         data: entries.map((e) => ({
           name: e.name,
+          path: path.join(rel, e.name),
+          absolute: path.join(full, e.name),
           type: e.isDirectory() ? 'directory' : 'file',
-          path: path.join(p?.dirPath || '.', e.name),
+          ignored: false,
         })),
       };
     },
@@ -411,7 +472,7 @@ function createClient() {
   };
   // config：读宿主配置（只读）
   c.config = {
-    get: async () => ({ data: await hostRequest('client.config.get', {}) }),
+    get: async () => ({ data: await host('client.config.get', {}) }),
     set: unsupported('config.set', '插件不能改写宿主配置'),
   };
   // auth：凭据管理（安全边界：不开放给插件写入/读取）
@@ -422,7 +483,7 @@ function createClient() {
   // tui：Android 无 TUI，仅场边通知（toast/消息）有价值
   c.tui = {
     showToast: async ({ body } = {}) => {
-      await hostRequest('client.tui.toast', { body: body || {} });
+      await host('client.tui.toast', { body: body || {} });
       return { data: true };
     },
     appendPrompt: unsupported('tui.appendPrompt', 'AiCode 无命令行输入框'),
@@ -492,18 +553,18 @@ async function loadPlugins() {
   const globalCfg = readPluginsJson(path.join(AICODE_HOME, 'plugins.json'));
   const projectCfg = AICODE_WORKSPACE ? readPluginsJson(path.join(AICODE_WORKSPACE, '.aicode', 'plugins.json')) : null;
 
-  // 1. npm 全局 → 2. npm 项目 → 3. 本地全局 → 4. 本地项目
-  const npmGlobal = await loadNpmPlugins(globalCfg, 'global-npm');
-  const npmProject = projectCfg ? await loadNpmPlugins(projectCfg, 'project-npm') : { loaded: [], failed: [] };
+  // 先加载本地插件（决定同名 npm 包跳过名单）：本地插件与 npm 插件同名时本地优先，npm 包自动跳过。
   const localGlobal = await loadLocalPlugins(path.join(AICODE_HOME, 'plugins'), globalCfg, 'global-local');
   const localProject = AICODE_WORKSPACE
     ? await loadLocalPlugins(path.join(AICODE_WORKSPACE, '.aicode', 'plugins'), projectCfg, 'project-local')
     : { loaded: [], failed: [] };
+  const localNames = new Set([...localGlobal.loaded, ...localProject.loaded].map((p) => p.name));
 
-  const loaded = [];
-  for (const batch of [npmGlobal, npmProject, localGlobal, localProject]) {
-    for (const p of batch.loaded) if (p) loaded.push(p);
-  }
+  // npm 全局 → npm 项目（与本地同名者跳过，由本地插件生效）
+  const npmGlobal = await loadNpmPlugins(globalCfg, 'global-npm', localNames);
+  const npmProject = projectCfg ? await loadNpmPlugins(projectCfg, 'project-npm', localNames) : { loaded: [], failed: [] };
+
+  const loaded = [...npmGlobal.loaded, ...npmProject.loaded, ...localGlobal.loaded, ...localProject.loaded];
   const failed = [...npmGlobal.failed, ...npmProject.failed, ...localGlobal.failed, ...localProject.failed];
   return { plugins: loaded, failed };
 }
@@ -521,11 +582,12 @@ function readPluginsJson(file) {
   }
 }
 
-async function loadNpmPlugins(cfg, source) {
+async function loadNpmPlugins(cfg, source, skipNames = new Set()) {
   const loaded = [];
   const failed = [];
   for (const pkg of cfg.plugins) {
     if (cfg.disabled.includes(pkg)) continue;
+    if (skipNames.has(pkg)) continue; // 与本地插件同名：本地优先，npm 包跳过
     try {
       const mod = await awaitImport(pkg);
       const initialized = await initPluginModule(mod, pkg, source);
@@ -613,10 +675,15 @@ function initPluginModule(mod, name, source) {
   }
   const hooks = {};
   let disposeFn = null;
+  const projectInfo = {
+    id: projectHash(AICODE_WORKSPACE),
+    name: path.basename(AICODE_WORKSPACE || ''),
+    directory: AICODE_WORKSPACE,
+  };
   for (const fn of candidates) {
     const result = fn({
-      project: { id: '', name: '', directory: AICODE_WORKSPACE },
-      client: createClient(),
+      project: projectInfo,
+      client: createClient(name),
       $: sdk.$,
       directory: AICODE_WORKSPACE,
       worktree: AICODE_WORKSPACE,
@@ -637,6 +704,17 @@ function initPluginModule(mod, name, source) {
     }
   }
   return { name, source, hooks, dispose: disposeFn };
+}
+
+/** 项目 .aicode/plugins 下是否存在可加载的本地插件（.mjs/.js/.cjs 文件或目录）。 */
+function hasLocalPluginFiles(workspace) {
+  const dir = path.join(workspace, '.aicode', 'plugins');
+  if (!fs.existsSync(dir)) return false;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isFile() && /\.(mjs|js|cjs)$/.test(entry.name)) return true;
+    if (entry.isDirectory()) return true;
+  }
+  return false;
 }
 
 function ensureShim(nodeModulesDir) {

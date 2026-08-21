@@ -20,7 +20,7 @@ import kotlinx.serialization.json.put
  * 由 PluginManager 实现并注入 PluginClient，使 runner 插件能通过 `client.xxx` API 访问宿主能力。
  */
 fun interface HostApiHandler {
-    suspend fun handleRequest(method: String, params: JsonObject): JsonRpcResponse
+    suspend fun handleRequest(method: String, params: JsonObject, plugin: String?): JsonRpcResponse
 }
 
 /**
@@ -56,17 +56,18 @@ class PluginClient(
 
     /** 建立连接并拉取工具列表与插件列表。失败抛 [PluginException]。 */
     suspend fun connect(): Int {
-        FileLogger.i(TAG, "[$name] 开始连接插件运行时")
-        transport.connect()
-        // 注册 runner → Kotlin 反向请求处理器（plugin client.* API），
-        // 使 runner 插件能通过 `client.xxx` 访问宿主能力（session/config/files/log 等）。
+        // 先注册 runner → Kotlin 反向请求处理器（plugin client.* API），再建立连接：
+        // runner 在连接建立瞬间可能已发出插件初始化阶段的 client.* 请求，
+        // 若 onRequest 晚于读循环启动注册，这些请求会被回 Method not found。
         if (hostApi != null) {
-            transport.onRequest = { request ->
+            transport.onRequest = { request, plugin ->
                 val method = (request["method"] as? JsonPrimitive)?.contentOrNull ?: ""
                 val params = (request["params"] as? JsonObject) ?: buildJsonObject { }
-                hostApi.handleRequest(method, params)
+                hostApi.handleRequest(method, params, plugin)
             }
         }
+        FileLogger.i(TAG, "[$name] 开始连接插件运行时")
+        transport.connect()
         val toolCount = refreshTools()
         refreshPlugins()
         FileLogger.i(TAG, "[$name] 连接完成，发现 $toolCount 个插件工具、${plugins.size} 个插件")
@@ -76,14 +77,15 @@ class PluginClient(
     /** 重新拉取工具列表（插件重载后调用）。 */
     suspend fun refreshTools(): Int {
         val response = transport.request("tools.list")
-        val result = response.result ?: throw PluginException(message = "tools.list 无 result")
+        val result = response.result as? JsonObject ?: throw PluginException(message = "tools.list 无 result")
         tools = runCatching {
             (result["tools"] as? JsonArray)?.mapNotNull { el ->
                 val obj = el as? JsonObject ?: return@mapNotNull null
                 PluginToolDescriptor(
                     name = (obj["name"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null,
                     description = (obj["description"] as? JsonPrimitive)?.contentOrNull ?: "",
-                    parameters = obj["parameters"] as? JsonObject
+                    parameters = obj["parameters"] as? JsonObject,
+                    plugin = (obj["plugin"] as? JsonPrimitive)?.contentOrNull
                 )
             }.orEmpty()
         }.getOrElse {
@@ -94,7 +96,7 @@ class PluginClient(
 
     private suspend fun refreshPlugins() {
         val response = transport.request("plugins.list")
-        val result = response.result ?: return
+        val result = response.result as? JsonObject ?: return
         plugins = runCatching {
             (result["plugins"] as? JsonArray)?.mapNotNull { el ->
                 val obj = el as? JsonObject ?: return@mapNotNull null
@@ -114,13 +116,14 @@ class PluginClient(
 
     /** 分发修改型 hook：插件就地修改 output，返回合并后的 output 与各插件错误。 */
     suspend fun dispatchHook(hook: String, input: JsonObject?, output: JsonObject): HookDispatchResult {
+        FileLogger.d(TAG, "分发 hook $hook")
         val params = buildJsonObject {
             put("hook", hook)
             input?.let { put("input", it) }
             put("output", output)
         }
         val response = transport.request("hook.dispatch", params)
-        val result = response.result ?: throw PluginException(message = "hook.dispatch 无 result")
+        val result = response.result as? JsonObject ?: throw PluginException(message = "hook.dispatch 无 result")
         val mergedOutput = (result["output"] as? JsonObject) ?: output
         val errors = (result["errors"] as? JsonArray)?.mapNotNull { el ->
             val obj = el as? JsonObject ?: return@mapNotNull null
@@ -140,7 +143,7 @@ class PluginClient(
             put("output", buildJsonObject { })
         }
         val response = transport.request("hook.dispatch", params)
-        val result = response.result ?: throw PluginException(message = "hook.dispatch 无 result")
+        val result = response.result as? JsonObject ?: throw PluginException(message = "hook.dispatch 无 result")
         return (result["results"] as? JsonArray)?.toList().orEmpty()
     }
 
@@ -152,7 +155,7 @@ class PluginClient(
             if (sessionId != null) put("sessionID", sessionId)
         }
         val response = transport.request("tool.call", params)
-        val result = response.result ?: throw PluginException(message = "tool.call 无 result")
+        val result = response.result as? JsonObject ?: throw PluginException(message = "tool.call 无 result")
         val call = result["result"] as? JsonObject ?: return PluginCallResult("", true)
         val status = (call["status"] as? JsonPrimitive)?.contentOrNull
         return if (status == "success") {
@@ -188,11 +191,12 @@ class PluginClient(
     fun close() = transport.close()
 }
 
-/** 插件工具描述符（来自 runner 的 tools.list）。 */
+/** 插件工具描述符（来自 runner 的 tools.list）。plugin 为注册该工具的插件名（旧版 runner 缺失时为 null）。 */
 data class PluginToolDescriptor(
     val name: String,
     val description: String,
-    val parameters: JsonObject?
+    val parameters: JsonObject?,
+    val plugin: String? = null
 )
 
 /** 插件描述符（来自 runner 的 plugins.list）。error 非空表示加载失败。 */

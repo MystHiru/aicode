@@ -1,7 +1,7 @@
 /**
  * AiCode 插件 SDK：对齐 @opencode-ai/plugin 的 tool() / tool.schema / $ API。
  *
- * 差异说明（详见 docs/plugin-system-specification.md）：
+ * 差异说明：
  * - $ 为简化实现（Node child_process），不支持 Bun Shell 的内嵌 JS 表达式、流式回调等高级语法。
  * - tool.schema 产出 JSON Schema（非 Zod 对象），插件侧按对象使用即可。
  */

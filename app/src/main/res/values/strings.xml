@@ -58,6 +58,13 @@
     <string name="plugins_hook_event_desc">接收与监听 Agent 工作流运行生命周期事件</string>
     <string name="plugins_hook_small_model_desc">为轻量推理与标题生成提供专用辅助模型</string>
     <string name="plugins_hook_dispose_desc">插件卸载或环境销毁时的资源清理钩子</string>
+    <string name="plugins_hook_tool_definition_desc">工具定义发送给模型前改写描述与参数 Schema</string>
+    <string name="plugins_hook_system_transform_desc">系统提示词组装后注入额外上下文</string>
+    <string name="plugins_hook_messages_transform_desc">模型请求发送前裁剪历史消息、脱敏敏感数据</string>
+    <string name="plugins_hook_compacting_desc">上下文压缩生成摘要前注入需跨压缩保留的上下文</string>
+    <string name="plugins_hook_shell_env_desc">Bash 工具/终端执行命令前注入环境变量</string>
+    <string name="plugins_hook_permission_ask_desc">高危工具权限弹窗前自动化允许或拒绝</string>
+    <string name="plugins_hook_command_before_desc">Slash 命令执行前拦截并改写参数</string>
     <string name="plugins_enable_plugin">启用插件</string>
     <string name="settings_container">容器与镜像</string>
     <string name="settings_log_no_files">还没有日志文件</string>

@@ -65,7 +65,7 @@ class UdsTransport(
      * 由 PluginClient 在 connect 前注册，用于实现插件 client.* API（session/config/files 等宿主能力）。
      */
     @Volatile
-    var onRequest: (suspend (JsonObject) -> JsonRpcResponse)? = null
+    var onRequest: (suspend (JsonObject, String?) -> JsonRpcResponse)? = null
 
     @Volatile private var socket: LocalSocket? = null
     @Volatile private var reader: BufferedReader? = null
@@ -197,6 +197,8 @@ class UdsTransport(
     private fun handleIncomingRequest(request: JsonObject) {
         val id = (request["id"] as? JsonPrimitive)?.longOrNull
         val method = (request["method"] as? JsonPrimitive)?.contentOrNull ?: ""
+        // runner 在消息顶层携带 plugin 字段（发起请求的插件名），旧版 runner 缺失时为 null
+        val plugin = (request["plugin"] as? JsonPrimitive)?.contentOrNull
         val handler = onRequest
         if (handler == null) {
             FileLogger.w(TAG, "收到 runner 请求 $method 但无处理器")
@@ -205,8 +207,12 @@ class UdsTransport(
         }
         scope.launch {
             try {
-                val resp = handler(request)
-                writeLine(json.encodeToString(JsonRpcResponse.serializer(), resp))
+                FileLogger.d(TAG, "← [$method] id=$id" + if (plugin != null) " plugin=$plugin" else "")
+                val resp = handler(request, plugin)
+                // handler 返回的响应不含请求 id（业务层不感知 id），补齐后 runner 才能配对 pending 请求
+                val reply = JsonRpcResponse(id = id, result = resp.result, error = resp.error)
+                FileLogger.d(TAG, "← [$method] id=$id 响应: ${reply.result?.toString()?.take(2000)}")
+                writeLine(json.encodeToString(JsonRpcResponse.serializer(), reply))
             } catch (e: Exception) {
                 FileLogger.w(TAG, "处理 runner 请求 $method 异常: ${e.message}")
                 replyError(id, -32603, "AICODE internal error: ${e.message}")

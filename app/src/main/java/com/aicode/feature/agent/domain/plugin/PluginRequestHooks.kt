@@ -13,6 +13,7 @@ import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 
 /** chat.params hook 解析出的请求参数（插件未写入的字段为 null）。 */
@@ -65,19 +66,64 @@ suspend fun PluginHookGateway.applyAuthLoader(provider: String): Map<String, Str
     return merged
 }
 
-/** 分发 chat.message：插件可改写用户输入，返回改写后的 content（未改写则原样返回）。 */
-suspend fun PluginHookGateway.applyChatMessage(sessionId: String, messageId: String, content: String): String {
+/**
+ * 分发 chat.message：插件可改写用户输入（落库前），返回改写后的文本。
+ * 形状对齐 opencode：input 含 sessionID/messageID/agent/model，output 为 { message: UserMessage, parts: Part[] }。
+ * 插件改写 parts 中的 text part，取回时用第一个 text part 的文本。
+ */
+suspend fun PluginHookGateway.applyChatMessage(
+    sessionId: String,
+    messageId: String,
+    content: String,
+    agent: String? = null,
+    providerId: String? = null,
+    model: String? = null
+): String {
+    val now = System.currentTimeMillis() / 1000
     val result = dispatchHook(
         "chat.message",
         buildJsonObject {
             put("sessionID", sessionId)
             put("messageID", messageId)
+            agent?.let { put("agent", it) }
+            if (!providerId.isNullOrBlank() && !model.isNullOrBlank()) {
+                putJsonObject("model") {
+                    put("providerID", providerId)
+                    put("modelID", model)
+                }
+            }
         },
         buildJsonObject {
-            putJsonObject("message") { put("role", "user"); put("content", content) }
+            // message 为 UserMessage 形状（info），parts 为 TextPart 数组（opencode 语义：改写 parts）
+            putJsonObject("message") {
+                put("id", messageId)
+                put("sessionID", sessionId)
+                put("role", "user")
+                putJsonObject("time") { put("created", now) }
+                put("agent", agent ?: "")
+                putJsonObject("model") {
+                    put("providerID", providerId ?: "")
+                    put("modelID", model ?: "")
+                }
+            }
+            putJsonArray("parts") {
+                add(buildJsonObject {
+                    put("id", "prt-$messageId")
+                    put("sessionID", sessionId)
+                    put("messageID", messageId)
+                    put("type", "text")
+                    put("text", content)
+                })
+            }
         }
     )
-    return ((result.output["message"] as? JsonObject)?.get("content") as? JsonPrimitive)?.contentOrNull ?: content
+    val outParts = (result.output["parts"] as? JsonArray).orEmpty()
+    return outParts.mapNotNull { el ->
+        val obj = el as? JsonObject ?: return@mapNotNull null
+        if ((obj["type"] as? JsonPrimitive)?.content == "text") {
+            (obj["text"] as? JsonPrimitive)?.contentOrNull
+        } else null
+    }.filter { it.isNotBlank() }.joinToString("\n").ifBlank { content }
 }
 
 /** 分发 chat.params：插件可改写推理参数，返回解析后的参数。 */

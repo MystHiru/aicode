@@ -77,10 +77,12 @@ class SessionUseCase @Inject constructor(
         chatSessionDao.getSubSessionsByParentOnce(id).forEach { child ->
             agentMessageDao.deleteBySession(child.id)
             chatSessionDao.delete(child.id)
+            pluginGateway.notifyEvent("session.deleted", buildJsonObject { put("sessionID", child.id) })
             deleted.add(child.id)
         }
         agentMessageDao.deleteBySession(id)
         chatSessionDao.delete(id)
+        pluginGateway.notifyEvent("session.deleted", buildJsonObject { put("sessionID", id) })
         return deleted
     }
 

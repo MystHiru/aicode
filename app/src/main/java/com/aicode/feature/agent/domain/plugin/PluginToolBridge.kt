@@ -35,6 +35,9 @@ class PluginToolBridge(
         const val TAG = "PluginToolBridge"
     }
 
+    /** 日志用插件名标签（旧版 runner 无 plugin 字段时为空串）。 */
+    private val pluginTag: String get() = descriptor.plugin?.let { " [plugin=$it]" } ?: ""
+
     override val name: String = descriptor.name
 
     override val description: String =
@@ -60,19 +63,22 @@ class PluginToolBridge(
     }
 
     override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
+        val start = System.currentTimeMillis()
         return try {
-            FileLogger.d(TAG, "调用插件工具 $name args=${args.keys}")
+            FileLogger.d(TAG, "调用插件工具 $name$pluginTag args=${args.keys}")
             val call = client.callTool(name, JsonObject(args))
             if (call.isError) {
+                FileLogger.w(TAG, "插件工具 $name$pluginTag 返回错误 耗时=${System.currentTimeMillis() - start}ms: ${call.text.take(200)}")
                 ToolResult.Error(call.text)
             } else {
+                FileLogger.d(TAG, "插件工具 $name$pluginTag 执行成功 耗时=${System.currentTimeMillis() - start}ms")
                 ToolResult.Success(JsonPrimitive(call.text))
             }
         } catch (e: PluginException) {
-            FileLogger.e(TAG, "插件工具调用失败: $name", e)
+            FileLogger.e(TAG, "插件工具调用失败: $name$pluginTag 耗时=${System.currentTimeMillis() - start}ms", e)
             ToolResult.Error("插件工具执行失败: ${e.message}")
         } catch (e: Exception) {
-            FileLogger.e(TAG, "插件工具调用异常: $name", e)
+            FileLogger.e(TAG, "插件工具调用异常: $name$pluginTag 耗时=${System.currentTimeMillis() - start}ms", e)
             ToolResult.Error("插件工具执行异常: ${e.message}")
         }
     }
@@ -81,19 +87,22 @@ class PluginToolBridge(
         args: Map<String, JsonElement>,
         context: com.aicode.feature.agent.domain.model.AgentContext
     ): ToolResult {
+        val start = System.currentTimeMillis()
         return try {
-            FileLogger.d(TAG, "调用插件工具 $name args=${args.keys} sessionId=${context.sessionId}")
+            FileLogger.d(TAG, "调用插件工具 $name$pluginTag args=${args.keys} sessionId=${context.sessionId}")
             val call = client.callTool(name, JsonObject(args), context.sessionId)
             if (call.isError) {
+                FileLogger.w(TAG, "插件工具 $name$pluginTag 返回错误 耗时=${System.currentTimeMillis() - start}ms: ${call.text.take(200)}")
                 ToolResult.Error(call.text)
             } else {
+                FileLogger.d(TAG, "插件工具 $name$pluginTag 执行成功 耗时=${System.currentTimeMillis() - start}ms")
                 ToolResult.Success(JsonPrimitive(call.text))
             }
         } catch (e: PluginException) {
-            FileLogger.e(TAG, "插件工具调用失败: $name", e)
+            FileLogger.e(TAG, "插件工具调用失败: $name$pluginTag 耗时=${System.currentTimeMillis() - start}ms", e)
             ToolResult.Error("插件工具执行失败: ${e.message}")
         } catch (e: Exception) {
-            FileLogger.e(TAG, "插件工具调用异常: $name", e)
+            FileLogger.e(TAG, "插件工具调用异常: $name$pluginTag 耗时=${System.currentTimeMillis() - start}ms", e)
             ToolResult.Error("插件工具执行异常: ${e.message}")
         }
     }

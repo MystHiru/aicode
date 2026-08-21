@@ -1,7 +1,7 @@
 /**
  * AiCode 插件类型声明：对齐 @opencode-ai/plugin 的公开 API 表面。
- * 与官方类型存在差异处（model/provider 为字符串、无 Part 概念等）已在
- * docs/plugin-system-specification.md 的兼容性总览中标注。
+ * 与官方类型存在差异处（model/provider 为字符串、无 Part 概念等）见
+ * app/src/main/assets/docs/plugins.md。
  */
 
 export interface Project {
@@ -63,14 +63,165 @@ export const $: Shell
 export const shell: Shell
 
 // ── SDK Client API（对齐 @opencode-ai/sdk fields 风格，{ data } 包装）──
+// 返回结构对齐 opencode v1 契约（Session / {info, parts} 消息 / FileNode / FileContent / Agent / Project / Config）。
 
 export interface ClientResponse<T> {
   data: T
 }
 
+/** opencode v1 Session（AiCode 映射：slug=id、projectID=工作区 hash、version="1"）。 */
+export interface Session {
+  id: string
+  slug: string
+  projectID: string
+  directory: string
+  parentID?: string
+  title: string
+  version: string
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+  }
+  model?: { id: string; providerID: string; variant?: string }
+  agent?: string
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: { read: number; write: number }
+  }
+  metadata?: Record<string, unknown>
+}
+
+/** opencode 消息 info（User | Assistant 的并集，AiCode 映射见 plugins.md）。 */
+export interface MessageInfo {
+  id: string
+  sessionID: string
+  role: "user" | "assistant"
+  time: { created: number; completed?: number }
+  parentID?: string
+  agent?: string
+  model?: { providerID: string; modelID: string; variant?: string }
+  modelID?: string
+  providerID?: string
+  mode?: string
+  path?: { cwd: string; root: string }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: { read: number; write: number }
+  }
+}
+
+export interface TextPart {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "text"
+  text: string
+}
+
+export interface ReasoningPart {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "reasoning"
+  text: string
+  time: {
+    start: number
+    end?: number
+  }
+}
+
+export interface ToolPart {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "tool"
+  callID: string
+  tool: string
+  state:
+    | {
+        status: "completed"
+        input: Record<string, unknown>
+        output: string
+        title: string
+        metadata: Record<string, unknown>
+        time: { start: number; end: number }
+      }
+    | {
+        status: "error"
+        input: Record<string, unknown>
+        error: string
+        time: { start: number; end: number }
+      }
+}
+
+export type Part = TextPart | ReasoningPart | ToolPart
+
+/** opencode session.messages 的元素：{ info, parts }。 */
+export interface MessageWithParts {
+  info: MessageInfo
+  parts: Part[]
+}
+
+/** session.prompt 的 parts 输入（AiCode 支持 text 与 subtask 两类）。 */
+export type PartInput =
+  | { type: "text"; text: string }
+  | { type: "subtask"; prompt: string; description?: string; agent?: string }
+
+export interface FileNode {
+  name: string
+  path: string
+  absolute: string
+  type: "file" | "directory"
+  ignored: boolean
+}
+
+export interface FileContent {
+  type: "text" | "binary"
+  content: string
+  diff?: string
+  patch?: unknown
+  encoding?: "base64"
+  mimeType?: string
+}
+
+export interface Agent {
+  name: string
+  description?: string
+  mode: "subagent" | "primary" | "all"
+  builtIn: boolean
+  permission: {
+    edit: "ask" | "allow" | "deny"
+    bash: Record<string, "ask" | "allow" | "deny">
+  }
+  tools: Record<string, boolean>
+  options: Record<string, unknown>
+}
+
+export interface Project {
+  id: string
+  worktree: string
+  vcsDir?: string
+  vcs?: "git"
+  time: { created: number; initialized?: number }
+}
+
+/** opencode Config 最小子集（AiCode 仅提供 model/small_model）。 */
+export interface Config {
+  model?: string
+  small_model?: string
+  [key: string]: unknown
+}
+
 export interface AppClient {
   log(body: { body: { service: string; level: "debug" | "info" | "warn" | "error"; message: string; extra?: Record<string, unknown> } }): Promise<ClientResponse<boolean>>
-  agents(): Promise<unknown>
+  agents(): Promise<ClientResponse<Agent[]>>
 }
 
 export interface GlobalClient {
@@ -78,28 +229,32 @@ export interface GlobalClient {
 }
 
 export interface ProjectClient {
-  get(): Promise<ClientResponse<{ id: string; name: string; directory: string; vcs?: string }>>
+  get(): Promise<ClientResponse<Project>>
 }
 
 export interface SessionClient {
-  get(body: { path: { id: string } }): Promise<ClientResponse<Record<string, unknown>>>
-  list(): Promise<ClientResponse<{ sessions: Record<string, unknown>[] }>>
-  messages(body: { path: { id: string } }): Promise<ClientResponse<{ messages: Record<string, unknown>[] }>>
-  prompt(...args: unknown[]): Promise<never>
-  delete(...args: unknown[]): Promise<never>
-  update(...args: unknown[]): Promise<never>
+  get(body: { path: { id: string } }): Promise<ClientResponse<Session>>
+  list(): Promise<ClientResponse<Session[]>>
+  children(body: { path: { id: string } }): Promise<ClientResponse<Session[]>>
+  create(body: { body?: { title?: string; parentID?: string } }): Promise<ClientResponse<Session>>
+  messages(body: { path: { id: string } }): Promise<ClientResponse<MessageWithParts[]>>
+  prompt(body: { path: { id: string }; body: { parts?: PartInput[]; noReply?: boolean; model?: { providerID: string; modelID: string } } }): Promise<ClientResponse<undefined>>
+  promptAsync(body: { path: { id: string }; body: { parts?: PartInput[]; noReply?: boolean; model?: { providerID: string; modelID: string } } }): Promise<ClientResponse<undefined>>
+  status(): Promise<ClientResponse<Record<string, { type: "busy" | "idle" }>>>
+  delete(body: { path: { id: string } }): Promise<ClientResponse<boolean>>
+  update(body: { path: { id: string }; body: { title?: string } }): Promise<ClientResponse<Session>>
 }
 
 export interface FilesClient {
-  read(body: { path: { filePath: string } }): Promise<ClientResponse<{ type: string; content: string; filePath: string }>>
+  read(body: { path: { filePath: string } }): Promise<ClientResponse<FileContent>>
   write(body: { path: { filePath: string }; body: { data?: string } }): Promise<ClientResponse<boolean>>
-  list(body: { path: { dirPath: string } }): Promise<ClientResponse<{ name: string; type: string; path: string }[]>>
+  list(body: { path: { dirPath: string } }): Promise<ClientResponse<FileNode[]>>
   edit(...args: unknown[]): Promise<never>
   search(...args: unknown[]): Promise<never>
 }
 
 export interface ConfigClient {
-  get(): Promise<ClientResponse<Record<string, unknown>>>
+  get(): Promise<ClientResponse<Config>>
   set(...args: unknown[]): Promise<never>
 }
 
@@ -167,8 +322,14 @@ export interface Hooks {
   event?: (input: { event: { type: string; properties?: Record<string, unknown> } }) => Promise<void> | void
   tool?: Record<string, ToolDefinition>
   "chat.message"?: (
-    input: { sessionID: string; messageID?: string },
-    output: { message: { role: string; content: string } },
+    input: {
+      sessionID: string
+      agent?: string
+      model?: { providerID: string; modelID: string }
+      messageID?: string
+      variant?: string
+    },
+    output: { message: MessageInfo; parts: Part[] },
   ) => Promise<void> | void
   "chat.headers"?: (
     input: { sessionID: string; model: string; provider: string },
@@ -190,6 +351,7 @@ export interface Hooks {
   ) => Promise<void> | void
   "experimental.chat.messages.transform"?: (
     input: { sessionID?: string },
+    // AiCode 扩展：output.messages 为 AiCode 消息模型数组（非 opencode {info, parts}[]，避免有损转换）
     output: { messages: unknown[] },
   ) => Promise<void> | void
   "tool.execute.before"?: (
@@ -218,7 +380,7 @@ export interface Hooks {
   ) => Promise<void> | void
   "command.execute.before"?: (
     input: { command: string; sessionID: string; arguments: string },
-    output: { args: string },
+    output: { parts: Part[] },
   ) => Promise<void> | void
   provider?: {
     id: string

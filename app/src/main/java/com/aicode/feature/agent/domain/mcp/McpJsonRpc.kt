@@ -32,7 +32,8 @@ data class JsonRpcNotification(
 @Serializable
 data class JsonRpcResponse(
     val id: Long? = null,
-    val result: JsonObject? = null,
+    /** result 可为任意 JSON 值（对象/数组/布尔等），JSON-RPC 规范如此。 */
+    val result: JsonElement? = null,
     val error: JsonRpcError? = null,
     val jsonrpc: String = JSONRPC_VERSION
 )

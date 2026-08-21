@@ -58,6 +58,13 @@
     <string name="plugins_hook_event_desc">Listen to agent workflow lifecycle events</string>
     <string name="plugins_hook_small_model_desc">Provide small auxiliary model for tasks like title generation</string>
     <string name="plugins_hook_dispose_desc">Resource cleanup hook when plugin or environment is disposed</string>
+    <string name="plugins_hook_tool_definition_desc">Rewrite tool descriptions and parameter schemas before sending to model</string>
+    <string name="plugins_hook_system_transform_desc">Inject extra context into the assembled system prompt</string>
+    <string name="plugins_hook_messages_transform_desc">Trim or redact history messages before sending to model</string>
+    <string name="plugins_hook_compacting_desc">Inject context to preserve across context compaction</string>
+    <string name="plugins_hook_shell_env_desc">Inject environment variables before command execution</string>
+    <string name="plugins_hook_permission_ask_desc">Automate allow or deny before high-risk tool permission prompt</string>
+    <string name="plugins_hook_command_before_desc">Intercept and rewrite slash command arguments before execution</string>
     <string name="plugins_enable_plugin">Enable Plugin</string>
     <string name="settings_container">Container &amp; Images</string>
     <string name="settings_log_no_files">No log files yet</string>

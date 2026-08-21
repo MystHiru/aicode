@@ -30,6 +30,9 @@ log-*.txt
 *.apk
 /test
 
+# opencode 源码（外部参考用，不进版本库）
+/opencode/
+
 # Python（模型数据更新脚本）
 __pycache__/
 *.pyc

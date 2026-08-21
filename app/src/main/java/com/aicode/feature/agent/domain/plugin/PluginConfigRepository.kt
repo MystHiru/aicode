@@ -40,7 +40,7 @@ data class PluginConfig(
     val plugins: List<String> = emptyList(),
     val disabled: List<String> = emptyList()
 ) {
-    /** 合并两个配置：plugins 取并集（项目优先、去重），disabled 取并集。 */
+    /** 合并两个配置：plugins 取并集（去重），disabled 取并集（任一来源禁用即禁用，无优先级覆盖）。 */
     fun mergedWith(other: PluginConfig): PluginConfig = PluginConfig(
         plugins = (plugins + other.plugins).distinct(),
         disabled = (disabled + other.disabled).distinct()
@@ -53,7 +53,7 @@ data class PluginConfig(
  * - 项目级：`workspacePath/.aicode/plugins.json`（随工作区走，可 git 追踪）。
  *
  * 生效配置 = 全局 + 项目合并，项目级优先。同时监听 package.json 变动（npm 依赖声明），
- * 由 PluginManager 据此触发 npm install。
+ * 由 PluginManager 据此提示手动安装 npm 依赖后重载。
  */
 @Singleton
 class PluginConfigRepository @Inject constructor(
@@ -170,7 +170,7 @@ class PluginConfigRepository @Inject constructor(
         return DEFAULT_JSON
     }
 
-    /** package.json 变动检测：npm 依赖声明变化时广播（PluginManager 据此触发 npm install）。 */
+    /** package.json 变动检测：npm 依赖声明变化时广播（PluginManager 据此提示手动安装后重载）。 */
     private var pkgStamp: FileStamp? = null
     private var pkgInitialized = false
 

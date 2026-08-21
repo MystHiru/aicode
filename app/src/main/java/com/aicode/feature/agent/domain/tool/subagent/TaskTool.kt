@@ -4,6 +4,7 @@ import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.data.local.dao.AgentMessageDao
 import com.aicode.feature.agent.data.local.dao.ChatSessionDao
 import com.aicode.feature.agent.domain.model.AgentContext
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.agent.domain.session.SessionUseCase
 import com.aicode.feature.agent.domain.subagent.SubAgentEvent
 import com.aicode.feature.agent.domain.subagent.SubAgentEventBus
@@ -42,7 +43,8 @@ class TaskTool @Inject constructor(
     private val sessionUseCase: SessionUseCase,
     private val chatSessionDao: ChatSessionDao,
     private val agentMessageDao: AgentMessageDao,
-    private val eventBus: SubAgentEventBus
+    private val eventBus: SubAgentEventBus,
+    private val pluginGateway: PluginHookGateway
 ) : AbstractContextualTool() {
 
     private companion object {
@@ -89,6 +91,12 @@ class TaskTool @Inject constructor(
             type = ParameterType.STRING,
             description = "给子代理的完整指令（create 必填），将作为它的第一条用户消息；子代理看到的是全新上下文",
             required = false
+        ),
+        "subagentType" to ToolParameter(
+            name = "subagentType",
+            type = ParameterType.STRING,
+            description = "子代理类型（兼容 opencode task 协议：general / build / plan / custom）；AiCode 暂无 agent 定义系统，仅记录到子会话，默认 subagent",
+            required = false
         )
     )
 
@@ -126,16 +134,27 @@ class TaskTool @Inject constructor(
             ?.replace(Regex("\\s+"), " ")
             ?.take(TASK_DESCRIPTION_MAX)
             ?: "子代理任务"
+        val subagentType = (args["subagentType"] as? JsonPrimitive)?.contentOrNull?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: "subagent"
 
         // 创建子代理会话
         val subSession = sessionUseCase.newSubSessionEntity(
             title = description,
             parentId = parentSessionId,
             parent = parentSession,
-            subagentType = "subagent"
+            subagentType = subagentType
         )
         sessionUseCase.upsertSession(subSession)
         val subSessionId = subSession.id
+
+        // 通知插件：子代理会话已创建（与普通会话创建一致，额外带 parentID/subagentType）
+        pluginGateway.notifyEvent("session.created", buildJsonObject {
+            put("sessionID", subSessionId)
+            put("parentID", parentSessionId)
+            put("subagentType", subagentType)
+            put("title", description)
+        })
 
         // 通知 ViewModel 在子会话上启动 AI 工作流
         eventBus.emit(
