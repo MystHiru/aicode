@@ -19,15 +19,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -57,8 +54,6 @@ import compose.icons.FeatherIcons
 import compose.icons.feathericons.Activity
 import compose.icons.feathericons.Package
 import compose.icons.feathericons.Tool
-import compose.icons.feathericons.Trash2
-import compose.icons.feathericons.X
 import compose.icons.feathericons.Zap
 import kotlinx.serialization.json.JsonObject
 
@@ -70,8 +65,7 @@ import kotlinx.serialization.json.JsonObject
 fun PluginDetailDialog(
     plugin: PluginDescriptor,
     tools: List<PluginToolDescriptor> = emptyList(),
-    onDismiss: () -> Unit,
-    onDelete: () -> Unit
+    onDismiss: () -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(if (plugin.tools.isNotEmpty()) 0 else 1) }
 
@@ -95,25 +89,13 @@ fun PluginDetailDialog(
                 .fillMaxWidth()
                 .heightIn(max = screenHeight * 0.88f)
         ) {
-            // ── 顶部标题栏 ──
+            // ── 顶部标题栏（无关闭/删除按钮，靠下滑或点遮罩关闭）──
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = FeatherIcons.X,
-                        contentDescription = stringResource(R.string.common_cancel),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
                 Text(
                     text = stringResource(R.string.plugins_detail_title),
                     style = MaterialTheme.typography.titleMedium.copy(
@@ -124,18 +106,6 @@ fun PluginDetailDialog(
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = FeatherIcons.Trash2,
-                        contentDescription = stringResource(R.string.common_delete),
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
             }
 
             Column(
@@ -199,9 +169,16 @@ fun PluginDetailDialog(
                                 ) {
                                     McpPill(
                                         text = sourceLabel(plugin.source),
-                                        textColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                        textColor = sourcePillPalette(plugin.source).first,
+                                        backgroundColor = sourcePillPalette(plugin.source).second
                                     )
+                                    plugin.version?.let {
+                                        McpPill(
+                                            text = stringResource(R.string.plugins_version, it),
+                                            textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                        )
+                                    }
                                     McpPill(
                                         text = statusText,
                                         textColor = statusColor,
@@ -213,7 +190,8 @@ fun PluginDetailDialog(
 
                         if (isFailed) {
                             Spacer(modifier = Modifier.height(10.dp))
-                            Box(
+                            PluginErrorText(
+                                text = plugin.error.orEmpty(),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(
@@ -221,13 +199,7 @@ fun PluginDetailDialog(
                                         RoundedCornerShape(8.dp)
                                     )
                                     .padding(horizontal = 10.dp, vertical = 8.dp)
-                            ) {
-                                Text(
-                                    text = plugin.error.orEmpty(),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
+                            )
                         }
                     }
                 }
@@ -325,32 +297,6 @@ fun PluginDetailDialog(
                             }
                         }
                     }
-                }
-
-                Spacer(modifier = Modifier.height(Spacing.lg))
-
-                // ── 底部删除按钮 ──
-                OutlinedButton(
-                    onClick = onDelete,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(Radius.md),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    ),
-                    border = ButtonDefaults.outlinedButtonBorder.copy(
-                        brush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.error.copy(alpha = 0.5f))
-                    )
-                ) {
-                    Icon(
-                        imageVector = FeatherIcons.Trash2,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = stringResource(R.string.plugins_delete_btn),
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
-                    )
                 }
 
                 Spacer(modifier = Modifier.height(Spacing.lg))

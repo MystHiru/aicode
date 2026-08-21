@@ -237,6 +237,7 @@ async function handleMessage(msg, socket) {
         const list = plugins.map((p) => ({
           name: p.name,
           source: p.source,
+          version: p.version || null,
           tools: [...tools.entries()].filter(([, t]) => t.plugin === p.name).map(([n]) => n),
           hooks: Object.keys(p.hooks),
         }));
@@ -591,14 +592,34 @@ async function loadNpmPlugins(cfg, source, skipNames = new Set()) {
     try {
       const mod = await awaitImport(pkg);
       const initialized = await initPluginModule(mod, pkg, source);
-      if (initialized) loaded.push(initialized);
-      else failed.push({ name: pkg, source, error: '插件模块没有导出插件函数' });
+      if (initialized) {
+        initialized.version = readNpmPluginVersion(pkg);
+        loaded.push(initialized);
+      } else {
+        failed.push({ name: pkg, source, error: '插件模块没有导出插件函数' });
+      }
     } catch (e) {
       console.error(`[${pkg}] npm 插件加载失败: ${e?.message || e}`);
       failed.push({ name: pkg, source, error: e?.message || String(e) });
     }
   }
   return { loaded, failed };
+}
+
+/** 读取 npm 插件包版本：全局/项目 node_modules 下 package.json 的 version 字段。 */
+function readNpmPluginVersion(pkg) {
+  const candidates = [
+    path.join(AICODE_HOME, 'node_modules', pkg, 'package.json'),
+    AICODE_WORKSPACE ? path.join(AICODE_WORKSPACE, '.aicode', 'node_modules', pkg, 'package.json') : null,
+  ];
+  for (const file of candidates) {
+    if (!file) continue;
+    try {
+      const pkgJson = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      if (pkgJson.version) return String(pkgJson.version);
+    } catch (e) { /* 忽略 */ }
+  }
+  return null;
 }
 
 async function loadLocalPlugins(dir, cfg, source) {
@@ -621,14 +642,28 @@ async function loadLocalPlugins(dir, cfg, source) {
         continue;
       }
       const initialized = await initPluginModule(mod, name, source);
-      if (initialized) loaded.push(initialized);
-      else failed.push({ name, source, error: '插件模块没有导出插件函数' });
+      if (initialized) {
+        initialized.version = entry.isDirectory() ? readLocalPluginVersion(full) : null;
+        loaded.push(initialized);
+      } else {
+        failed.push({ name, source, error: '插件模块没有导出插件函数' });
+      }
     } catch (e) {
       console.error(`[${name}] 本地插件加载失败: ${e?.message || e}`);
       failed.push({ name, source, error: e?.message || String(e) });
     }
   }
   return { loaded, failed };
+}
+
+/** 读取本地目录型插件的版本（目录下 package.json 的 version 字段）；单文件插件无版本。 */
+function readLocalPluginVersion(dir) {
+  try {
+    const pkgJson = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8'));
+    return pkgJson.version ? String(pkgJson.version) : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 function resolveDirEntry(dir) {

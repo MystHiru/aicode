@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -51,7 +52,9 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicode.core.theme.Spacing
@@ -627,11 +630,7 @@ fun SettingsScreen(
         PluginDetailDialog(
             plugin = plugin,
             tools = viewModel.getPluginTools(plugin.name),
-            onDismiss = { selectedPlugin = null },
-            onDelete = {
-                pluginToDelete = plugin
-                selectedPlugin = null
-            }
+            onDismiss = { selectedPlugin = null }
         )
     }
 
@@ -768,7 +767,8 @@ internal fun SettingsMenu(
             SettingsRow(
                 icon = FeatherIcons.Package,
                 title = stringResource(SettingsSection.Plugins.titleRes),
-                onClick = { onOpen(SettingsSection.Plugins) }
+                onClick = { onOpen(SettingsSection.Plugins) },
+                trailing = { BetaBadge() }
             )
         }
 
@@ -895,4 +895,23 @@ internal fun SettingsMenu(
         }
     }
 
+}
+
+/** 插件入口 Beta 徽章：红色实心小方章，置于行标题右侧。 */
+@Composable
+private fun BetaBadge() {
+    Box(
+        modifier = Modifier
+            .background(Color(0xFFEF4444), RoundedCornerShape(4.dp))
+            .padding(horizontal = 6.dp, vertical = 1.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.settings_plugins_beta),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.Bold,
+                fontSize = 10.sp
+            ),
+            color = Color.White
+        )
+    }
 }

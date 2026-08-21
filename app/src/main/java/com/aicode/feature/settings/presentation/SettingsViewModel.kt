@@ -713,10 +713,14 @@ class SettingsViewModel @Inject constructor(
 
     /** 重载插件运行时（扫描插件目录 + npm 安装 + 重启伴生进程 + 同步工具）。 */
     fun reloadPlugins() {
+        if (_pluginReloading.value) return
         viewModelScope.launch {
             _pluginReloading.value = true
             try {
-                pluginManager.reload()
+                // reload 含进程启动/阻塞式 socket 等待/工具拉取，放 IO 线程避免卡 UI（含失败路径 20s 超时）
+                withContext(Dispatchers.IO) {
+                    pluginManager.reload()
+                }
                 _pluginList.value = pluginManager.currentPlugins()
             } finally {
                 _pluginReloading.value = false
@@ -729,7 +733,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _pluginReloading.value = true
             try {
-                pluginManager.deletePlugin(plugin)
+                withContext(Dispatchers.IO) {
+                    pluginManager.deletePlugin(plugin)
+                }
                 _pluginList.value = pluginManager.currentPlugins()
             } finally {
                 _pluginReloading.value = false
@@ -742,7 +748,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _pluginReloading.value = true
             try {
-                pluginManager.setPluginDisabled(plugin, disabled)
+                withContext(Dispatchers.IO) {
+                    pluginManager.setPluginDisabled(plugin, disabled)
+                }
                 _pluginList.value = pluginManager.currentPlugins()
             } finally {
                 _pluginReloading.value = false

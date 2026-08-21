@@ -103,6 +103,7 @@ class PluginClient(
                 PluginDescriptor(
                     name = (obj["name"] as? JsonPrimitive)?.contentOrNull ?: "",
                     source = (obj["source"] as? JsonPrimitive)?.contentOrNull ?: "",
+                    version = (obj["version"] as? JsonPrimitive)?.contentOrNull,
                     tools = (obj["tools"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty(),
                     hooks = (obj["hooks"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty(),
                     error = (obj["error"] as? JsonPrimitive)?.contentOrNull
@@ -199,10 +200,11 @@ data class PluginToolDescriptor(
     val plugin: String? = null
 )
 
-/** 插件描述符（来自 runner 的 plugins.list）。error 非空表示加载失败。 */
+/** 插件描述符（来自 runner 的 plugins.list）。version 为插件包版本（npm 读 package.json，本地目录型读其 package.json，单文件插件为 null）。error 非空表示加载失败。 */
 data class PluginDescriptor(
     val name: String,
     val source: String,
+    val version: String? = null,
     val tools: List<String>,
     val hooks: List<String>,
     val error: String? = null

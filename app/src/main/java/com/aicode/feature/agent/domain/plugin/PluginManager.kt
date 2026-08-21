@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import java.io.File
@@ -32,13 +33,15 @@ import javax.inject.Inject
 import javax.inject.Provider
 import javax.inject.Singleton
 
-/** 插件运行时状态（供设置页展示）。 */
+/** 插件运行时状态（供设置页展示）。runtimeBin 为实际运行插件进程的运行时（node/bun），socketPath 为当前 UDS socket 宿主路径。 */
 data class PluginRuntimeStatus(
     val state: State,
     val toolCount: Int = 0,
     val pluginCount: Int = 0,
     val failedCount: Int = 0,
-    val error: String? = null
+    val error: String? = null,
+    val runtimeBin: String? = null,
+    val socketPath: String? = null
 ) {
     enum class State { STARTING, RUNNING, FAILED, DISABLED }
 }
@@ -82,6 +85,9 @@ class PluginManager @Inject constructor(
         /** 等待 socket 文件就绪的最长时间（runner 启动 + 插件加载 + npm 包解析）。 */
         const val SOCKET_WAIT_MS = 20_000L
         const val SOCKET_POLL_MS = 200L
+
+        /** 通知插件 dispose 的超时：超出直接销毁进程，避免个别插件慢清理拖慢重载。 */
+        const val DISPOSE_TIMEOUT_MS = 5_000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -205,7 +211,9 @@ class PluginManager @Inject constructor(
                 PluginRuntimeStatus.State.RUNNING,
                 toolCount = toolCount,
                 pluginCount = okCount,
-                failedCount = failedCount
+                failedCount = failedCount,
+                runtimeBin = runtimeBin,
+                socketPath = "~${CONTAINER_SOCKET_DIR.removePrefix("/root")}/$socketName"
             )
             val pluginDetail = c.plugins.filter { it.error == null }.joinToString { "${it.name}@${it.source}" }
             FileLogger.i(TAG, "插件运行时就绪：$okCount 个插件（$pluginDetail）、$toolCount 个工具" + if (failedCount > 0) "、$failedCount 个加载失败" else "")
@@ -348,7 +356,9 @@ class PluginManager @Inject constructor(
     private suspend fun teardown() {
         val c = client
         if (c != null) {
-            runCatching { c.dispose() }
+            // dispose 限时：个别插件 dispose 内做网络上报/慢清理会拖到 30s 超时，
+            // 冷启动路径（client 为 null）本就跳过 dispose 直接销毁进程，这里对齐其速度。
+            runCatching { withTimeout(DISPOSE_TIMEOUT_MS) { c.dispose() } }
             runCatching { c.close() }
             client = null
         }

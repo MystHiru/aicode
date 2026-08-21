@@ -1,6 +1,11 @@
 package com.aicode.feature.settings.presentation.component
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
@@ -22,7 +28,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -96,31 +104,76 @@ internal fun PluginsSection(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = Spacing.lg, vertical = 11.dp)
+                    .padding(horizontal = Spacing.lg, vertical = 12.dp)
             ) {
-                Text(
-                    text = runtimeStatusText(status),
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = runtimeStatusColor(status)
-                )
-                val summary = buildString {
-                    append(stringResource(R.string.plugins_runtime_summary, status.pluginCount, status.toolCount))
-                    if (status.failedCount > 0) {
-                        append(" · ")
-                        append(stringResource(R.string.plugins_failed_count, status.failedCount))
+                // 状态行：状态圆点 + 状态名 + 运行时 Pill（右侧）
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(runtimeStatusColor(status), CircleShape)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = runtimeStatusText(status),
+                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = runtimeStatusColor(status),
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (status.state == PluginRuntimeStatus.State.RUNNING) {
+                        McpPill(
+                            text = status.runtimeBin ?: "node",
+                            textColor = MaterialTheme.colorScheme.primary,
+                            backgroundColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                        )
                     }
                 }
-                Text(
-                    text = summary,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                status.error?.let {
-                    Spacer(modifier = Modifier.height(4.dp))
+
+                // 统计 Pills：插件数 / 工具数 / 失败数
+                if (status.pluginCount > 0 || status.toolCount > 0 || status.failedCount > 0) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        McpPill(
+                            text = stringResource(R.string.plugins_count_pill, status.pluginCount),
+                            textColor = MaterialTheme.colorScheme.primary,
+                            backgroundColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                        )
+                        McpPill(
+                            text = stringResource(R.string.plugins_tools_count, status.toolCount),
+                            textColor = MaterialTheme.colorScheme.secondary,
+                            backgroundColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f)
+                        )
+                        if (status.failedCount > 0) {
+                            McpPill(
+                                text = stringResource(R.string.plugins_failed_count, status.failedCount),
+                                textColor = MaterialTheme.colorScheme.error,
+                                backgroundColor = MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+                            )
+                        }
+                    }
+                }
+
+                status.socketPath?.let {
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = it,
+                        text = stringResource(R.string.plugins_runtime_socket, it),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                status.error?.let {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    PluginErrorText(
+                        text = it,
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
@@ -219,8 +272,8 @@ private fun PluginRow(
                 ) {
                     McpPill(
                         text = sourceLabel(plugin.source),
-                        textColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                        textColor = sourcePillPalette(plugin.source).first,
+                        backgroundColor = sourcePillPalette(plugin.source).second
                     )
                     if (plugin.tools.isNotEmpty()) {
                         McpPill(
@@ -240,10 +293,9 @@ private fun PluginRow(
 
                 if (isFailed) {
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(
+                    PluginErrorText(
                         text = plugin.error.orEmpty(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.fillMaxWidth(),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -273,7 +325,7 @@ private fun PluginRow(
 
 @Composable
 private fun runtimeStatusText(status: PluginRuntimeStatus): String = when (status.state) {
-    PluginRuntimeStatus.State.RUNNING -> "● ${stringResource(R.string.plugins_state_running)}"
+    PluginRuntimeStatus.State.RUNNING -> stringResource(R.string.plugins_state_running)
     PluginRuntimeStatus.State.STARTING -> stringResource(R.string.plugins_state_starting)
     PluginRuntimeStatus.State.FAILED -> stringResource(R.string.plugins_state_failed)
     PluginRuntimeStatus.State.DISABLED -> stringResource(R.string.plugins_state_disabled)
@@ -293,4 +345,40 @@ internal fun sourceLabel(source: String): String = when (source) {
     "global-local" -> stringResource(R.string.plugins_source_global_local)
     "project-local" -> stringResource(R.string.plugins_source_project_local)
     else -> source
+}
+
+/** 来源 Pill 配色：文字区分 npm/本地，颜色区分作用域（项目级用主题色突出，全局为中性灰）。 */
+@Composable
+internal fun sourcePillPalette(source: String): Pair<Color, Color> {
+    val isProject = source.startsWith("project")
+    return if (isProject) {
+        MaterialTheme.colorScheme.primary to MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant to MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+    }
+}
+
+/** 可点击复制的错误文本：点击把完整错误信息写入剪贴板并提示。 */
+@Composable
+internal fun PluginErrorText(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: TextStyle = MaterialTheme.typography.bodySmall,
+    color: Color = MaterialTheme.colorScheme.error,
+    maxLines: Int = Int.MAX_VALUE,
+    overflow: TextOverflow = TextOverflow.Ellipsis
+) {
+    val context = LocalContext.current
+    Text(
+        text = text,
+        modifier = modifier.clickable {
+            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("plugin_error", text))
+            Toast.makeText(context, context.getString(R.string.crash_copied), Toast.LENGTH_SHORT).show()
+        },
+        style = style,
+        color = color,
+        maxLines = maxLines,
+        overflow = overflow
+    )
 }
