@@ -53,102 +53,37 @@ AiCode is an AI-powered coding assistant that runs natively on Android. It integ
 
 ## Features
 
-- **AI Agent** — Supports Anthropic (Claude), OpenAI (GPT), Gemini, and other providers. Deeply interacts with the dev environment via a tool system (file operations, shell execution, terminal management, web search, etc.). Supports streaming output, context compression, and multi-session management
-- **Built-in Terminal** — Based on Termux components + PRoot Alpine Linux container, providing a full Linux command-line environment with background persistence and multi-tab management
-- **Remote SSH Mode** — Connect to a remote SSH server as the execution backend. Commands via exec channel, file I/O via SFTP, terminal via shell channel, with auto-reconnect and status indicator
-- **MCP Protocol** — Model Context Protocol client, connecting to local (stdio) or remote (HTTP) MCP servers to dynamically extend tool capabilities
-- **Git Integration** — Built-in visual Git operations (status/branches/commits/tags), with long-press action menus
-- **Remote Sync** — SFTP / FTP workspace sync, with a built-in FTP server for desktop access
-- **Markdown Rendering** — Real-time Markdown rendering in AI conversations, with code highlighting
-- **Custom Prompts** — System prompts support user-defined overrides, preserved across app upgrades
-
-## Tech Stack
-
-| Category | Technology |
-|----------|------------|
-| Language | Kotlin |
-| UI | Jetpack Compose + Material 3 |
-| DI | Hilt (Dagger) |
-| Database | Room |
-| Network | Retrofit + OkHttp |
-| Async | Kotlin Coroutines / Flow |
-| Terminal | Termux terminal-emulator + terminal-view |
-| Container | PRoot + Alpine Linux rootfs |
-| Remote SSH | SSHJ (exec channel + SFTP + shell channel) |
-| Crypto | BouncyCastle (bcprov-jdk18on, sshj X25519 key exchange dependency) |
-| FTP | Commons Net |
+- **AI Agent** — Supports OpenAI / Anthropic / Gemini compatible protocols with multiple providers; built-in tools for file read/write, shell execution, background terminal, code & web search, image recognition, asking the user, etc.; streaming output with automatic context compression for long conversations
+- **Checkpoints & Undo** — File snapshots are recorded before the agent modifies code; one-tap rollback from the conversation, restoring code, chat history, or both
+- **Built-in Terminal & Container** — A local Linux container built on Termux components and PRoot with a built-in Alpine image; supports importing custom rootfs images and mounting host directories; terminals can run in the background
+- **Remote SSH Mode** — Use a remote server as the execution backend: commands via exec channel, files via SFTP, terminal via shell channel — operate on remote projects directly from your phone
+- **MCP Protocol** — Connect to local (stdio) or remote (HTTP) MCP servers to dynamically extend AI tool capabilities
+- **Skills & Auto Memory** — Global/project-level skills and long-term memory let the AI reuse experience and conventions across sessions
+- **Git Integration** — Built-in Git status, branches, commits, diffs and tag management, with sign-off and credential configuration
+- **Workspace Sync** — SFTP / FTP synchronization with a built-in FTP server for desktop file management
+- **Backup & Restore** — Encrypted export/import of provider configs, credentials, chat history and workspace files
+- **Markdown Rendering** — Real-time Markdown rendering with code highlighting
+- **Custom Prompts** — System prompts can be overridden by the user and survive app upgrades
 
 ## Getting Started
 
-### Prerequisites
+| Item | Description |
+|------|-------------|
+| System requirements | Android 8.0+ (API 26), arm64-v8a / x86_64 |
+| Download | [GitHub Releases](https://github.com/jieapi/aicode/releases/latest): pick `armsolo` for real devices, `x86solo` for emulators, `universal` for both |
+| Quick start | Settings → AI Providers to add a model → Container & Image to pick local or SSH → new session and chat |
+| Changelog | [Releases](https://github.com/jieapi/aicode/releases) (all versions & notes) |
+| User guide | [GitHub Wiki](https://github.com/jieapi/aicode/wiki) |
 
-- Android 8.0+ (API 26) arm64-v8a or x86_64 device
-- JDK 17
+## Star
 
-### Build
+If AiCode is helpful to you, give it a [Star](https://github.com/jieapi/aicode) — it helps more developers discover the project.
 
-```bash
-# Single-flavor smoke build (recommended for daily dev, only builds universal debug APK)
-./gradlew :app:assembleUniversalDebug
+## Feedback & Contribution
 
-# Release (requires signing config; builds all three flavors)
-./gradlew assembleRelease
-
-# Build a single flavor
-./gradlew assembleArmsoloRelease     # arm64-v8a only + arm image
-./gradlew assembleX86soloRelease     # x86_64 only + x86 image
-./gradlew assembleUniversalRelease   # arm64-v8a + x86_64, both images
-
-# Release AAB
-./gradlew bundleRelease
-```
-
-> Output path for all three flavors: `app/build/outputs/apk/<flavor>/release/app-<flavor>-release.apk`
-
-<details>
-<summary>Release signing configuration</summary>
-
-Add to `app/keystore.properties`:
-
-```properties
-storeFile=aicode.jks
-storePassword=your_password
-keyAlias=your_alias
-keyPassword=your_key_password
-```
-
-</details>
-
-### Test
-
-```bash
-./gradlew :app:testUniversalDebugUnitTest    # Single-flavor unit tests (recommended)
-./gradlew test                                # All-flavor unit tests
-```
-
-## Project Structure
-
-```
-app/src/main/java/com/aicode/
-├── core/                # Core infrastructure (FileLogger, db/MigrationLoader, theme, common components)
-├── feature/
-│   ├── agent/           # AI Agent (prompts, MCP, tool registry, multi-provider adapters, slash commands)
-│   ├── git/             # Git integration (status/branches/commits/tags)
-│   ├── settings/        # App settings (providers, container, MCP, remote, logs, etc.)
-│   ├── terminal/        # Terminal emulation & session management (local Termux + remote SSH)
-│   └── workspace/       # Workspace & document management (local + remote SFTP/FTP)
-├── AIEditorApp.kt       # Application entry point
-└── MainActivity.kt      # Main Activity
-```
-
-## Known Limitations
-
-- `targetSdk` is locked to 28 to bypass Android 10+ W^X policy, enabling PRoot execution.
-- Release builds are split into three variants by CPU/container image:
-  - `armsolo`: `arm64-v8a` only + arm image (recommended for physical devices)
-  - `x86solo`: `x86_64` only + x86 image (emulators / Chromebooks)
-  - `universal`: `arm64-v8a` + `x86_64`, both images (universal but larger)
-  - Container images are selected by system ABI; installing the wrong architecture package will fail to run PRoot.
+- **Bug reports**: open an [Issue](https://github.com/jieapi/aicode/issues) with reproduction steps, device model and OS version
+- **Feature requests**: discuss your ideas in [Issues](https://github.com/jieapi/aicode/issues) first
+- **Contributing**: pull requests are welcome via [Pull Requests](https://github.com/jieapi/aicode/pulls)
 
 ## Acknowledgements
 
