@@ -144,7 +144,15 @@ class TerminalKeepaliveService : Service() {
                 action = ACTION_ENABLE_PERSISTENT
             }
             runCatching { context.startService(intent) }
-                .onFailure { FileLogger.e(TAG, "enablePersistent startService failed", it) }
+                .onFailure {
+                    // 后台冷启动时系统拒绝 startService（Android 8+ 后台执行限制），属预期场景，
+                    // 保活会在 App 回到前台或 WorkManager 兜底时恢复，不必刷全栈吓人日志。
+                    if (it.message?.contains("app is in background") == true) {
+                        FileLogger.i(TAG, "enablePersistent skipped: app in background, keepalive deferred")
+                    } else {
+                        FileLogger.e(TAG, "enablePersistent startService failed", it)
+                    }
+                }
         }
 
         /** 关闭常驻保活（幂等）。仅在确曾开启过时调用，避免为关闭而凭空拉起 Service。 */
