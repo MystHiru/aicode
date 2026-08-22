@@ -22,7 +22,9 @@ data class OpenAIChatMessage(
     val tool_calls: List<OpenAIToolCall>? = null,
     val tool_call_id: String? = null,
     /** DeepSeek 思考模式要求将上轮 assistant 消息的 reasoning_content 原样回传，否则 400。 */
-    val reasoning_content: String? = null
+    val reasoning_content: String? = null,
+    /** 部分第三方兼容服务（如 mimo）用顶层 reasoning 而非 reasoning_content 传思考内容。 */
+    val reasoning: String? = null
 )
 
 data class OpenAIToolDefinition(

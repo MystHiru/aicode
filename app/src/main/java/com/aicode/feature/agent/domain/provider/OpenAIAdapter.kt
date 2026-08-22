@@ -181,6 +181,7 @@ class OpenAIAdapter @Inject constructor(
         val content = message?.content.asTextContent()
         val toolCalls = message?.tool_calls?.map { convertToToolCall(it) } ?: emptyList()
         val reasoning = message?.reasoning_content?.takeIf { it.isNotEmpty() }
+            ?: message?.reasoning?.takeIf { it.isNotEmpty() }
         val usage = response.usage
 
         return AIResponse(content = content, toolCalls = toolCalls, stopReason = finishReason, reasoning = reasoning, inputTokens = usage?.prompt_tokens ?: 0, outputTokens = usage?.completion_tokens ?: 0, cachedInputTokens = usage?.prompt_tokens_details?.cached_tokens ?: 0)
@@ -425,13 +426,19 @@ class OpenAIAdapter @Inject constructor(
                                     emit(AIStreamChunk.TextDelta(c))
                                 }
                             }
-                            // 思考过程增量（reasoning_content）：仅 UI 实时展示，不计入正文
-                            // （思考不落库，重试时重新流出即可，无重复文本风险），但收到即说明连接已活，取消首字节超时。
-                            delta.get("reasoning_content")?.takeIf { !it.isJsonNull }?.asString?.let { r ->
-                                if (r.isNotEmpty()) {
-                                    if (firstByteReceived.compareAndSet(false, true)) watchdog.cancel()
-                                    emit(AIStreamChunk.ReasoningDelta(r))
-                                }
+                            // 思考过程增量：标准 OpenAI 走 reasoning_content，部分第三方兼容服务
+                            // （如 mimo）走顶层 reasoning 或 reasoning_details（reasoning.text 数组）。
+                            // 仅 UI 实时展示，不计入正文（思考不落库，重试时重新流出即可，无重复文本风险），
+                            // 但收到即说明连接已活，取消首字节超时。
+                            val reasoningText = delta.get("reasoning_content")?.takeIf { !it.isJsonNull }?.asString
+                                ?: delta.get("reasoning")?.takeIf { !it.isJsonNull }?.asString
+                                ?: delta.get("reasoning_details")?.takeIf { it.isJsonArray }?.asJsonArray
+                                    ?.joinToString("") { el ->
+                                        el.asJsonObject.get("text")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+                                    }
+                            if (!reasoningText.isNullOrEmpty()) {
+                                if (firstByteReceived.compareAndSet(false, true)) watchdog.cancel()
+                                emit(AIStreamChunk.ReasoningDelta(reasoningText))
                             }
                             // 工具调用增量：按 index 聚合 id/name/arguments 片段。
                             // 有些模型（如 DeepSeek）在后续增量 chunk 中只传 arguments 片段，
