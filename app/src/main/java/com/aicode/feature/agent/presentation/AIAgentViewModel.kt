@@ -408,9 +408,12 @@ class AIAgentViewModel @Inject constructor(
 
             _currentWorkspace.collectLatest { path ->
                 if (path.isBlank()) return@collectLatest
+                val recent = sessionUseCase.getFirstSessionOfWorkspace(path)
+                // 每次启动/切工作区先回收多余的空会话（保留最近会话），
+                // 防止「最近会话非空则新建空白会话」在用户切回旧会话场景下堆积空会话。
+                if (recent != null) sessionUseCase.recycleEmptySessions(path, keepId = recent.id)
                 // 复用最近一个空会话（未发送过消息），避免反复启动/切工作区堆积空会话；
                 // 最近会话已有内容则新建空白会话（与 newSession 防堆积策略一致）。
-                val recent = sessionUseCase.getFirstSessionOfWorkspace(path)
                 _currentSessionId.value = if (recent != null && sessionUseCase.isSessionEmpty(recent.id)) {
                     recent.id
                 } else {
