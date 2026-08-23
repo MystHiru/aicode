@@ -54,6 +54,13 @@ class UdsTransport(
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 独立 scope：处理 runner → Kotlin 反向请求（client.* API）。
+     * 与 [scope] 分离，避免 [close] 时取消正在处理的 in-flight 请求导致响应写不出去、runner 端永久挂起。
+     * [close] 流程：先等 [requestScope] 所有子任务完成，再 cancel [scope]。
+     */
+    private val requestScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val idCounter = AtomicLong(0)
     private val writeLock = Any()
 
@@ -124,14 +131,39 @@ class UdsTransport(
         if (closed) return
         closed = true
         FileLogger.i(TAG, "关闭插件 UDS 传输")
-        scope.cancel()
+        // 先关 socket（读循环会自然退出），再等 in-flight 请求处理完成，最后 cancel scope。
+        // 顺序保证：读循环不再产生新请求；in-flight 请求能写完响应；scope.cancel 兜底未完成的。
+        // readLoop 阻塞在 reader.readLine() 持有 BufferedReader 内部锁。LocalSocket close 不会给
+        // 阻塞中的 read 传递 EOS（与 TCP socket 不同，AOSP 只关 fd），必须先 shutdownInput()
+        // （底层 Os.shutdown(fd, SHUT_RD)）让 readLine 立即收到 EOF 返回、释放锁，
+        // 否则 reader.close() 会一直等锁永久卡死。
+        runCatching { socket?.shutdownInput() }
         runCatching { writer?.close() }
-        runCatching { reader?.close() }
+        FileLogger.d(TAG, "close: writer 已关闭")
         runCatching { socket?.close() }
+        FileLogger.d(TAG, "close: socket 已关闭")
+        runCatching { reader?.close() }
+        FileLogger.d(TAG, "close: reader 已关闭")
         writer = null
         reader = null
         socket = null
+        // 等 in-flight 请求处理完成（最多 5s，超时强制 cancel）
+        val requestJob = requestScope.coroutineContext[kotlinx.coroutines.Job]
+        if (requestJob != null) {
+            val activeChildren = requestJob.children.count { it.isActive }
+            val t0 = System.currentTimeMillis()
+            FileLogger.d(TAG, "等待 in-flight 请求完成（活跃子协程 $activeChildren 个）")
+            runCatching {
+                kotlinx.coroutines.runBlocking {
+                    withTimeoutOrNull(5_000L) { requestJob.children.forEach { it.join() } }
+                }
+            }
+            FileLogger.d(TAG, "in-flight 等待结束，耗时 ${System.currentTimeMillis() - t0}ms")
+        }
+        requestScope.cancel()
+        scope.cancel()
         failAllPending("transport 已关闭")
+        FileLogger.d(TAG, "UDS 传输关闭完成")
     }
 
     private fun ensureConnected() {
@@ -205,7 +237,7 @@ class UdsTransport(
             replyError(id, -32601, "Method not found: $method")
             return
         }
-        scope.launch {
+        requestScope.launch {
             try {
                 FileLogger.d(TAG, "← [$method] id=$id" + if (plugin != null) " plugin=$plugin" else "")
                 val resp = handler(request, plugin)
@@ -213,6 +245,11 @@ class UdsTransport(
                 val reply = JsonRpcResponse(id = id, result = resp.result, error = resp.error)
                 FileLogger.d(TAG, "← [$method] id=$id 响应: ${reply.result?.toString()?.take(2000)}")
                 writeLine(json.encodeToString(JsonRpcResponse.serializer(), reply))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // close() 等待超时后会 cancel requestScope，这里吞掉 CancellationException，
+                // 避免污染读循环（外层 readLoop 不应因单个请求处理失败而退出）。
+                FileLogger.w(TAG, "处理 runner 请求 $method 被取消（transport 关闭中）")
+                throw e
             } catch (e: Exception) {
                 FileLogger.w(TAG, "处理 runner 请求 $method 异常: ${e.message}")
                 replyError(id, -32603, "AICODE internal error: ${e.message}")

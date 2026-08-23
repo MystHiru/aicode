@@ -176,6 +176,17 @@ internal fun PluginsSection(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+                status.invalidConfigs.forEach { issue ->
+                    Spacer(modifier = Modifier.height(8.dp))
+                    PluginErrorText(
+                        text = stringResource(
+                            R.string.plugins_config_invalid,
+                            if (issue.scope == "project") stringResource(R.string.plugins_scope_project) else stringResource(R.string.plugins_scope_global),
+                            issue.error
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         }
 
@@ -219,8 +230,18 @@ private fun PluginRow(
     val rowBackground = if (light) Color.White else MaterialTheme.colorScheme.surface
 
     val isFailed = plugin.error != null
-    val statusText = if (isFailed) stringResource(R.string.plugins_load_failed) else stringResource(R.string.plugins_loaded)
-    val statusColor = if (isFailed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary
+    val statusText = when {
+        plugin.missing -> stringResource(R.string.plugins_missing)
+        plugin.disabled -> stringResource(R.string.plugins_disabled_title)
+        isFailed -> stringResource(R.string.plugins_load_failed)
+        else -> stringResource(R.string.plugins_loaded)
+    }
+    val statusColor = when {
+        plugin.missing -> MaterialTheme.colorScheme.error
+        plugin.disabled -> MaterialTheme.colorScheme.onSurfaceVariant
+        isFailed -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.tertiary
+    }
 
     SwipeToDeleteRow(
         onDelete = onDelete,

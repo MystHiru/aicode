@@ -25,6 +25,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -48,10 +49,15 @@ import androidx.compose.ui.unit.sp
 import com.aicode.R
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.feature.agent.domain.plugin.PluginAuthCallbackResult
+import com.aicode.feature.agent.domain.plugin.PluginAuthMethod
+import com.aicode.feature.agent.domain.plugin.PluginAuthorizeResult
 import com.aicode.feature.agent.domain.plugin.PluginDescriptor
 import com.aicode.feature.agent.domain.plugin.PluginToolDescriptor
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Activity
+import compose.icons.feathericons.ChevronRight
+import compose.icons.feathericons.Key
 import compose.icons.feathericons.Package
 import compose.icons.feathericons.Tool
 import compose.icons.feathericons.Zap
@@ -65,9 +71,23 @@ import kotlinx.serialization.json.JsonObject
 fun PluginDetailDialog(
     plugin: PluginDescriptor,
     tools: List<PluginToolDescriptor> = emptyList(),
+    authMethods: List<PluginAuthMethod> = emptyList(),
+    authLoggedIn: Boolean = false,
+    authBusy: Boolean = false,
+    disabled: Boolean = false,
+    onToggleDisabled: (Boolean) -> Unit = {},
+    onAuthorize: suspend (Int) -> PluginAuthorizeResult = { PluginAuthorizeResult(error = "未实现") },
+    onSubmit: suspend (String?) -> PluginAuthCallbackResult = { PluginAuthCallbackResult("failed") },
+    onSaveApiKey: suspend (String) -> Boolean = { false },
+    onLogout: suspend () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(if (plugin.tools.isNotEmpty()) 0 else 1) }
+    var showAuthDialog by remember { mutableStateOf(false) }
+    // 乐观更新：点击立即切换视觉状态，配置修改与 reload 异步执行（耗时数秒不阻塞 UI）；
+    // 用 remember 而非参数派生，避免 reload 完成后列表刷新导致开关回跳。
+    var enabledState by remember { mutableStateOf(!disabled) }
+    val authProvider = plugin.auth?.provider
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val configuration = LocalConfiguration.current
@@ -75,8 +95,18 @@ fun PluginDetailDialog(
     val flingFix = rememberSheetFlingFix(sheetState)
 
     val isFailed = plugin.error != null
-    val statusText = if (isFailed) stringResource(R.string.plugins_load_failed) else stringResource(R.string.plugins_loaded)
-    val statusColor = if (isFailed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary
+    val statusText = when {
+        plugin.missing -> stringResource(R.string.plugins_missing)
+        plugin.disabled -> stringResource(R.string.plugins_disabled_title)
+        isFailed -> stringResource(R.string.plugins_load_failed)
+        else -> stringResource(R.string.plugins_loaded)
+    }
+    val statusColor = when {
+        plugin.missing -> MaterialTheme.colorScheme.error
+        plugin.disabled -> MaterialTheme.colorScheme.onSurfaceVariant
+        isFailed -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.tertiary
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -204,6 +234,47 @@ fun PluginDetailDialog(
                     }
                 }
 
+                // ── 启用/禁用开关（切换后重载运行时）──
+                Spacer(modifier = Modifier.height(Spacing.md))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(if (disabled) R.string.plugins_disabled_title else R.string.plugins_enabled_title),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = stringResource(R.string.plugins_toggle_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = enabledState,
+                        onCheckedChange = { newEnabled ->
+                            enabledState = newEnabled
+                            onToggleDisabled(!newEnabled)
+                        },
+                        enabled = !plugin.missing
+                    )
+                }
+
+                // ── 插件认证卡片（插件声明 auth 时显示）──
+                if (authProvider != null) {
+                    Spacer(modifier = Modifier.height(Spacing.md))
+                    PluginAuthCard(
+                        provider = authProvider,
+                        loggedIn = authLoggedIn,
+                        methodCount = authMethods.size,
+                        onClick = { showAuthDialog = true }
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(Spacing.md))
 
                 // ── Tab 切换（工具 / Hooks） ──
@@ -301,6 +372,90 @@ fun PluginDetailDialog(
 
                 Spacer(modifier = Modifier.height(Spacing.lg))
             }
+        }
+    }
+
+    if (showAuthDialog && authProvider != null) {
+        PluginAuthDialog(
+            provider = authProvider,
+            methods = authMethods,
+            loggedIn = authLoggedIn,
+            busy = authBusy,
+            onAuthorize = onAuthorize,
+            onSubmit = onSubmit,
+            onSaveApiKey = onSaveApiKey,
+            onLogout = onLogout,
+            onDismiss = { showAuthDialog = false }
+        )
+    }
+}
+
+/** 插件认证入口卡片：展示 provider 与登录状态，点击打开登录弹窗。 */
+@Composable
+private fun PluginAuthCard(
+    provider: String,
+    loggedIn: Boolean,
+    methodCount: Int,
+    onClick: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(Radius.lg),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .background(
+                        color = if (loggedIn) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(10.dp)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = FeatherIcons.Key,
+                    contentDescription = null,
+                    tint = if (loggedIn) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(Spacing.md))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.plugins_auth_card_title),
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = stringResource(
+                        if (loggedIn) R.string.plugins_auth_card_logged_in
+                        else if (methodCount > 0) R.string.plugins_auth_card_not_logged_in
+                        else R.string.plugins_auth_card_no_methods,
+                        provider
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Icon(
+                imageVector = FeatherIcons.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

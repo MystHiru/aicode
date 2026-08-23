@@ -1,0 +1,6 @@
+{
+  "xai": "https://api.x.ai/",
+  "mistral": "https://api.mistral.ai/",
+  "togetherai": "https://api.together.xyz/",
+  "cerebras": "https://api.cerebras.ai/"
+}

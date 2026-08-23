@@ -11,7 +11,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -83,6 +85,10 @@ class PluginConfigRepository @Inject constructor(
     private val globalState = MutableStateFlow<String?>(null)
     private val projectStates = ConcurrentHashMap<String, MutableStateFlow<String?>>()
     private val mutex = Mutex()
+
+    /** 配置解析失败（JSON 语法错误等）：宿主侧检测，供设置页在 runner 未启动时也能展示警告。 */
+    private val _issues = MutableStateFlow<List<PluginConfigIssue>>(emptyList())
+    val issues: StateFlow<List<PluginConfigIssue>> = _issues.asStateFlow()
 
     // ── 外部修改监听：容器内/手工直接编辑配置文件后，刷新缓存并广播给 PluginManager 重载 ──
 
@@ -208,25 +214,27 @@ class PluginConfigRepository @Inject constructor(
         file.writeText(json)
     }
 
-    /** 当前工作区生效的合并配置（全局 + 项目，项目优先）。 */
-    suspend fun getEffectiveConfig(): PluginConfig {
+    private suspend fun getEffectiveConfigInternal(): PluginConfig {
         val path = workspaceRepository.currentPath()
         ensureGlobalLoaded()
         ensureProjectLoaded(path)
-        val global = parse(globalState.value ?: DEFAULT_JSON)
-        val project = parse(getProjectState(path).value ?: DEFAULT_JSON)
+        val global = parse(globalState.value ?: DEFAULT_JSON, "global")
+        val project = parse(getProjectState(path).value ?: DEFAULT_JSON, "project")
         return global.mergedWith(project)
     }
 
+    /** 当前工作区生效的合并配置（全局 + 项目，项目优先）。 */
+    suspend fun getEffectiveConfig(): PluginConfig = getEffectiveConfigInternal()
+
     suspend fun getGlobalConfig(): PluginConfig {
         ensureGlobalLoaded()
-        return parse(globalState.value ?: DEFAULT_JSON)
+        return parse(globalState.value ?: DEFAULT_JSON, "global")
     }
 
     suspend fun getProjectConfig(): PluginConfig {
         val path = workspaceRepository.currentPath()
         ensureProjectLoaded(path)
-        return parse(getProjectState(path).value ?: DEFAULT_JSON)
+        return parse(getProjectState(path).value ?: DEFAULT_JSON, "project")
     }
 
     suspend fun setGlobalConfig(config: PluginConfig) {
@@ -361,11 +369,14 @@ class PluginConfigRepository @Inject constructor(
         return PRETTY_JSON.encodeToString(JsonObject.serializer(), root)
     }
 
-    private fun parse(raw: String): PluginConfig {
+    private fun parse(raw: String, scope: String): PluginConfig {
         val root = runCatching { JSON.parseToJsonElement(raw).jsonObject }.getOrElse {
-            FileLogger.w(TAG, "插件配置 JSON 解析失败: ${it.message}")
+            FileLogger.w(TAG, "插件配置 JSON 解析失败($scope): ${it.message}")
+            _issues.value = _issues.value.filterNot { it.scope == scope } +
+                PluginConfigIssue(scope, it.message ?: "JSON 解析失败")
             return PluginConfig()
         }
+        _issues.value = _issues.value.filterNot { it.scope == scope }
         val plugins = (root["plugins"] as? JsonArray)?.mapNotNull {
             (it as? JsonPrimitive)?.contentOrNull
         } ?: emptyList()

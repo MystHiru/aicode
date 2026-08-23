@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.plugin
 
+import com.aicode.feature.settings.domain.model.ProviderType
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -25,45 +26,122 @@ data class PluginRequestParams(
     val options: Map<String, JsonElement> = emptyMap()
 )
 
-/** 分发 chat.headers：插件可注入/改写请求头，返回最终 headers。 */
+/** auth.loader 的解析结果。headers 为插件返回的认证头（含 apiKey 转认证头）；baseURL/hasFetch 供请求代理用。 */
+data class AuthLoaderResult(
+    val headers: Map<String, String> = emptyMap(),
+    val baseURL: String? = null,
+    val hasFetch: Boolean = false
+)
+
+/** chat.headers 分发结果：headers 为合并后的请求头；pluginBaseUrl 为插件 auth.loader 声明的 baseURL（opencode 语义：覆盖 provider 端点）。 */
+data class ChatHeadersResult(
+    val headers: Map<String, String> = emptyMap(),
+    val pluginBaseUrl: String? = null
+)
+
+/** 分发 chat.headers：插件可注入/改写请求头，返回最终 headers。
+ *  input 对齐 opencode：sessionID/agent/model/provider/message；output 为 { headers }。
+ *  provider 为 ProviderType 名（chat.headers 用）；providerId 为 AIProvider 配置 id，
+ *  非空时额外分发 auth.loader 并合并认证头（loader 的 apiKey 按 providerType 转认证头）。
+ *  同时带回插件 auth.loader 声明的 baseURL，供调用方构造请求 URL。 */
 suspend fun PluginHookGateway.applyChatHeaders(
     sessionId: String?,
     model: String,
     provider: String,
-    headers: Map<String, String> = emptyMap()
-): Map<String, String> {
+    headers: Map<String, String> = emptyMap(),
+    providerId: String? = null,
+    baseUrl: String? = null,
+    providerType: ProviderType? = null,
+    agent: String? = null,
+    message: JsonObject? = null
+): ChatHeadersResult {
     val result = dispatchHook(
         "chat.headers",
         buildJsonObject {
             put("sessionID", sessionId ?: "")
-            put("model", model)
-            put("provider", provider)
+            put("agent", agent ?: "")
+            putJsonObject("model") {
+                put("providerID", providerId ?: "")
+                put("modelID", model)
+            }
+            putJsonObject("provider") {
+                put("source", "config")
+                putJsonObject("info") {
+                    put("id", providerId ?: "")
+                    providerType?.let { put("type", it.name) }
+                }
+                putJsonObject("options") { }
+            }
+            if (message != null) put("message", message)
         },
         buildJsonObject { putJsonObject("headers") { headers.forEach { (k, v) -> put(k, v) } } }
     )
     val out = (result.output["headers"] as? JsonObject)
         ?.mapNotNull { (k, v) -> (v as? JsonPrimitive)?.contentOrNull?.let { k to it } }
         ?.toMap()
-    // auth.loader（返回型）：各插件动态提供认证头（临时凭证/签名），合并进请求头。
-    // 返回的键值对优先级低于用户手动配置的 API Key（authorization 为单独参数，不受影响）。
     val merged = out ?: headers
-    return merged + applyAuthLoader(provider)
+    if (providerId.isNullOrBlank()) return ChatHeadersResult(merged)
+    // auth.loader（返回型）：各插件动态提供认证信息，合并进请求头。
+    // 返回的键值对优先级低于用户手动配置的 API Key（authorization 为单独参数，不受影响）。
+    val loader = applyAuthLoader(providerId, baseUrl, providerType)
+    return ChatHeadersResult(merged + loader.headers, loader.baseURL)
 }
 
-/** 分发 auth.loader：收集各插件返回的认证键值对，合并为请求头。 */
-suspend fun PluginHookGateway.applyAuthLoader(provider: String): Map<String, String> {
+/** 用插件 auth.loader 返回的 baseURL 替换原始 URL 的 origin（保留路径与查询串）；解析失败时原样返回。 */
+fun replaceOrigin(url: String, newBase: String): String {
+    val old = runCatching { java.net.URI(url) }.getOrNull() ?: return newBase.trimEnd('/')
+    val base = newBase.trimEnd('/')
+    val path = old.rawPath?.takeIf { it.isNotBlank() && it != "/" } ?: ""
+    val query = old.rawQuery?.let { "?$it" } ?: ""
+    return base + path + query
+}
+
+/** 分发 auth.loader：收集各插件返回的认证信息（headers/apiKey/baseURL/hasFetch）。
+ *  provider 为 AIProvider 配置 id（与插件 auth.provider 匹配）；providerConfig 传给插件 loader 第二参。 */
+suspend fun PluginHookGateway.applyAuthLoader(
+    provider: String,
+    baseUrl: String? = null,
+    providerType: ProviderType? = null
+): AuthLoaderResult {
     val results = dispatchReturnHook(
         "auth.loader",
-        buildJsonObject { put("provider", provider) }
+        buildJsonObject {
+            put("provider", provider)
+            // provider 配置对象（对齐 opencode Provider 形状的最小子集：id/baseURL/type）
+            putJsonObject("providerConfig") {
+                put("id", provider)
+                baseUrl?.let { put("baseURL", it) }
+                providerType?.let { put("type", it.name) }
+            }
+        }
     )
     val merged = mutableMapOf<String, String>()
+    var hasFetch = false
+    var baseURL: String? = null
     results.forEach { el ->
         val obj = el as? JsonObject ?: return@forEach
-        obj.forEach { (k, v) ->
+        if ((obj["hasFetch"] as? JsonPrimitive)?.booleanOrNull == true) hasFetch = true
+        (obj["baseURL"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }?.let { baseURL = it }
+        val apiKey = (obj["apiKey"] as? JsonPrimitive)?.contentOrNull
+        (obj["headers"] as? JsonObject)?.forEach { (k, v) ->
             (v as? JsonPrimitive)?.contentOrNull?.let { merged[k] = it }
         }
+        // apiKey → 认证头（对齐 ModelApiService.applyAuth：OpenAI Bearer / Anthropic x-api-key / Gemini x-goog-api-key）
+        if (!apiKey.isNullOrBlank()) {
+            authHeaderFor(providerType, apiKey)?.let { merged.putAll(it) }
+        }
     }
-    return merged
+    return AuthLoaderResult(merged, baseURL, hasFetch)
+}
+
+/** 查询 auth.loader 返回自定义 fetch 的 provider 代理地址（127.0.0.1:<port>）；未命中返回 null。 */
+suspend fun PluginHookGateway.resolveProviderProxy(providerId: String): String? =
+    authProxy()[providerId]
+
+private fun authHeaderFor(providerType: ProviderType?, apiKey: String): Map<String, String>? = when (providerType) {
+    ProviderType.ANTHROPIC -> mapOf("x-api-key" to apiKey)
+    ProviderType.GEMINI -> mapOf("x-goog-api-key" to apiKey)
+    else -> mapOf("Authorization" to "Bearer $apiKey")
 }
 
 /**
@@ -126,11 +204,35 @@ suspend fun PluginHookGateway.applyChatMessage(
     }.filter { it.isNotBlank() }.joinToString("\n").ifBlank { content }
 }
 
-/** 分发 chat.params：插件可改写推理参数，返回解析后的参数。 */
-suspend fun PluginHookGateway.applyChatParams(sessionId: String?, model: String): PluginRequestParams {
+/** 分发 chat.params：插件可改写推理参数，返回解析后的参数。
+ *  input 对齐 opencode：sessionID/agent/model/provider/message；output 为 { temperature/topP/topK/maxOutputTokens/options }。 */
+suspend fun PluginHookGateway.applyChatParams(
+    sessionId: String?,
+    model: String,
+    providerId: String? = null,
+    providerType: ProviderType? = null,
+    agent: String? = null,
+    message: JsonObject? = null
+): PluginRequestParams {
     val result = dispatchHook(
         "chat.params",
-        buildJsonObject { put("sessionID", sessionId ?: ""); put("model", model) },
+        buildJsonObject {
+            put("sessionID", sessionId ?: "")
+            put("agent", agent ?: "")
+            putJsonObject("model") {
+                put("providerID", providerId ?: "")
+                put("modelID", model)
+            }
+            putJsonObject("provider") {
+                put("source", "config")
+                putJsonObject("info") {
+                    put("id", providerId ?: "")
+                    providerType?.let { put("type", it.name) }
+                }
+                putJsonObject("options") { }
+            }
+            if (message != null) put("message", message)
+        },
         buildJsonObject { }
     )
     val out = result.output

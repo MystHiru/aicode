@@ -105,6 +105,7 @@ import com.aicode.feature.settings.data.remote.ModelTestResult
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.domain.model.ProviderType
+import com.aicode.feature.settings.domain.model.defaultProviderBaseUrl
 import com.aicode.feature.settings.domain.model.mergeModelMetadata
 import com.aicode.feature.settings.presentation.FetchState
 import com.aicode.feature.settings.presentation.SettingsViewModel
@@ -115,6 +116,7 @@ import compose.icons.feathericons.Cpu
 import compose.icons.feathericons.DownloadCloud
 import compose.icons.feathericons.Eye
 import compose.icons.feathericons.EyeOff
+import compose.icons.feathericons.Lock
 import compose.icons.feathericons.FileText
 import compose.icons.feathericons.Folder
 import compose.icons.feathericons.Play
@@ -153,6 +155,8 @@ fun ProviderEditorScreen(
     var isEnabled by remember { mutableStateOf(initialProvider?.isEnabled ?: true) }
     var type by remember { mutableStateOf(initialProvider?.type ?: ProviderType.OPENAI) }
     val providerId = remember { initialProvider?.id ?: System.currentTimeMillis().toString() }
+    // 插件认证虚拟 provider：凭据由插件提供，API Key/类型不可编辑，Base URL 只读展示（数据驱动解析值）。
+    val isVirtual = initialProvider?.isVirtual == true
     val models = remember { mutableStateListOf<String>().apply { addAll(initialProvider?.models ?: emptyList()) } }
     val customMetadataStore = remember { CustomModelMetadataStore(context.applicationContext) }
     val scope = rememberCoroutineScope()
@@ -209,6 +213,7 @@ fun ProviderEditorScreen(
         baseUrl = baseUrl.ifBlank { defaultProviderBaseUrl(type) },
         useFullUrl = useFullUrl,
         isEnabled = isEnabled,
+        isVirtual = initialProvider?.isVirtual ?: false,
         defaultModel = initialProvider?.defaultModel ?: "",
         models = models.toList(),
         selectedModel = initialProvider?.selectedModel ?: "",
@@ -293,10 +298,16 @@ fun ProviderEditorScreen(
                             onValueChange = { name = it }
                         )
                         SettingsDivider()
-                        ProviderTextFieldRow(
-                            label = "API Key",
-                            value = apiKey,
-                            onValueChange = { apiKey = it },
+                        if (isVirtual) {
+                            ProviderHintRow(
+                                text = stringResource(R.string.provider_virtual_auth_hint),
+                                icon = FeatherIcons.Lock
+                            )
+                        } else {
+                            ProviderTextFieldRow(
+                                label = "API Key",
+                                value = apiKey,
+                                onValueChange = { apiKey = it },
                             visualTransformation = if (apiKeyVisible) {
                                 VisualTransformation.None
                             } else {
@@ -316,29 +327,33 @@ fun ProviderEditorScreen(
                                 )
                             }
                         )
+                        }
                         SettingsDivider()
                         ProviderTextFieldRow(
                             label = "Base URL",
                             value = baseUrl,
-                            onValueChange = { baseUrl = it }
+                            onValueChange = { baseUrl = it },
+                            enabled = !isVirtual
                         )
-                        SettingsDivider()
-                        SettingsRow(
-                            icon = null,
-                            title = stringResource(R.string.provider_section_type),
-                            onClick = { showTypeSheet = true },
-                            trailing = {
-                                Text(
-                                    text = providerTypeLabel(type),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = if (MaterialTheme.colorScheme.background.luminance() > 0.5f) {
-                                        Color(0xFF8E9094)
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    }
-                                )
-                            }
-                        )
+                        if (!isVirtual) {
+                            SettingsDivider()
+                            SettingsRow(
+                                icon = null,
+                                title = stringResource(R.string.provider_section_type),
+                                onClick = { showTypeSheet = true },
+                                trailing = {
+                                    Text(
+                                        text = providerTypeLabel(type),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (MaterialTheme.colorScheme.background.luminance() > 0.5f) {
+                                            Color(0xFF8E9094)
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    )
+                                }
+                            )
+                        }
                     }
 
                     // ── 选项 ──
@@ -1144,11 +1159,13 @@ private fun ProviderTextFieldRow(
     onValueChange: (String) -> Unit,
     placeholder: String = "",
     visualTransformation: VisualTransformation = VisualTransformation.None,
-    trailing: (@Composable () -> Unit)? = null
+    trailing: (@Composable () -> Unit)? = null,
+    enabled: Boolean = true
 ) {
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
+        enabled = enabled,
         label = { Text(label) },
         placeholder = if (placeholder.isNotBlank()) { { Text(placeholder) } } else null,
         singleLine = true,
@@ -1165,6 +1182,33 @@ private fun ProviderTextFieldRow(
             .fillMaxWidth()
             .padding(horizontal = Spacing.lg, vertical = Spacing.xs)
     )
+}
+
+/** 只读提示行：图标 + 说明文本（如插件认证 provider 的凭据说明）。 */
+@Composable
+private fun ProviderHintRow(
+    text: String,
+    icon: ImageVector
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Spacing.lg, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(modifier = Modifier.width(Spacing.sm))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }
 
 /** 分组内开关行：标题 + 可选副标题 + 右侧 Switch。 */

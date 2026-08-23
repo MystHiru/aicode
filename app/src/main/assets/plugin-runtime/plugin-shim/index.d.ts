@@ -258,9 +258,47 @@ export interface ConfigClient {
   set(...args: unknown[]): Promise<never>
 }
 
+/** 凭据（对齐 opencode Auth）：oauth 刷新/访问令牌或 api key。 */
+export type Auth =
+  | { type: "oauth"; refresh: string; access: string; expires: number; accountId?: string; enterpriseUrl?: string }
+  | { type: "api"; key: string; metadata?: Record<string, string> }
+  | { type: "wellknown"; key: string; token: string }
+
+/** 登录方法输入提示（对齐 opencode Prompt）。 */
+export type AuthPrompt =
+  | { type: "text"; key: string; message: string; placeholder?: string; validate?: (value: string) => string | undefined }
+  | { type: "select"; key: string; message: string; options: Array<{ label: string; value: string; hint?: string }> }
+
+/** authorize/callback 的成功或失败结果（对齐 opencode AuthOAuthResult callback 返回值）。 */
+export type AuthSuccessResult =
+  | ({ type: "success"; provider?: string } & (
+      | { refresh: string; access: string; expires: number; accountId?: string; enterpriseUrl?: string }
+      | { key: string; metadata?: Record<string, string> }
+    ))
+  | { type: "failed"; error?: string }
+
+/** OAuth 授权结果（对齐 opencode）：url + instructions + auto/code 回调。 */
+export type AuthOAuthResult = {
+  url: string
+  instructions: string
+} & (
+  | { method: "auto"; callback(): Promise<AuthSuccessResult> }
+  | { method: "code"; callback(code: string): Promise<AuthSuccessResult> }
+)
+
+/** 登录方法：oauth（授权流程）或 api（key 输入，可选 authorize 校验）。 */
+export interface AuthMethod {
+  type: "oauth" | "api"
+  label: string
+  prompts?: AuthPrompt[]
+  authorize?(inputs?: Record<string, string>): Promise<AuthOAuthResult | AuthSuccessResult>
+}
+
 export interface AuthClient {
-  set(...args: unknown[]): Promise<never>
-  list(...args: unknown[]): Promise<never>
+  set(body: { path: { id: string }; body: Auth | null }): Promise<ClientResponse<boolean>>
+  list(): Promise<ClientResponse<Record<string, Auth>>>
+  get(body: { path: { id: string } }): Promise<ClientResponse<Auth>>
+  logout(body: { path: { id: string } }): Promise<ClientResponse<boolean>>
 }
 
 export interface TuiClient {
@@ -388,7 +426,8 @@ export interface Hooks {
   }
   auth?: {
     provider: string
-    loader?: (auth: () => Promise<unknown>, provider: string) => Promise<Record<string, unknown>>
+    loader?: (auth: () => Promise<Auth>, provider: Record<string, unknown> | null) => Promise<Record<string, unknown>>
+    methods: AuthMethod[]
   }
   "experimental.provider.small_model"?: (
     input: { provider: string },

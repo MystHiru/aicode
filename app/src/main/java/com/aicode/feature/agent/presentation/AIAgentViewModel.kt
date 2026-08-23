@@ -878,15 +878,18 @@ class AIAgentViewModel @Inject constructor(
                     }
                     is AgentEvent.Retrying -> {
                         setRetryState(sessionId, RetryState(event.attempt, event.maxRetries, event.error))
+                        notifyPluginEvent(sessionId, event)
                     }
                     is AgentEvent.CompactionStarted -> {
                         setRetryState(sessionId, null)
                         setStreamingText(sessionId, null)
                         setStreamingReasoning(sessionId, null)
                         setCompacting(sessionId, true)
+                        notifyPluginEvent(sessionId, event)
                     }
                     AgentEvent.CompactionFinished -> {
                         setCompacting(sessionId, false)
+                        notifyPluginEvent(sessionId, event)
                     }
                     is AgentEvent.CompactionFailed -> {
                         setCompacting(sessionId, false)
@@ -898,6 +901,7 @@ class AIAgentViewModel @Inject constructor(
                             toolName = COMPACTION_FAILURE_TOOL_NAME,
                             isError = true
                         )
+                        notifyPluginEvent(sessionId, event)
                     }
                     is AgentEvent.AssistantText -> {
                         val normalized = if (event.content.hasVisibleContent()) event.content else ""
@@ -941,6 +945,7 @@ class AIAgentViewModel @Inject constructor(
                             isError = false
                         )
                         setRunningTool(sessionId, msgId, RunningToolOutput(msgId, "", event.toolName, event.argsPreview))
+                        notifyPluginEvent(sessionId, event)
                     }
                     is AgentEvent.ToolCallProgress -> {
                         val msgId = "tool_${event.id}"
@@ -966,6 +971,7 @@ class AIAgentViewModel @Inject constructor(
                         )
                         toolArgsByMsgId.remove(msgId)
                         removeRunningTool(sessionId, msgId)
+                        notifyPluginEvent(sessionId, event)
                     }
                     is AgentEvent.Failed -> {
                         failed = true
@@ -984,6 +990,7 @@ class AIAgentViewModel @Inject constructor(
                                 )
                             }
                         }
+                        notifyPluginEvent(sessionId, event)
                     }
                     AgentEvent.Completed -> {
                         setRetryState(sessionId, null)
@@ -1006,10 +1013,12 @@ class AIAgentViewModel @Inject constructor(
                         if (!inForeground && agentSoundSettings.isEnabled()) {
                             showAgentCompletedNotification(modelRequest)
                         }
+                        notifyPluginEvent(sessionId, event)
                     }
                     is AgentEvent.ModeChanged -> {
                         // 模式切换事件：PlanApprovalManager 已在 workflow 层面挂起等待用户批准
                         // 这里只更新 streamingText 显示
+                        notifyPluginEvent(sessionId, event)
                     }
                 }
             }

@@ -1,6 +1,7 @@
 package com.aicode.feature.settings.presentation.component
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -58,7 +59,8 @@ internal fun ProvidersSection(
                 ProviderItem(
                     provider = provider,
                     onEdit = { onEdit(provider) },
-                    onDelete = { onDelete(provider) }
+                    // 插件认证虚拟 provider 不提供删除（生命周期归插件管理，删除语义不清）
+                    onDelete = { onDelete(provider) }.takeIf { !provider.isVirtual }
                 )
             }
         }
@@ -85,22 +87,19 @@ internal fun EmptyHint(text: String) {
 /**
  * 提供商行：布局与 MCP 列表行一致——左侧品牌 logo，
  * 中部两行（名称 / 类型 + 模型数量 pills），右侧状态 pill + 箭头。
- * 整行点击进入编辑，左滑露出删除按钮。
+ * 整行点击进入编辑，左滑露出删除按钮；onDelete 为 null 时不可删除（插件认证虚拟 provider）。
  */
 @Composable
 fun ProviderItem(
     provider: AIProviderConfig,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: (() -> Unit)? = null
 ) {
     // 状态色与 MCP 行一致：启用用主题 tertiary（绿调），停用用 outline（灰）。
     val statusColor = if (provider.isEnabled) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outline
     val light = settingsLightMode()
 
-    SwipeToDeleteRow(
-        onDelete = onDelete,
-        onClick = onEdit
-    ) {
+    val rowContent: @Composable () -> Unit = {
         // 行内容自带与 MCP 行一致的内边距（SwipeToDeleteRow 本身无 padding）。
         Row(
             modifier = Modifier
@@ -154,6 +153,13 @@ fun ProviderItem(
                         backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                         modifier = Modifier.weight(1f, fill = false)
                     )
+                    if (provider.isVirtual) {
+                        McpPill(
+                            text = stringResource(R.string.provider_virtual_tag),
+                            textColor = MaterialTheme.colorScheme.primary,
+                            backgroundColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                        )
+                    }
                 }
             }
 
@@ -172,6 +178,23 @@ fun ProviderItem(
                 tint = if (light) Color(0xFFC7C7CC) else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp)
             )
+        }
+    }
+
+    if (onDelete != null) {
+        SwipeToDeleteRow(
+            onDelete = onDelete,
+            onClick = onEdit
+        ) {
+            rowContent()
+        }
+    } else {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onEdit() }
+        ) {
+            rowContent()
         }
     }
 }

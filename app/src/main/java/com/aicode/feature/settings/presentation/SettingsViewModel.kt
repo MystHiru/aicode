@@ -24,16 +24,23 @@ import com.aicode.feature.agent.domain.mcp.McpServerConfig
 import com.aicode.feature.agent.domain.mcp.McpServerEntry
 import com.aicode.feature.agent.domain.mcp.McpServerStatus
 import com.aicode.feature.agent.domain.mcp.McpToolDescriptor
+import com.aicode.feature.agent.domain.plugin.PluginAuth
+import com.aicode.feature.agent.domain.plugin.PluginAuthCallbackResult
+import com.aicode.feature.agent.domain.plugin.PluginAuthStore
+import com.aicode.feature.agent.domain.plugin.PluginAuthorizeResult
 import com.aicode.feature.agent.domain.plugin.PluginDescriptor
 import com.aicode.feature.agent.domain.plugin.PluginManager
+import com.aicode.feature.agent.domain.provider.OpenAIAdapter
 import com.aicode.feature.agent.domain.plugin.PluginRuntimeStatus
 import com.aicode.feature.agent.domain.plugin.PluginToolDescriptor
+import com.aicode.feature.agent.domain.plugin.ProviderAuthMethods
 import com.aicode.feature.agent.domain.permission.PermissionRule
 import com.aicode.feature.agent.domain.permission.PermissionRulesRepository
 import com.aicode.feature.agent.domain.skill.SkillConfigRepository
 import com.aicode.feature.agent.domain.skill.SkillRepository
 import com.aicode.feature.agent.domain.skill.SkillScope
 import com.aicode.feature.settings.data.remote.ModelApiService
+import com.aicode.feature.settings.data.local.VirtualProviderModelStore
 import com.aicode.feature.settings.data.remote.ContainerImageDownloader
 import com.aicode.feature.settings.data.remote.ModelMetadataService
 import com.aicode.feature.settings.data.remote.ModelTestResult
@@ -84,6 +91,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
+import javax.inject.Provider
 
 sealed class FetchState {
     object Idle : FetchState()
@@ -217,6 +225,7 @@ class SettingsViewModel @Inject constructor(
     private val mcpConfigRepository: McpConfigRepository,
     private val mcpManager: McpManager,
     private val pluginManager: PluginManager,
+    private val pluginAuthStore: PluginAuthStore,
     private val permissionRulesRepository: PermissionRulesRepository,
     private val skillRepository: SkillRepository,
     private val skillConfigRepository: SkillConfigRepository,
@@ -236,7 +245,9 @@ class SettingsViewModel @Inject constructor(
     private val llmCallRecordDao: LlmCallRecordDao,
     private val updateCheckSettingsRepository: UpdateCheckSettingsRepository,
     private val updateCheckService: UpdateCheckService,
-    private val providerBalanceRunner: ProviderBalanceRunner
+    private val providerBalanceRunner: ProviderBalanceRunner,
+    private val virtualProviderModelStore: VirtualProviderModelStore,
+    private val openAIAdapterProvider: Provider<OpenAIAdapter>
 ) : ViewModel() {
     private companion object {
         const val MAX_LOG_LINES = 1200
@@ -326,8 +337,35 @@ class SettingsViewModel @Inject constructor(
     val pluginStatus: StateFlow<PluginRuntimeStatus> = pluginManager.status
     private val _pluginList = MutableStateFlow<List<PluginDescriptor>>(emptyList())
     val pluginList: StateFlow<List<PluginDescriptor>> = _pluginList.asStateFlow()
+
+    /** 已禁用插件集合（key = 插件名|来源），供详情弹窗启用/禁用开关展示。 */
+    private val _pluginDisabledIds = MutableStateFlow<Set<String>>(emptySet())
+    val pluginDisabledIds: StateFlow<Set<String>> = _pluginDisabledIds.asStateFlow()
     private val _pluginReloading = MutableStateFlow(false)
     val pluginReloading: StateFlow<Boolean> = _pluginReloading.asStateFlow()
+
+    /** 合并 Room 记录与插件虚拟 provider：Room 同 id 覆盖虚拟；虚拟 provider 的模型从内置目录按 provider id 填充，
+     *  并应用用户对该 provider 的模型定制（新增/隐藏）。 */
+    private fun mergePluginProviders(room: List<AIProviderConfig>): List<AIProviderConfig> {
+        val plugin = pluginManager.pluginProviders().map { p ->
+            val catalog = modelMetadataService.chatModelsForProvider(p.id)
+            val overrides = virtualProviderModelStore.get(p.id)
+            p.copy(models = ((catalog - overrides.removed.toSet()) + overrides.added).distinct())
+        }
+        return room + plugin.filter { v -> room.none { it.id == v.id } }
+    }
+
+    /** 插件声明的登录方法（auth.methods.list，按 provider 分组）。 */
+    private val _pluginAuthMethods = MutableStateFlow<List<ProviderAuthMethods>>(emptyList())
+    val pluginAuthMethods: StateFlow<List<ProviderAuthMethods>> = _pluginAuthMethods.asStateFlow()
+
+    /** 插件认证状态：provider id → 是否已配置凭据。 */
+    private val _pluginAuthStatus = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val pluginAuthStatus: StateFlow<Map<String, Boolean>> = _pluginAuthStatus.asStateFlow()
+
+    /** 插件认证操作进行中（登录/退出），UI 禁用按钮。 */
+    private val _pluginAuthBusy = MutableStateFlow(false)
+    val pluginAuthBusy: StateFlow<Boolean> = _pluginAuthBusy.asStateFlow()
 
     private val _fetchState = MutableStateFlow<FetchState>(FetchState.Idle)
     val fetchState: StateFlow<FetchState> = _fetchState.asStateFlow()
@@ -454,7 +492,10 @@ class SettingsViewModel @Inject constructor(
         }
         viewModelScope.launch {
             launch {
-                repository.getAllProviders().collectLatest {
+                // Room 记录 + 插件虚拟 provider 合并（Room 同 id 覆盖虚拟；插件列表/模型定制变化自动触发）。
+                combine(repository.getAllProviders(), _pluginList, virtualProviderModelStore.changes) { room, _, _ ->
+                    mergePluginProviders(room)
+                }.collectLatest {
                     _providers.value = it
                 }
             }
@@ -500,8 +541,10 @@ class SettingsViewModel @Inject constructor(
                 pluginManager.status.collect { status ->
                     if (status.state == PluginRuntimeStatus.State.RUNNING) {
                         _pluginList.value = pluginManager.currentPlugins()
+                        refreshPluginDisabled()
                     } else if (status.state != PluginRuntimeStatus.State.STARTING) {
                         _pluginList.value = emptyList()
+                        _pluginDisabledIds.value = emptySet()
                     }
                 }
             }
@@ -711,6 +754,20 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /** 刷新插件禁用状态集合（跟随插件列表变化）。 */
+    private suspend fun refreshPluginDisabled() {
+        _pluginDisabledIds.value = pluginManager.currentPlugins()
+            .filter { pluginManager.isPluginDisabled(it) }
+            .map { pluginDisabledKey(it.name, it.source) }
+            .toSet()
+    }
+
+    private fun pluginDisabledKey(name: String, source: String): String = "$name|$source"
+
+    /** 指定插件是否被禁用（详情弹窗开关状态）。 */
+    fun isPluginDisabled(plugin: PluginDescriptor): Boolean =
+        pluginDisabledKey(plugin.name, plugin.source) in _pluginDisabledIds.value
+
     /** 重载插件运行时（扫描插件目录 + npm 安装 + 重启伴生进程 + 同步工具）。 */
     fun reloadPlugins() {
         if (_pluginReloading.value) return
@@ -722,6 +779,7 @@ class SettingsViewModel @Inject constructor(
                     pluginManager.reload()
                 }
                 _pluginList.value = pluginManager.currentPlugins()
+                refreshPluginDisabled()
             } finally {
                 _pluginReloading.value = false
             }
@@ -737,6 +795,7 @@ class SettingsViewModel @Inject constructor(
                     pluginManager.deletePlugin(plugin)
                 }
                 _pluginList.value = pluginManager.currentPlugins()
+                refreshPluginDisabled()
             } finally {
                 _pluginReloading.value = false
             }
@@ -752,6 +811,7 @@ class SettingsViewModel @Inject constructor(
                     pluginManager.setPluginDisabled(plugin, disabled)
                 }
                 _pluginList.value = pluginManager.currentPlugins()
+                refreshPluginDisabled()
             } finally {
                 _pluginReloading.value = false
             }
@@ -761,6 +821,67 @@ class SettingsViewModel @Inject constructor(
     /** 获取插件注册的工具列表详情。 */
     fun getPluginTools(pluginName: String): List<PluginToolDescriptor> {
         return pluginManager.getPluginTools(pluginName)
+    }
+
+    /** 刷新插件认证信息（登录方法 + 凭据状态）。 */
+    fun refreshPluginAuth() {
+        viewModelScope.launch {
+            val methods = withContext(Dispatchers.IO) { pluginManager.authMethods() }
+            _pluginAuthMethods.value = methods
+            val status = withContext(Dispatchers.IO) { pluginAuthStore.all() }
+            _pluginAuthStatus.value = status.mapValues { it.value.hasCredentials }
+        }
+    }
+
+    /** 执行登录授权（auth.authorize）：返回 url/instructions/method。 */
+    suspend fun pluginAuthAuthorize(provider: String, methodIndex: Int): PluginAuthorizeResult {
+        _pluginAuthBusy.value = true
+        return try {
+            withContext(Dispatchers.IO) { pluginManager.authAuthorize(provider, methodIndex) }
+        } finally {
+            _pluginAuthBusy.value = false
+        }
+    }
+
+    /** 提交登录回调（auth.callback）：code 模式传用户输入，auto 模式传 null。 */
+    suspend fun pluginAuthSubmit(provider: String, code: String?): PluginAuthCallbackResult {
+        _pluginAuthBusy.value = true
+        return try {
+            val result = withContext(Dispatchers.IO) { pluginManager.authCallback(provider, code) }
+            if (result.isSuccess) refreshPluginAuthStatus()
+            result
+        } finally {
+            _pluginAuthBusy.value = false
+        }
+    }
+
+    /** api 型登录：直接保存用户输入的 key。 */
+    suspend fun pluginAuthSaveApiKey(provider: String, key: String): Boolean {
+        _pluginAuthBusy.value = true
+        return try {
+            if (key.isBlank()) return false
+            withContext(Dispatchers.IO) { pluginAuthStore.set(provider, PluginAuth(type = "api", key = key.trim())) }
+            refreshPluginAuthStatus()
+            true
+        } finally {
+            _pluginAuthBusy.value = false
+        }
+    }
+
+    /** 退出登录：删除凭据。 */
+    suspend fun pluginAuthLogout(provider: String) {
+        _pluginAuthBusy.value = true
+        try {
+            withContext(Dispatchers.IO) { pluginAuthStore.remove(provider) }
+            refreshPluginAuthStatus()
+        } finally {
+            _pluginAuthBusy.value = false
+        }
+    }
+
+    private suspend fun refreshPluginAuthStatus() {
+        val status = withContext(Dispatchers.IO) { pluginAuthStore.all() }
+        _pluginAuthStatus.value = status.mapValues { it.value.hasCredentials }
     }
 
     /** 仅重连指定 server（编辑弹窗右上角刷新工具用）。 */
@@ -1295,6 +1416,19 @@ class SettingsViewModel @Inject constructor(
 
     fun saveProvider(provider: AIProviderConfig) {
         viewModelScope.launch {
+            if (provider.isVirtual) {
+                // 虚拟 provider 不落 Room：以目录模型为基准推导增删定制并持久化，凭据走插件认证。
+                // 顺带清理历史误落 Room 的同 id 记录（旧版本 currentConfig 缺失 isVirtual 的遗留）。
+                repository.deleteProvider(provider.id)
+                val catalog = modelMetadataService.chatModelsForProvider(provider.id).toSet()
+                val models = provider.models.toSet()
+                virtualProviderModelStore.save(
+                    provider.id,
+                    added = (models - catalog).toList(),
+                    removed = (catalog - models).toList()
+                )
+                return@launch
+            }
             repository.saveProvider(provider)
             // 保存后重置该提供商在内存中的面板状态，以便主页即时以最新脚本与配置重新加载
             _providerBalances.update { it - provider.id }
@@ -1303,6 +1437,11 @@ class SettingsViewModel @Inject constructor(
 
     fun deleteProvider(id: String) {
         viewModelScope.launch {
+            // 虚拟 provider 不落 Room：删除即清空模型定制（其存在由插件生命周期决定）。
+            if (_providers.value.firstOrNull { it.id == id }?.isVirtual == true) {
+                virtualProviderModelStore.clear(id)
+                return@launch
+            }
             repository.deleteProvider(id)
         }
     }
@@ -1310,6 +1449,13 @@ class SettingsViewModel @Inject constructor(
     fun fetchModels(provider: AIProviderConfig) {
         viewModelScope.launch {
             _fetchState.value = FetchState.Loading
+            // 虚拟 provider 无 API Key：直接展示 models.dev 目录中该 provider 的模型列表。
+            if (provider.isVirtual) {
+                val catalog = modelMetadataService.chatModelsForProvider(provider.id)
+                _fetchState.value = FetchState.Success(catalog)
+                resolveModelMetadata(provider.id, provider.type, catalog)
+                return@launch
+            }
             modelApiService.fetchModels(provider.baseUrl, provider.apiKey, provider.type, provider.userAgent)
                 .onSuccess {
                     _fetchState.value = FetchState.Success(it)
@@ -1362,9 +1508,35 @@ class SettingsViewModel @Inject constructor(
     fun testModel(provider: AIProviderConfig, model: String) {
         viewModelScope.launch {
             _testing.update { it + model }
-            val result = modelApiService.testModel(provider.baseUrl, provider.apiKey, provider.type, provider.useFullUrl, provider.useResponseApi, model, provider.userAgent)
+            val result = if (provider.isVirtual) {
+                // 插件认证虚拟 provider：走插件认证链路（auth-proxy 注入凭据），与真实对话一致。
+                testVirtualModel(provider, model)
+            } else {
+                modelApiService.testModel(provider.baseUrl, provider.apiKey, provider.type, provider.useFullUrl, provider.useResponseApi, model, provider.userAgent)
+            }
             _testResults.update { it + (model to result) }
             _testing.update { it - model }
+        }
+    }
+
+    /** 虚拟 provider 连通性测试：用带插件认证的 OpenAI 适配器发一次极短请求。 */
+    private suspend fun testVirtualModel(provider: AIProviderConfig, model: String): ModelTestResult {
+        val start = System.nanoTime()
+        return try {
+            val adapter = openAIAdapterProvider.get()
+            adapter.apiKey = provider.apiKey
+            adapter.baseUrl = provider.baseUrl
+            adapter.model = model
+            adapter.providerId = provider.id
+            adapter.pluginManager = pluginManager
+            adapter.complete(systemPrompt = "", messages = emptyList(), tools = emptyList(), reasoningEffort = null)
+            val latencyMs = (System.nanoTime() - start) / 1_000_000
+            ModelTestResult(success = true, latencyMs = latencyMs, message = "连接成功")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val latencyMs = (System.nanoTime() - start) / 1_000_000
+            ModelTestResult(success = false, latencyMs = latencyMs, message = e.message ?: "测试失败")
         }
     }
 

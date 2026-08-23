@@ -62,26 +62,13 @@ class PluginToolBridge(
             ?: mapOf("type" to "object", "properties" to emptyMap<String, Any>())
     }
 
-    override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
-        val start = System.currentTimeMillis()
-        return try {
-            FileLogger.d(TAG, "调用插件工具 $name$pluginTag args=${args.keys}")
-            val call = client.callTool(name, JsonObject(args))
-            if (call.isError) {
-                FileLogger.w(TAG, "插件工具 $name$pluginTag 返回错误 耗时=${System.currentTimeMillis() - start}ms: ${call.text.take(200)}")
-                ToolResult.Error(call.text)
-            } else {
-                FileLogger.d(TAG, "插件工具 $name$pluginTag 执行成功 耗时=${System.currentTimeMillis() - start}ms")
-                ToolResult.Success(JsonPrimitive(call.text))
-            }
-        } catch (e: PluginException) {
-            FileLogger.e(TAG, "插件工具调用失败: $name$pluginTag 耗时=${System.currentTimeMillis() - start}ms", e)
-            ToolResult.Error("插件工具执行失败: ${e.message}")
-        } catch (e: Exception) {
-            FileLogger.e(TAG, "插件工具调用异常: $name$pluginTag 耗时=${System.currentTimeMillis() - start}ms", e)
-            ToolResult.Error("插件工具执行异常: ${e.message}")
-        }
-    }
+    override suspend fun execute(args: Map<String, JsonElement>): ToolResult =
+        executeWithContext(args, com.aicode.feature.agent.domain.model.AgentContext(
+            currentFile = null,
+            selectedCode = null,
+            projectRoot = "",
+            language = null
+        ))
 
     override suspend fun executeWithContext(
         args: Map<String, JsonElement>,

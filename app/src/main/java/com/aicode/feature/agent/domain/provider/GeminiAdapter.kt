@@ -8,9 +8,13 @@ import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ToolCall
 import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.agent.domain.plugin.PluginRequestParams
+import com.aicode.feature.agent.domain.plugin.ChatHeadersResult
 import com.aicode.feature.agent.domain.plugin.applyChatHeaders
+import com.aicode.feature.agent.domain.plugin.replaceOrigin
 import com.aicode.feature.agent.domain.plugin.applyChatParams
+import com.aicode.feature.agent.domain.plugin.resolveProviderProxy
 import com.aicode.feature.agent.domain.plugin.toPlainValue
+import com.aicode.feature.settings.domain.model.ProviderType
 import com.google.gson.JsonParser
 import com.google.gson.JsonObject
 import javax.inject.Inject
@@ -75,8 +79,10 @@ class GeminiAdapter @Inject constructor(
             request["tools"] = toolDefs
         }
         // 插件请求头/参数改写：chat.headers / chat.params（temperature/topP/topK/maxOutputTokens 并入 generationConfig）。
-        val pluginHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "GEMINI") ?: emptyMap()
-        val pluginParams = pluginManager?.applyChatParams(logSessionId, model) ?: PluginRequestParams()
+        // 插件 auth.loader 声明 baseURL 时覆盖请求端点（opencode 语义）。
+        val chatHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "GEMINI", providerId = providerId, baseUrl = baseUrl, providerType = ProviderType.GEMINI) ?: ChatHeadersResult()
+        val pluginHeaders = chatHeaders.headers
+        val pluginParams = pluginManager?.applyChatParams(logSessionId, model, providerId = providerId, providerType = ProviderType.GEMINI) ?: PluginRequestParams()
         val generationConfig = mutableMapOf<String, Any>()
         buildThinkingConfig(reasoningEffort)?.let { generationConfig["thinkingConfig"] = it }
         pluginParams.temperature?.let { generationConfig["temperature"] = it }
@@ -86,21 +92,26 @@ class GeminiAdapter @Inject constructor(
         if (generationConfig.isNotEmpty()) request["generationConfig"] = generationConfig
         pluginParams.options.forEach { (k, v) -> request[k] = v.toPlainValue() ?: "" }
 
-        val url = if (useFullUrl) {
-            baseUrl
+        val effectiveBaseUrl = chatHeaders.pluginBaseUrl?.let { replaceOrigin(baseUrl, it) } ?: baseUrl
+        val realUrl = if (useFullUrl) {
+            effectiveBaseUrl
         } else {
-            val path = if (baseUrl.trimEnd('/').endsWith(model)) {
-                baseUrl.trimEnd('/') + ":generateContent"
+            val path = if (effectiveBaseUrl.trimEnd('/').endsWith(model)) {
+                effectiveBaseUrl.trimEnd('/') + ":generateContent"
             } else {
-                joinUrl(baseUrl, "v1beta/models/$model:generateContent")
+                joinUrl(effectiveBaseUrl, "v1beta/models/$model:generateContent")
             }
             path
         }
+        // 插件 auth.loader 返回自定义 fetch 时走本地代理（127.0.0.1:<port>），真实 URL 放私有头。
+        val pluginProxy = pluginManager?.resolveProviderProxy(providerId)
+        val url = if (pluginProxy != null) pluginProxy.trimEnd('/') + "/" else realUrl
+        val proxyHeaders = if (pluginProxy != null) mapOf("X-Aicode-Real-Url" to realUrl, "X-Aicode-Provider" to providerId) else emptyMap()
         AILogger.logRequest(logSessionId, "Gemini", model, "POST", url, request)
 
         val response = try {
             retryStaircase {
-                api.generateContent(url = url, apiKey = apiKey, extraHeaders = extraHeaders() + pluginHeaders, request = request)
+                api.generateContent(url = url, apiKey = apiKey, extraHeaders = extraHeaders() + pluginHeaders + proxyHeaders, request = request)
             }
         } catch (e: CancellationException) {
             throw e
@@ -177,8 +188,10 @@ class GeminiAdapter @Inject constructor(
             request["tools"] = toolDefs
         }
         // 插件请求头/参数改写：chat.headers / chat.params（temperature/topP/topK/maxOutputTokens 并入 generationConfig）。
-        val pluginHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "GEMINI") ?: emptyMap()
-        val pluginParams = pluginManager?.applyChatParams(logSessionId, model) ?: PluginRequestParams()
+        // 插件 auth.loader 声明 baseURL 时覆盖请求端点（opencode 语义）。
+        val chatHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "GEMINI", providerId = providerId, baseUrl = baseUrl, providerType = ProviderType.GEMINI) ?: ChatHeadersResult()
+        val pluginHeaders = chatHeaders.headers
+        val pluginParams = pluginManager?.applyChatParams(logSessionId, model, providerId = providerId, providerType = ProviderType.GEMINI) ?: PluginRequestParams()
         val generationConfig = mutableMapOf<String, Any>()
         buildThinkingConfig(reasoningEffort)?.let { generationConfig["thinkingConfig"] = it }
         pluginParams.temperature?.let { generationConfig["temperature"] = it }
@@ -188,16 +201,21 @@ class GeminiAdapter @Inject constructor(
         if (generationConfig.isNotEmpty()) request["generationConfig"] = generationConfig
         pluginParams.options.forEach { (k, v) -> request[k] = v.toPlainValue() ?: "" }
 
-        val url = if (useFullUrl) {
-            baseUrl
+        val effectiveBaseUrl = chatHeaders.pluginBaseUrl?.let { replaceOrigin(baseUrl, it) } ?: baseUrl
+        val realUrl = if (useFullUrl) {
+            effectiveBaseUrl
         } else {
-            val path = if (baseUrl.trimEnd('/').endsWith(model)) {
-                baseUrl.trimEnd('/') + ":streamGenerateContent?alt=sse"
+            val path = if (effectiveBaseUrl.trimEnd('/').endsWith(model)) {
+                effectiveBaseUrl.trimEnd('/') + ":streamGenerateContent?alt=sse"
             } else {
-                joinUrl(baseUrl, "v1beta/models/$model:streamGenerateContent?alt=sse")
+                joinUrl(effectiveBaseUrl, "v1beta/models/$model:streamGenerateContent?alt=sse")
             }
             path
         }
+        // 插件 auth.loader 返回自定义 fetch 时走本地代理（127.0.0.1:<port>），真实 URL 放私有头。
+        val pluginProxy = pluginManager?.resolveProviderProxy(providerId)
+        val url = if (pluginProxy != null) pluginProxy.trimEnd('/') + "/" else realUrl
+        val proxyHeaders = if (pluginProxy != null) mapOf("X-Aicode-Real-Url" to realUrl, "X-Aicode-Provider" to providerId) else emptyMap()
         
         AILogger.logRequest(logSessionId, "Gemini", model, "POST", url, request)
         val rawSse = StringBuilder()
@@ -212,7 +230,7 @@ class GeminiAdapter @Inject constructor(
                 var streamOutputTokens = 0
                 var streamCachedInputTokens = 0
 
-                val body = api.streamGenerateContent(url = url, apiKey = apiKey, extraHeaders = extraHeaders() + pluginHeaders, request = request)
+                val body = api.streamGenerateContent(url = url, apiKey = apiKey, extraHeaders = extraHeaders() + pluginHeaders + proxyHeaders, request = request)
 
                 body.use { rb ->
                     // 首字节超时 watchdog：60s 内未收到首个内容块则关闭流，触发可重试的 IOException。

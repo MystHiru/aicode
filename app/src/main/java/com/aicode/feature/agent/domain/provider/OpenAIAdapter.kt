@@ -13,8 +13,11 @@ import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ToolCall
 import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.agent.domain.plugin.PluginRequestParams
+import com.aicode.feature.agent.domain.plugin.ChatHeadersResult
 import com.aicode.feature.agent.domain.plugin.applyChatHeaders
+import com.aicode.feature.agent.domain.plugin.replaceOrigin
 import com.aicode.feature.agent.domain.plugin.applyChatParams
+import com.aicode.feature.agent.domain.plugin.resolveProviderProxy
 import com.aicode.feature.agent.domain.plugin.toPlainValue
 import com.google.gson.JsonParser
 import javax.inject.Inject
@@ -86,10 +89,22 @@ class OpenAIAdapter @Inject constructor(
             )
         }
 
-        val url = if (useFullUrl) baseUrl else joinUrl(baseUrl, defaultProviderApiPath(ProviderType.OPENAI))
-        // 插件请求头/参数改写：chat.headers / chat.params。
-        val pluginHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "OPENAI") ?: emptyMap()
-        val pluginParams = pluginManager?.applyChatParams(logSessionId, model) ?: PluginRequestParams()
+        val chatHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "OPENAI", providerId = providerId, baseUrl = baseUrl, providerType = ProviderType.OPENAI) ?: ChatHeadersResult()
+        val pluginHeaders = chatHeaders.headers
+        val pluginParams = pluginManager?.applyChatParams(logSessionId, model, providerId = providerId, providerType = ProviderType.OPENAI) ?: PluginRequestParams()
+        // 插件 auth.loader 声明 baseURL 时覆盖请求端点（opencode 语义）；无 /v1 前缀的端点（如 api.githubcopilot.com）用无版本路径。
+        val effectiveBaseUrl = chatHeaders.pluginBaseUrl?.let { replaceOrigin(baseUrl, it) } ?: baseUrl
+        val chatPath = if (chatHeaders.pluginBaseUrl != null && !chatHeaders.pluginBaseUrl.contains("/v1")) {
+            "chat/completions"
+        } else {
+            defaultProviderApiPath(ProviderType.OPENAI)
+        }
+        val realUrl = if (useFullUrl) effectiveBaseUrl else joinUrl(effectiveBaseUrl, chatPath)
+        // 插件请求头/参数改写：chat.headers / chat.params；auth.loader 认证头合并。
+        // 插件 auth.loader 返回自定义 fetch 时走本地代理（127.0.0.1:<port>），真实 URL 放私有头。
+        val pluginProxy = pluginManager?.resolveProviderProxy(providerId)
+        val url = if (pluginProxy != null) pluginProxy.trimEnd('/') + "/" else realUrl
+        val proxyHeaders = if (pluginProxy != null) mapOf("X-Aicode-Real-Url" to realUrl, "X-Aicode-Provider" to providerId) else emptyMap()
         if (useResponseApi) {
             val request = mutableMapOf<String, Any?>(
                 "model" to model,
@@ -107,7 +122,7 @@ class OpenAIAdapter @Inject constructor(
 
             val response = try {
                 retryStaircase {
-                    api.createResponses(url = url, authorization = "Bearer $apiKey", extraHeaders = extraHeaders() + pluginHeaders, request = request)
+                    api.createResponses(url = url, authorization = "Bearer $apiKey", extraHeaders = extraHeaders() + pluginHeaders + proxyHeaders, request = request)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -165,7 +180,7 @@ class OpenAIAdapter @Inject constructor(
 
         val response = try {
             retryStaircase {
-                api.createChatCompletion(url = url, authorization = "Bearer $apiKey", extraHeaders = extraHeaders() + pluginHeaders, request = request)
+                api.createChatCompletion(url = url, authorization = "Bearer $apiKey", extraHeaders = extraHeaders() + pluginHeaders + proxyHeaders, request = request)
             }
         } catch (e: CancellationException) {
             throw e
@@ -210,10 +225,22 @@ class OpenAIAdapter @Inject constructor(
             )
         }
 
-        val url = if (useFullUrl) baseUrl else joinUrl(baseUrl, defaultProviderApiPath(ProviderType.OPENAI))
-        // 插件请求头/参数改写：chat.headers / chat.params。
-        val pluginHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "OPENAI") ?: emptyMap()
-        val pluginParams = pluginManager?.applyChatParams(logSessionId, model) ?: PluginRequestParams()
+        val chatHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "OPENAI", providerId = providerId, baseUrl = baseUrl, providerType = ProviderType.OPENAI) ?: ChatHeadersResult()
+        val pluginHeaders = chatHeaders.headers
+        val pluginParams = pluginManager?.applyChatParams(logSessionId, model, providerId = providerId, providerType = ProviderType.OPENAI) ?: PluginRequestParams()
+        // 插件 auth.loader 声明 baseURL 时覆盖请求端点（opencode 语义）；无 /v1 前缀的端点（如 api.githubcopilot.com）用无版本路径。
+        val effectiveBaseUrl = chatHeaders.pluginBaseUrl?.let { replaceOrigin(baseUrl, it) } ?: baseUrl
+        val chatPath = if (chatHeaders.pluginBaseUrl != null && !chatHeaders.pluginBaseUrl.contains("/v1")) {
+            "chat/completions"
+        } else {
+            defaultProviderApiPath(ProviderType.OPENAI)
+        }
+        val realUrl = if (useFullUrl) effectiveBaseUrl else joinUrl(effectiveBaseUrl, chatPath)
+        // 插件请求头/参数改写：chat.headers / chat.params；auth.loader 认证头合并。
+        // 插件 auth.loader 返回自定义 fetch 时走本地代理（127.0.0.1:<port>），真实 URL 放私有头。
+        val pluginProxy = pluginManager?.resolveProviderProxy(providerId)
+        val url = if (pluginProxy != null) pluginProxy.trimEnd('/') + "/" else realUrl
+        val proxyHeaders = if (pluginProxy != null) mapOf("X-Aicode-Real-Url" to realUrl, "X-Aicode-Provider" to providerId) else emptyMap()
         
         if (useResponseApi) {
             val request = mutableMapOf<String, Any?>(
@@ -242,7 +269,7 @@ class OpenAIAdapter @Inject constructor(
                     val body = api.streamResponses(
                         url = url,
                         authorization = "Bearer $apiKey",
-                        extraHeaders = extraHeaders() + pluginHeaders,
+                        extraHeaders = extraHeaders() + pluginHeaders + proxyHeaders,
                         request = request
                     )
 
@@ -368,7 +395,7 @@ class OpenAIAdapter @Inject constructor(
             val body = api.streamChatCompletion(
                 url = url,
                 authorization = "Bearer $apiKey",
-                extraHeaders = extraHeaders() + pluginHeaders,
+                extraHeaders = extraHeaders() + pluginHeaders + proxyHeaders,
                 request = request
             )
 

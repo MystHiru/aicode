@@ -14,8 +14,11 @@ import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ToolCall
 import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.agent.domain.plugin.PluginRequestParams
+import com.aicode.feature.agent.domain.plugin.ChatHeadersResult
 import com.aicode.feature.agent.domain.plugin.applyChatHeaders
+import com.aicode.feature.agent.domain.plugin.replaceOrigin
 import com.aicode.feature.agent.domain.plugin.applyChatParams
+import com.aicode.feature.agent.domain.plugin.resolveProviderProxy
 import com.aicode.feature.settings.domain.model.ProviderType
 import com.aicode.feature.settings.domain.model.defaultProviderApiPath
 import com.google.gson.JsonParser
@@ -77,10 +80,17 @@ class AnthropicAdapter @Inject constructor(
             )
         }
 
-        val url = if (useFullUrl) baseUrl else joinUrl(baseUrl, defaultProviderApiPath(ProviderType.ANTHROPIC))
         // 插件请求头/参数改写：chat.headers / chat.params（thinking 模式下 temperature 强制 null，忽略插件写入）。
-        val pluginHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "ANTHROPIC") ?: emptyMap()
-        val pluginParams = pluginManager?.applyChatParams(logSessionId, model) ?: PluginRequestParams()
+        // 插件 auth.loader 声明 baseURL 时覆盖请求端点（opencode 语义）。
+        val chatHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "ANTHROPIC", providerId = providerId, baseUrl = baseUrl, providerType = ProviderType.ANTHROPIC) ?: ChatHeadersResult()
+        val pluginHeaders = chatHeaders.headers
+        val pluginParams = pluginManager?.applyChatParams(logSessionId, model, providerId = providerId, providerType = ProviderType.ANTHROPIC) ?: PluginRequestParams()
+        val effectiveBaseUrl = chatHeaders.pluginBaseUrl?.let { replaceOrigin(baseUrl, it) } ?: baseUrl
+        val realUrl = if (useFullUrl) effectiveBaseUrl else joinUrl(effectiveBaseUrl, defaultProviderApiPath(ProviderType.ANTHROPIC))
+        // 插件 auth.loader 返回自定义 fetch 时走本地代理（127.0.0.1:<port>），真实 URL 放私有头。
+        val pluginProxy = pluginManager?.resolveProviderProxy(providerId)
+        val url = if (pluginProxy != null) pluginProxy.trimEnd('/') + "/" else realUrl
+        val proxyHeaders = if (pluginProxy != null) mapOf("X-Aicode-Real-Url" to realUrl, "X-Aicode-Provider" to providerId) else emptyMap()
         val (thinking, outputConfig) = buildThinkingConfig(reasoningEffort)
         val request = AnthropicMessageRequest(
             model = model,
@@ -99,7 +109,7 @@ class AnthropicAdapter @Inject constructor(
 
         val response = try {
             retryStaircase {
-                api.createMessage(url = url, apiKey = apiKey, extraHeaders = extraHeaders() + pluginHeaders, request = request)
+                api.createMessage(url = url, apiKey = apiKey, extraHeaders = extraHeaders() + pluginHeaders + proxyHeaders, request = request)
             }
         } catch (e: CancellationException) {
             throw e
@@ -154,10 +164,17 @@ class AnthropicAdapter @Inject constructor(
             )
         }
 
-        val url = if (useFullUrl) baseUrl else joinUrl(baseUrl, defaultProviderApiPath(ProviderType.ANTHROPIC))
         // 插件请求头/参数改写：chat.headers / chat.params（thinking 模式下 temperature 强制 null）。
-        val pluginHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "ANTHROPIC") ?: emptyMap()
-        val pluginParams = pluginManager?.applyChatParams(logSessionId, model) ?: PluginRequestParams()
+        // 插件 auth.loader 声明 baseURL 时覆盖请求端点（opencode 语义）。
+        val chatHeaders = pluginManager?.applyChatHeaders(logSessionId, model, "ANTHROPIC", providerId = providerId, baseUrl = baseUrl, providerType = ProviderType.ANTHROPIC) ?: ChatHeadersResult()
+        val pluginHeaders = chatHeaders.headers
+        val pluginParams = pluginManager?.applyChatParams(logSessionId, model, providerId = providerId, providerType = ProviderType.ANTHROPIC) ?: PluginRequestParams()
+        val effectiveBaseUrl = chatHeaders.pluginBaseUrl?.let { replaceOrigin(baseUrl, it) } ?: baseUrl
+        val realUrl = if (useFullUrl) effectiveBaseUrl else joinUrl(effectiveBaseUrl, defaultProviderApiPath(ProviderType.ANTHROPIC))
+        // 插件 auth.loader 返回自定义 fetch 时走本地代理（127.0.0.1:<port>），真实 URL 放私有头。
+        val pluginProxy = pluginManager?.resolveProviderProxy(providerId)
+        val url = if (pluginProxy != null) pluginProxy.trimEnd('/') + "/" else realUrl
+        val proxyHeaders = if (pluginProxy != null) mapOf("X-Aicode-Real-Url" to realUrl, "X-Aicode-Provider" to providerId) else emptyMap()
         val (thinking, outputConfig) = buildThinkingConfig(reasoningEffort)
         val request = AnthropicMessageRequest(
             model = model,
@@ -190,7 +207,7 @@ class AnthropicAdapter @Inject constructor(
             // thinking block 的加密签名（signature_delta 事件携带），随 Final 上抛供工具循环回传。
             var signature: String? = null
 
-            val body = api.streamMessage(url = url, apiKey = apiKey, extraHeaders = extraHeaders() + pluginHeaders, request = request)
+            val body = api.streamMessage(url = url, apiKey = apiKey, extraHeaders = extraHeaders() + pluginHeaders + proxyHeaders, request = request)
 
             body.use { rb ->
                 // 首字节超时 watchdog：60s 内未收到首个内容块则关闭流，触发可重试的 IOException。

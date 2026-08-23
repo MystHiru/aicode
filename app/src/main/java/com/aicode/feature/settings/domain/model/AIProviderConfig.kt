@@ -12,6 +12,8 @@ data class AIProviderConfig(
     /** 当前选中使用的模型；为空时回退到 defaultModel。 */
     val selectedModel: String = defaultModel,
     val isEnabled: Boolean = true,
+    /** 插件 auth 自动注册的虚拟 provider（不落 Room，随插件生命周期出现/消失，凭据走插件认证）。 */
+    val isVirtual: Boolean = false,
     val useFullUrl: Boolean = false,
     val useResponseApi: Boolean = false,
     /** Anthropic 显式缓存断点（cache_control）。仅 ANTHROPIC 类型生效，默认开启。 */
@@ -38,4 +40,10 @@ fun defaultProviderApiPath(type: ProviderType): String = when (type) {
     ProviderType.ANTHROPIC -> "v1/messages"
     ProviderType.GEMINI -> "v1beta"
     else -> "v1/chat/completions"
+}
+
+fun defaultProviderBaseUrl(type: ProviderType): String = when (type) {
+    ProviderType.ANTHROPIC -> "https://api.anthropic.com/"
+    ProviderType.GEMINI -> "https://generativelanguage.googleapis.com/"
+    else -> "https://api.openai.com/"
 }

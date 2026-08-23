@@ -6,8 +6,13 @@ import com.aicode.feature.agent.domain.container.ContainerProfile
 import com.aicode.feature.agent.domain.container.LinuxContainerEngine
 import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ToolRegistry
+import com.aicode.feature.settings.data.ProviderBaseUrlStore
+import com.aicode.feature.settings.data.ProviderSdkStore
 import com.aicode.feature.settings.data.repository.ContainerSettingsRepository
 import com.aicode.feature.settings.data.repository.ExecutionMode
+import com.aicode.feature.settings.domain.model.AIProviderConfig
+import com.aicode.feature.settings.domain.model.ProviderType
+import com.aicode.feature.settings.domain.model.defaultProviderBaseUrl
 import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -41,7 +46,8 @@ data class PluginRuntimeStatus(
     val failedCount: Int = 0,
     val error: String? = null,
     val runtimeBin: String? = null,
-    val socketPath: String? = null
+    val socketPath: String? = null,
+    val invalidConfigs: List<PluginConfigIssue> = emptyList()
 ) {
     enum class State { STARTING, RUNNING, FAILED, DISABLED }
 }
@@ -63,7 +69,9 @@ class PluginManager @Inject constructor(
     private val containerInstaller: ContainerInstaller,
     private val workspaceRepository: WorkspaceRepository,
     private val containerSettingsRepository: ContainerSettingsRepository,
-    private val hostApiHandler: PluginHostApiHandler
+    private val hostApiHandler: PluginHostApiHandler,
+    private val providerBaseUrlStore: ProviderBaseUrlStore,
+    private val providerSdkStore: ProviderSdkStore
 ) : PluginHookGateway {
 
     /** ToolRegistry 懒加载：打破「工具 → PluginManager → ToolRegistry → 工具」的 Hilt 依赖循环。
@@ -77,7 +85,7 @@ class PluginManager @Inject constructor(
 
         /** socket 文件独立子目录（与运行时脚本分开，便于识别与清理）。 */
         const val CONTAINER_SOCKET_DIR = "$CONTAINER_RUNTIME_DIR/socket"
-        const val RUNNER_FILE = "runner.mjs"
+        const val RUNNER_FILE = "index.mjs"
 
         /** 容器内工作区路径（工作区绑定到容器 /root/workspace）。 */
         const val CONTAINER_WORKSPACE = "/root/workspace"
@@ -86,8 +94,9 @@ class PluginManager @Inject constructor(
         const val SOCKET_WAIT_MS = 20_000L
         const val SOCKET_POLL_MS = 200L
 
-        /** 通知插件 dispose 的超时：超出直接销毁进程，避免个别插件慢清理拖慢重载。 */
-        const val DISPOSE_TIMEOUT_MS = 5_000L
+        /** 通知插件 dispose 的超时：超出直接销毁进程，避免个别插件慢清理拖慢重载。
+         *  热重载（点击重载按钮/启停插件）时 dispose 会阻塞 reload 全程，5s 会让重载明显卡顿，缩至 2s 平衡。 */
+        const val DISPOSE_TIMEOUT_MS = 2_000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -104,10 +113,17 @@ class PluginManager @Inject constructor(
     private val _status = MutableStateFlow(PluginRuntimeStatus(PluginRuntimeStatus.State.DISABLED))
     val status: StateFlow<PluginRuntimeStatus> = _status.asStateFlow()
 
+    /** bun/node 探测结果缓存：容器内工具链不会在运行期间变化，热重载时复用避免重复启动探测进程。 */
+    @Volatile
+    private var runtimeBinCache: String? = null
+
     fun start() {
         // 跟随当前工作区切换自动重载（首帧立即发射当前值，等价启动即加载）。
+        // 工作区未初始化（null）时跳过：启动时从 null → default 会取消上一个 reload，
+        // 而取消路径只 destroy proot、容器内 bun 子进程变孤儿存活，与下一次 reload 竞争同一 socket。
         scope.launch {
             workspaceRepository.current.collectLatest {
+                if (it == null) return@collectLatest
                 reload()
             }
         }
@@ -121,6 +137,7 @@ class PluginManager @Inject constructor(
         // 容器 profile 切换：插件进程跑在旧容器的 rootfs 上，必须重建才能用新容器。
         scope.launch {
             containerSettingsRepository.activeProfileIdFlow.drop(1).collect {
+                runtimeBinCache = null
                 reload()
             }
         }
@@ -128,20 +145,30 @@ class PluginManager @Inject constructor(
         scope.launch {
             containerSettingsRepository.defaultContainerIdFlow.drop(1).collect {
                 if (currentActiveProfile().mode == ExecutionMode.REMOTE_SSH) {
+                    runtimeBinCache = null
                     reload()
                 }
             }
         }
     }
 
-    /** 重新加载插件运行时：检测 npm 依赖（缺失仅提示，需手动安装）→ 重启进程 → 连接 → 同步工具。 */
+    /** 重新加载插件运行时：检测 npm 依赖（缺失仅提示，需手动安装）→ 重启进程 → 连接 → 同步工具。
+     *
+     * 取消安全：reload 主体用 try/catch CancellationException 包裹，被取消时走 [teardownSync] 同步清理
+     * （socket 文件删除、进程 destroy）保证不残留；不吞取消，重新抛出让上层感知。 */
     suspend fun reload() = reloadMutex.withLock {
+        FileLogger.d(TAG, "reload 开始")
         teardown()
+        FileLogger.d(TAG, "reload: teardown 完成")
         val cfg = configRepository.getEffectiveConfig()
         val projectPath = workspaceRepository.currentPath()
         if (cfg.plugins.isEmpty() && !configRepository.globalPackageJsonExists() && !hasLocalPluginFiles(projectPath)) {
             // 无任何插件来源（npm 声明 / 依赖 / 本地插件文件）：不启动运行时（保持 DISABLED）。
-            _status.value = PluginRuntimeStatus(PluginRuntimeStatus.State.DISABLED)
+            // 配置文件解析失败仍要展示（runner 未启动无法上报）。
+            _status.value = PluginRuntimeStatus(
+                PluginRuntimeStatus.State.DISABLED,
+                invalidConfigs = configRepository.issues.value
+            )
             return@withLock
         }
 
@@ -152,6 +179,9 @@ class PluginManager @Inject constructor(
                 throw IllegalStateException(it)
             }
             val projectPath = workspaceRepository.currentPath()
+            FileLogger.d(TAG, "reload: 配置解析完成，plugins=${cfg.plugins.size} 个、本地插件检查 ${hasLocalPluginFiles(projectPath)}")
+            // 清掉上次残留的孤儿插件进程（teardown 只 destroy proot，容器内 bun/node 子进程可能变孤儿存活并占用 socket）
+            killStalePluginProcesses(projectPath, runtimeProfile)
 
             // 1. 手动安装模式：npm 插件依赖需用户在容器内自行 npm install，此处仅检测缺失并提示
             missingNpmDeps(projectPath, cfg.plugins).takeIf { it.isNotEmpty() }?.let { missing ->
@@ -182,10 +212,12 @@ class PluginManager @Inject constructor(
                 profile = runtimeProfile
             )
             process = p
+            FileLogger.d(TAG, "reload: 插件进程已启动")
             scope.launch { drainProcessLogs(p) }
 
             // 3. 等待 socket 文件就绪并建立连接
             val connected = waitForSocket(hostSocket)
+            FileLogger.d(TAG, "reload: socket 等待结束 connected=$connected")
             if (!connected) {
                 throw PluginException(message = "插件运行时 socket 未就绪（${SOCKET_WAIT_MS}ms 超时）")
             }
@@ -193,6 +225,7 @@ class PluginManager @Inject constructor(
             val c = PluginClient("plugin-runtime", UdsTransport(hostSocket.absolutePath), hostApi = hostApiHandler)
             val toolCount = c.connect()
             client = c
+            FileLogger.d(TAG, "reload: 插件连接完成，同步 $toolCount 个工具到 ToolRegistry")
 
             // 4. 同步插件工具到 ToolRegistry（同名覆盖内置工具，记录原工具以便恢复）
             synchronized(registeredToolNames) {
@@ -205,21 +238,24 @@ class PluginManager @Inject constructor(
                     registeredToolNames.add(desc.name)
                 }
             }
-            val okCount = c.plugins.count { it.error == null }
+            val okCount = c.plugins.count { it.error == null && !it.disabled && !it.missing }
             val failedCount = c.plugins.count { it.error != null }
+            val disabledCount = c.plugins.count { it.disabled }
+            val missingCount = c.plugins.count { it.missing }
             _status.value = PluginRuntimeStatus(
                 PluginRuntimeStatus.State.RUNNING,
                 toolCount = toolCount,
                 pluginCount = okCount,
                 failedCount = failedCount,
                 runtimeBin = runtimeBin,
-                socketPath = "~${CONTAINER_SOCKET_DIR.removePrefix("/root")}/$socketName"
+                socketPath = "~${CONTAINER_SOCKET_DIR.removePrefix("/root")}/$socketName",
+                invalidConfigs = configRepository.issues.value + c.invalidConfigs
             )
-            val pluginDetail = c.plugins.filter { it.error == null }.joinToString { "${it.name}@${it.source}" }
-            FileLogger.i(TAG, "插件运行时就绪：$okCount 个插件（$pluginDetail）、$toolCount 个工具" + if (failedCount > 0) "、$failedCount 个加载失败" else "")
+            val pluginDetail = c.plugins.filter { it.error == null && !it.disabled && !it.missing }.joinToString { "${it.name}@${it.source}" }
+            FileLogger.i(TAG, "插件运行时就绪：$okCount 个插件（$pluginDetail）、$toolCount 个工具" + if (failedCount > 0) "、$failedCount 个加载失败" else "" + if (disabledCount > 0) "、$disabledCount 个已禁用" else "" + if (missingCount > 0) "、$missingCount 个未安装" else "" + if (c.invalidConfigs.isNotEmpty()) "、${c.invalidConfigs.size} 个配置无效" else "")
         } catch (e: CancellationException) {
-            // 协程取消（如工作区切换触发 collectLatest 重载）：不吞取消，交由上层感知。
-            teardown()
+            // 协程取消（如工作区切换触发 collectLatest 重载）：走同步清理保证不残留，重新抛出取消。
+            teardownSync()
             throw e
         } catch (e: Exception) {
             FileLogger.e(TAG, "插件运行时启动失败", e)
@@ -256,8 +292,66 @@ class PluginManager @Inject constructor(
         client?.notifyEvent(type, properties)
     }
 
+    /** 查询插件声明的登录方法（auth.methods.list）。 */
+    override suspend fun authMethods(): List<ProviderAuthMethods> {
+        val c = client ?: return emptyList()
+        return runCatching { c.authMethodsList() }.getOrElse {
+            FileLogger.w(TAG, "查询插件登录方法失败: ${it.message}")
+            emptyList()
+        }
+    }
+
+    /** 执行登录授权（auth.authorize）。 */
+    override suspend fun authAuthorize(provider: String, methodIndex: Int): PluginAuthorizeResult {
+        val c = client ?: return PluginAuthorizeResult(error = "插件运行时未运行")
+        return runCatching { c.authAuthorize(provider, methodIndex) }.getOrElse {
+            PluginAuthorizeResult(error = it.message ?: "auth.authorize 失败")
+        }
+    }
+
+    /** 提交登录回调（auth.callback）。 */
+    override suspend fun authCallback(provider: String, code: String?): PluginAuthCallbackResult {
+        val c = client ?: return PluginAuthCallbackResult("failed", "插件运行时未运行")
+        return runCatching { c.authCallback(provider, code) }.getOrElse {
+            PluginAuthCallbackResult("failed", it.message ?: "auth.callback 失败")
+        }
+    }
+
+    /** 查询 auth.loader 返回自定义 fetch 的 provider 代理地址。 */
+    override suspend fun authProxy(): Map<String, String> {
+        val c = client ?: return emptyMap()
+        return runCatching { c.authProxyInfo() }.getOrElse {
+            FileLogger.w(TAG, "查询插件 auth 代理失败: ${it.message}")
+            emptyMap()
+        }
+    }
+
+    /** 指定 provider id 是否命中某插件的 auth 声明（auth.provider 匹配）。 */
+    override fun hasPluginAuth(providerId: String): Boolean =
+        currentPlugins().any { it.auth?.provider == providerId }
+
     /** 当前已加载的插件列表（设置页展示）。 */
     override fun currentPlugins(): List<PluginDescriptor> = client?.plugins ?: emptyList()
+
+    /** 插件 auth 声明的虚拟 provider 列表：id=插件 auth.provider，type 用 models.dev npm 字段判断（兜底 OpenAI 兼容），apiKey 留空走插件认证。 */
+    override fun pluginProviders(): List<AIProviderConfig> =
+        currentPlugins()
+            .mapNotNull { p -> p.auth?.provider?.takeIf { it.isNotBlank() }?.let { it to p.name } }
+            .distinctBy { it.first }
+            .map { (id, pluginName) ->
+                // 用 models.dev npm 字段判断类型（替代字符串启发式），兜底为 OpenAI 兼容
+                val type = providerSdkStore.resolveType(id)
+                AIProviderConfig(
+                    id = id,
+                    name = pluginName,
+                    type = type,
+                    apiKey = "",
+                    // 无 api 字段的 SDK provider（xai 等）用内置 SDK 映射/网络拉取值兜底，避免落到默认 api.openai.com。
+                    baseUrl = providerBaseUrlStore.resolve(id) ?: defaultProviderBaseUrl(type),
+                    defaultModel = "",
+                    isVirtual = true
+                )
+            }
 
     /** 获取指定插件对应的工具描述列表。 */
     fun getPluginTools(pluginName: String): List<PluginToolDescriptor> {
@@ -305,8 +399,10 @@ class PluginManager @Inject constructor(
         }
     }
 
-    /** 检测容器内 bun 是否可用（手动安装模式：bun 由用户自行装入 PATH），可用则用 bun 运行，否则回退 node。 */
+    /** 检测容器内 bun 是否可用（手动安装模式：bun 由用户自行装入 PATH），可用则用 bun 运行，否则回退 node。
+     *  结果缓存（容器工具链运行期不变），容器 profile/默认容器切换时由调用方清缓存。 */
     private suspend fun resolveRuntimeBin(projectPath: String, profile: ContainerProfile): String {
+        runtimeBinCache?.let { return it }
         val p = containerEngine.startStdioProcess(
             program = "/bin/sh",
             programArgs = listOf("-c", "command -v bun"),
@@ -318,8 +414,27 @@ class PluginManager @Inject constructor(
             p.inputStream.bufferedReader().use { it.readText().isNotBlank() }
         }.getOrDefault(false)
         p.destroy()
+        val bin = if (found) "bun" else "node"
         if (found) FileLogger.i(TAG, "检测到容器内 bun，插件运行时使用 bun")
-        return if (found) "bun" else "node"
+        runtimeBinCache = bin
+        return bin
+    }
+
+    /** 容器内 pkill 清掉残留的插件运行时进程。
+     *  proot 进程被 destroy 后，容器内 bun/node 子进程不一定随之退出（ptrace 父死亡不杀 tracee），
+     *  孤儿进程会继续占用固定 socket 路径，导致新 runner listen 时 EADDRINUSE、宿主误连旧进程。
+     *  匹配串以 ^(bun|node) 开头精确匹配 runner 可执行进程，避免误杀执行本命令的 proot 实例
+     *  （其 argv 也含 plugin-runtime/index.mjs）及其它无关进程。 */
+    private suspend fun killStalePluginProcesses(projectPath: String, profile: ContainerProfile) {
+        runCatching {
+            containerEngine.runCommandSync(
+                "pkill -9 -f '^(bun|node) /root/.aicode/plugin-runtime/index.mjs' 2>/dev/null; true",
+                projectPath,
+                5_000
+            )
+        }.onFailure {
+            FileLogger.w(TAG, "清理残留插件进程失败: ${it.message}")
+        }
     }
 
     private suspend fun waitForSocket(socketFile: File): Boolean {
@@ -356,13 +471,17 @@ class PluginManager @Inject constructor(
     private suspend fun teardown() {
         val c = client
         if (c != null) {
+            FileLogger.d(TAG, "teardown: 通知插件 dispose（超时 ${DISPOSE_TIMEOUT_MS}ms）")
             // dispose 限时：个别插件 dispose 内做网络上报/慢清理会拖到 30s 超时，
             // 冷启动路径（client 为 null）本就跳过 dispose 直接销毁进程，这里对齐其速度。
             runCatching { withTimeout(DISPOSE_TIMEOUT_MS) { c.dispose() } }
+            FileLogger.d(TAG, "teardown: dispose 完成，关闭 client")
             runCatching { c.close() }
+            FileLogger.d(TAG, "teardown: client 已关闭")
             client = null
         }
         synchronized(registeredToolNames) {
+            FileLogger.d(TAG, "teardown: 反注册 ${registeredToolNames.size} 个插件工具")
             registeredToolNames.forEach { name ->
                 val replaced = replacedTools.remove(name)
                 if (replaced != null) {
@@ -374,9 +493,45 @@ class PluginManager @Inject constructor(
             registeredToolNames.clear()
         }
         replacedTools.clear()
+        FileLogger.d(TAG, "teardown: 销毁插件进程")
         runCatching { process?.destroy() }
         process = null
         // 清理本次 socket（固定名 plugin.sock；异常退出残留由下次启动前删除）。
+        socketHostFile?.let { runCatching { it.delete() } }
+        socketHostFile = null
+        FileLogger.d(TAG, "teardown 完成")
+    }
+
+    /**
+     * 同步版 teardown：用于协程取消时的清理路径。不能 await（协程已取消），所有操作同步执行：
+     * - client.close() 同步关闭 UDS（内部已用独立 scope，不会被取消影响）
+     * - process.destroy() 同步杀进程
+     * - socket 文件同步删除
+     * - ToolRegistry 反注册同步执行
+     *
+     * 跳过 dispose 调用：dispose 需要 await，在取消路径上不可靠；下次 reload 会重新加载插件，
+     * 旧插件的 dispose 会在新 reload 的 teardown 中补上（或随进程退出释放）。
+     */
+    private fun teardownSync() {
+        val c = client
+        if (c != null) {
+            runCatching { c.close() }
+            client = null
+        }
+        synchronized(registeredToolNames) {
+            registeredToolNames.forEach { name ->
+                val replaced = replacedTools.remove(name)
+                if (replaced != null) {
+                    runCatching { toolRegistry.register(name, replaced) }
+                } else {
+                    runCatching { toolRegistry.unregister(name) }
+                }
+            }
+            registeredToolNames.clear()
+        }
+        replacedTools.clear()
+        runCatching { process?.destroy() }
+        process = null
         socketHostFile?.let { runCatching { it.delete() } }
         socketHostFile = null
     }

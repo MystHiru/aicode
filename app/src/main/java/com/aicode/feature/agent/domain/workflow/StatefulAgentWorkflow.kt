@@ -57,6 +57,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -216,10 +217,19 @@ class StatefulAgentWorkflow @Inject constructor(
     private suspend fun getEffectiveProvider(sessionId: String?): AIProvider {
         val config = resolveProviderConfig(sessionId)
             ?: throw IllegalStateException("尚未配置 AI 提供商，请到设置中添加并选择一个")
-        if (config.apiKey.isBlank()) throw IllegalStateException("「${config.name}」未填写 API Key")
+        if (config.apiKey.isBlank() && !pluginManager.hasPluginAuth(config.id)) {
+            throw IllegalStateException("「${config.name}」未填写 API Key")
+        }
         if (config.effectiveModel.isBlank()) throw IllegalStateException("「${config.name}」未选择模型")
         return createStandaloneProvider(config, sessionId)
     }
+
+    /**
+     * 按 id 解析 provider 配置：优先 Room 记录，查不到时回退插件 auth 虚拟 provider（id=插件 auth.provider）。
+     */
+    private suspend fun resolveProviderConfigById(providerId: String): AIProviderConfig? =
+        aiProviderRepository.getProviderById(providerId)
+            ?: pluginManager.pluginProviders().firstOrNull { it.id == providerId }
 
     /**
      * 解析当前生效的 provider 配置：优先用 session 绑定的 providerId/model，回退全局 active provider。
@@ -231,8 +241,8 @@ class StatefulAgentWorkflow @Inject constructor(
             val boundProviderId = session?.providerId
             val boundModel = session?.model
             if (!boundProviderId.isNullOrBlank()) {
-                val config = aiProviderRepository.getProviderById(boundProviderId)
-                if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
+                val config = resolveProviderConfigById(boundProviderId)
+                if (config != null && config.isEnabled && (config.apiKey.isNotBlank() || pluginManager.hasPluginAuth(config.id))) {
                     return if (!boundModel.isNullOrBlank()) config.copy(selectedModel = boundModel) else config
                 }
             }
@@ -241,8 +251,8 @@ class StatefulAgentWorkflow @Inject constructor(
         val defaultProviderId = defaultModelSettingsRepository.getDefaultProviderId()
         val defaultModel = defaultModelSettingsRepository.getDefaultModel()
         if (defaultProviderId.isNotBlank() && defaultModel.isNotBlank()) {
-            val config = aiProviderRepository.getProviderById(defaultProviderId)
-            if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
+            val config = resolveProviderConfigById(defaultProviderId)
+            if (config != null && config.isEnabled && (config.apiKey.isNotBlank() || pluginManager.hasPluginAuth(config.id))) {
                 return config.copy(selectedModel = defaultModel)
             }
         }
@@ -252,7 +262,9 @@ class StatefulAgentWorkflow @Inject constructor(
     override suspend fun compactSession(sessionId: String, onEvent: suspend (AgentEvent) -> Unit): Boolean {
         val config = resolveProviderConfig(sessionId)
             ?: throw IllegalStateException("尚未配置 AI 提供商，请到设置中添加并选择一个")
-        if (config.apiKey.isBlank()) throw IllegalStateException("「${config.name}」未填写 API Key")
+        if (config.apiKey.isBlank() && !pluginManager.hasPluginAuth(config.id)) {
+            throw IllegalStateException("「${config.name}」未填写 API Key")
+        }
         if (config.effectiveModel.isBlank()) throw IllegalStateException("「${config.name}」未选择模型")
         val provider = createStandaloneProvider(config, sessionId)
         val history = messagePersistenceUseCase.buildHistory(sessionId, "__manual_compress__")
@@ -707,15 +719,86 @@ class StatefulAgentWorkflow @Inject constructor(
         return if (parts.isEmpty()) system else parts.joinToString("\n\n")
     }
 
-    /** 历史消息转换 hook：插件可裁剪、脱敏消息。output 为 AiCode 消息模型数组。 */
+    /** 历史消息转换 hook：插件可裁剪、脱敏消息。
+     *  对齐 opencode：output 为 `{info: Message, parts: Part[]}[]`，复用 MessageMapper 反向转换回 AiCode AgentMessage。 */
     private suspend fun applyMessagesTransform(messages: List<AgentMessage>, sessionId: String?): List<AgentMessage> {
+        // 把 AiCode AgentMessage 列表转换为 opencode 形状（简化版：只保留 USER/ASSISTANT + text part）
+        val openCodeMessages = buildJsonArray {
+            messages.forEach { msg ->
+                when (msg) {
+                    is AgentMessage.UserMessage -> add(buildJsonObject {
+                        put("info", buildJsonObject {
+                            put("id", msg.id)
+                            put("sessionID", sessionId ?: "")
+                            put("role", "user")
+                        })
+                        putJsonArray("parts") {
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", msg.content)
+                            })
+                        }
+                    })
+                    is AgentMessage.AssistantMessage -> add(buildJsonObject {
+                        put("info", buildJsonObject {
+                            put("id", msg.id)
+                            put("sessionID", sessionId ?: "")
+                            put("role", "assistant")
+                        })
+                        putJsonArray("parts") {
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", msg.content)
+                            })
+                        }
+                    })
+                    is AgentMessage.ToolResultMessage -> add(buildJsonObject {
+                        put("info", buildJsonObject {
+                            put("id", msg.id)
+                            put("sessionID", sessionId ?: "")
+                            put("role", "tool")
+                        })
+                        putJsonArray("parts") {
+                            add(buildJsonObject {
+                                put("type", "tool")
+                                put("tool", msg.toolName)
+                                put("callID", msg.id)
+                                put("state", buildJsonObject {
+                                    put("status", "completed")
+                                    put("output", msg.result)
+                                })
+                            })
+                        }
+                    })
+                }
+            }
+        }
         val result = pluginManager.dispatchHook(
             "experimental.chat.messages.transform",
             buildJsonObject { put("sessionID", sessionId ?: "") },
-            buildJsonObject { putJsonArray("messages") { messages.forEach { add(AgentMessageJson.encodeToJsonElement(it)) } } }
+            buildJsonObject { put("messages", openCodeMessages) }
         )
         val arr = (result.output["messages"] as? JsonArray) ?: return messages
-        val transformed = arr.mapNotNull { runCatching { AgentMessageJson.decodeFromJsonElement(AgentMessage.serializer(), it) }.getOrNull() }
+        // 反向转换：从 opencode `{info, parts}[]` 提取 text parts 拼接为 AiCode AgentMessage
+        val transformed = arr.mapNotNull { el ->
+            val obj = el as? JsonObject ?: return@mapNotNull null
+            val info = obj["info"] as? JsonObject ?: return@mapNotNull null
+            val parts = obj["parts"] as? JsonArray ?: return@mapNotNull null
+            val id = (info["id"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+            val sessionID = (info["sessionID"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+            val role = (info["role"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+            val text = parts.mapNotNull { p ->
+                val pObj = p as? JsonObject ?: return@mapNotNull null
+                if ((pObj["type"] as? JsonPrimitive)?.content == "text") {
+                    (pObj["text"] as? JsonPrimitive)?.contentOrNull
+                } else null
+            }.joinToString("\n")
+            when (role) {
+                "user" -> AgentMessage.UserMessage(id = id, content = text)
+                "assistant" -> AgentMessage.AssistantMessage(id = id, content = text)
+                else -> null
+            }
+        }
         return if (transformed.isEmpty()) messages else transformed
     }
 
@@ -845,8 +928,8 @@ class StatefulAgentWorkflow @Inject constructor(
         val providerId = compactionModelSettingsRepository.getCompactionProviderId().trim()
         val model = compactionModelSettingsRepository.getCompactionModel().trim()
         if (providerId.isNotEmpty() && model.isNotEmpty()) {
-            val config = aiProviderRepository.getProviderById(providerId) ?: return null
-            if (!config.isEnabled || config.apiKey.isBlank()) return null
+            val config = resolveProviderConfigById(providerId) ?: return null
+            if (!config.isEnabled || (config.apiKey.isBlank() && !pluginManager.hasPluginAuth(config.id))) return null
             return createStandaloneProvider(config.copy(selectedModel = model), sessionId)
         }
         // 用户未配置压缩专用模型：查询插件 small_model 建议（无建议则沿用聊天模型）。
@@ -861,8 +944,8 @@ class StatefulAgentWorkflow @Inject constructor(
         val providerId = titleModelSettingsRepository.getTitleProviderId().trim()
         val model = titleModelSettingsRepository.getTitleModel().trim()
         if (providerId.isNotEmpty() && model.isNotEmpty()) {
-            val config = aiProviderRepository.getProviderById(providerId) ?: return null
-            if (!config.isEnabled || config.apiKey.isBlank()) return null
+            val config = resolveProviderConfigById(providerId) ?: return null
+            if (!config.isEnabled || (config.apiKey.isBlank() && !pluginManager.hasPluginAuth(config.id))) return null
             return createStandaloneProvider(config.copy(selectedModel = model), sessionId)
         }
         // 用户未配置标题专用模型：查询插件 small_model 建议（无建议则沿用聊天模型）。
@@ -875,7 +958,7 @@ class StatefulAgentWorkflow @Inject constructor(
      */
     private suspend fun resolvePluginSmallModelProvider(sessionId: String? = null): AIProvider? {
         val config = resolveProviderConfig(sessionId) ?: return null
-        if (!config.isEnabled || config.apiKey.isBlank()) return null
+        if (!config.isEnabled || (config.apiKey.isBlank() && !pluginManager.hasPluginAuth(config.id))) return null
         val results = pluginManager.dispatchReturnHook(
             "experimental.provider.small_model",
             buildJsonObject { put("provider", config.id) }

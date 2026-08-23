@@ -7,6 +7,10 @@
 - 旧快照有而网络版已下架的模型保留（用户可能仍在使用）。
 - 网络拉取或解析失败时打印错误并以非零退出，绝不改动现有快照。
 
+同时生成 app/src/main/assets/sdk-provider-baseurl.json：models.dev 数据中无 api 字段的 provider
+（官方 SDK 内置默认端点）→ AiCode 拼接语义的 baseUrl（host 形式，OpenAI 适配器自动拼 v1/chat/completions）。
+数据源为各官方 AI SDK（@ai-sdk/* 等）源码中的默认 baseURL，发版前应核对最新值。
+
 用法：python3 scripts/update-models-dev-assets.py
 """
 
@@ -19,7 +23,21 @@ MODELS_DEV_URL = "https://models.dev/api.json"
 ASSET_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "app", "src", "main", "assets", "api.official.json")
 )
+SDK_BASEURL_ASSET = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "app", "src", "main", "assets", "sdk-provider-baseurl.json")
+)
 UA = "aicode-assets-updater"
+
+# models.dev 中无 api 字段（走官方 SDK）且 OpenAI 兼容 /v1/chat/completions 的 provider → AiCode baseUrl。
+# 值取自各 SDK 源码默认 baseURL（去掉版本路径，由 OpenAI 适配器 joinUrl 自动拼 v1/chat/completions）。
+# 已排除：带专属路径的（deepinfra=/v1/openai、groq=/openai/v1）、无 v1 端点的（perplexity）、
+# 非 OpenAI 兼容的（cohere 等）、类型默认值已正确的（openai/anthropic/google）。
+SDK_BASE_URLS = {
+    "xai": "https://api.x.ai/",  # @ai-sdk/xai 默认 https://api.x.ai/v1
+    "mistral": "https://api.mistral.ai/",  # @ai-sdk/mistral 默认 https://api.mistral.ai/v1
+    "togetherai": "https://api.together.xyz/",  # @ai-sdk/togetherai 默认 https://api.together.xyz/v1/
+    "cerebras": "https://api.cerebras.ai/",  # @ai-sdk/cerebras 默认 https://api.cerebras.ai/v1
+}
 
 
 def trim_model(mv: dict) -> dict:
@@ -85,6 +103,12 @@ def main() -> int:
         flag = "（新增模型）" if new > old else ""
         print(f"  {pid}: {old} -> {new} {flag}")
     print(f"合计：{old_total} -> {new_total} 个模型")
+
+    # 生成 SDK provider baseURL 映射（不依赖网络，始终重写以保证与代码同步）。
+    with open(SDK_BASEURL_ASSET, "w", encoding="utf-8") as f:
+        json.dump(SDK_BASE_URLS, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    print(f"已生成 {SDK_BASEURL_ASSET}（{len(SDK_BASE_URLS)} 个 provider）")
     return 0
 
 

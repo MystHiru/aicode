@@ -6,10 +6,11 @@
 
 进入「设置」→「插件」，进入插件管理页：
 
-*   页面采用与 MCP 一致的 iOS 分组列表样式：顶部为**插件状态**概览（运行中 / 启动中 / 启动失败 / 未启用），显示实际运行插件的运行时（`bun` 或 `node`）、已加载的插件数与工具数、当前 UDS socket 路径；加载失败时额外显示失败数量与错误信息。
+*   页面采用与 MCP 一致的 iOS 分组列表样式：顶部为**插件状态**概览（运行中 / 启动中 / 启动失败 / 未启用），显示实际运行插件的运行时（`bun` 或 `node`）、已加载的插件数与工具数、当前 UDS socket 路径；加载失败时额外显示失败数量与错误信息；**配置文件解析失败**（`plugins.json` JSON 语法错误等）时显示「配置文件无效」警告（可点击复制错误详情）。
 *   下方分组列出**插件**，每个插件一行，显示：插件图标、插件名称、来源 Pill（`npm` / `本地`）、工具数量 Pill、Hook 数量 Pill，以及右侧状态标记（`已加载` / `加载失败`）。
 *   **左滑删除**：列表支持左滑手势露出红色删除按钮，点击可一键删除插件（包括清理对应配置文件或本地插件文件）。
-*   **插件详情弹窗**：点击插件行可打开底部详情弹窗，展示插件名称、来源、版本号（npm 包读 `package.json`，本地目录型插件读其 `package.json`，单文件插件无版本）与加载状态，分类查看该插件注册的 **Tools 工具列表**（工具名、描述与参数列表）以及 **Hooks 钩子列表**（支持的所有 Hook 功能说明）；详情弹窗不提供删除/关闭按钮，下滑或点击遮罩关闭，删除请使用列表左滑。
+*   **插件列表**：列出全部已加载插件；**声明但未安装**（npm 依赖缺失）的插件显示「未安装」状态，**被禁用**的插件显示「插件已禁用」状态并保留在列表中可随时重新启用。
+*   **插件详情弹窗**：点击插件行可打开底部详情弹窗，展示插件名称、来源、版本号（npm 包读 `package.json`，本地目录型插件读其 `package.json`，单文件插件无版本）与加载状态，分类查看该插件注册的 **Tools 工具列表**（工具名、描述与参数列表）以及 **Hooks 钩子列表**（支持的所有 Hook 功能说明）；弹窗内提供**启用/禁用开关**（切换后自动重载运行时，禁用的插件不加载）；声明了 `auth` 的插件额外显示**插件认证**卡片（provider 与登录状态，点击进入登录弹窗）；详情弹窗不提供删除/关闭按钮，下滑或点击遮罩关闭，删除请使用列表左滑。
 *   右上角**重载**按钮可手动重新加载所有插件。
 *   未配置任何插件时，页面会提示如何放置插件脚本。
 
@@ -62,13 +63,13 @@
 | `tool.execute.before` | 工具执行前拦截：审查参数、阻止高危操作或改写参数 |
 | `tool.execute.after` | 工具执行后改写输出、捕获数据落盘、过滤敏感日志 |
 | `tool.definition` | 工具定义发送给模型前动态改写描述、隐藏参数（已实现） |
-| `chat.headers` | LLM 请求发出前注入鉴权 Token、签名、私有网关头（input 为 AiCode 简化子集：sessionID/model/provider） |
-| `chat.params` | LLM 请求发出前动态调整推理参数（temperature/topP/topK/maxOutputTokens 等；input 为 AiCode 简化子集） |
+| `chat.headers` | LLM 请求发出前注入鉴权 Token、签名、私有网关头（input 对齐 opencode：sessionID/agent/model/provider/message） |
+| `chat.params` | LLM 请求发出前动态调整推理参数（temperature/topP/topK/maxOutputTokens 等；input 对齐 opencode：sessionID/agent/model/provider/message） |
 | `chat.message` | 用户消息落库前改写输入（对齐 opencode：output 为 `{message: UserMessage, parts: Part[]}`，插件改写 parts 中的 text part；input 含 sessionID/messageID/agent/model） |
-| `auth.loader` | 请求时动态提供/刷新认证头（临时凭证、动态签名），合并进请求头 |
+| `auth.loader` | 请求时动态提供认证信息：`headers`/`apiKey` 合并进请求头；返回自定义 `fetch` 时该 provider 的 LLM 请求（含流式）经容器内本地代理转发，支持 OAuth 刷新/多账户/限流类插件 |
 | `experimental.provider.small_model` | 未配置压缩/标题专用模型时提供小模型建议 |
 | `experimental.chat.system.transform` | 系统提示词组装后注入额外上下文（⚠️ 会打断隐式前缀缓存，慎用） |
-| `experimental.chat.messages.transform` | 模型请求发送前裁剪历史消息、脱敏敏感数据（⚠️ AiCode 扩展：output 为 AiCode 消息模型数组，非 opencode `{info, parts}[]`，避免双向转换有损） |
+| `experimental.chat.messages.transform` | 模型请求发送前裁剪历史消息、脱敏敏感数据（对齐 opencode：output 为 `{info: Message, parts: Part[]}[]`，插件改写后回写） |
 | `experimental.session.compacting` | 上下文压缩生成摘要前注入需跨压缩保留的上下文 |
 | `shell.env` | Bash 工具/终端执行命令前注入环境变量 |
 | `permission.ask` | 高危工具权限弹窗前自动化允许/拒绝 |
@@ -77,7 +78,7 @@
 | `event` | 监听会话与工作流事件（见下方列表） |
 | `dispose` | 插件卸载/会话销毁时清理资源 |
 
-**`event` 可监听的事件**（已实现）：`session.created`（普通会话与子代理会话创建均触发，子代理额外带 `parentID`/`subagentType`）、`session.updated`、`session.deleted`、`session.status`（会话开始/结束运行，`status.type` 为 `busy`/`idle`）、`session.idle`、`session.error`、`message.created`、`mode.changed`、`tool.started`、`tool.finished`、`permission.asked` / `permission.replied`、`file.edited`、`todo.updated`、`command.executed`、`compaction.started` / `compaction.finished` / `compaction.failed`、`llm.retrying`。
+**`event` 可监听的事件**（已实现）：`session.created`（普通会话与子代理会话创建均触发，子代理额外带 `parentID`/`subagentType`）、`session.updated`、`session.deleted`、`session.status`（会话开始/结束运行，`status.type` 为 `busy`/`idle`，由 SessionActivityRegistry 自动派发）、`session.idle`（AI 回复完成）、`session.error`（AI 回复失败）、`message.created`、`mode.changed`、`tool.started`、`tool.finished`、`permission.asked` / `permission.replied`、`file.edited`、`todo.updated`、`command.executed`、`compaction.started` / `compaction.finished` / `compaction.failed`、`llm.retrying`。
 
 ### plugin 入参中的 `client`（SDK Client）
 
@@ -102,14 +103,44 @@
 | `client.files.read()` / `write()` / `list()` | ✅ 已支持 | 工作区文件读写列目录（限定在工作区内；read 对齐 `FileContent`（type 为 text/binary，二进制 base64 编码），list 对齐 `FileNode[]`） |
 | `client.config.get()` | ✅ 已支持 | 宿主核心配置（对齐 opencode Config 字段命名的最小子集：`model`/`small_model` 为 `provider/model` 字符串） |
 | `client.tui.showToast()` | ✅ 已支持 | 映射为 Android Toast 提示 |
-| `client.auth.*` / `client.config.set` / `client.tui.openXxx` / `client.event.subscribe` 等 | ❌ 不支持 | 调用返回明确错误（不抛 TypeError），插件可 try/catch 降级 |
+| `client.auth.set()` | ✅ 已支持 | 写入/更新/删除插件认证凭据（宿主 `auth.json`，对齐 opencode）；`body` 传 `null` 删除 |
+| `client.auth.list()` | ✅ 已支持 | 列出已配置凭据的 provider id |
+| `client.auth.get()` | ✅ 已支持 | 读取指定 provider 的凭据（供 `auth.loader` 的 `getAuth()` 实时取用） |
+| `client.auth.logout()` | ✅ 已支持 | 删除指定 provider 的凭据（等价 `set(..., null)`） |
+| `client.config.set` / `client.tui.openXxx` / `client.event.subscribe` 等 | ❌ 不支持 | 调用返回明确错误（不抛 TypeError），插件可 try/catch 降级 |
 
 插件能力以本文档与插件详情弹窗中的 Hooks/Tools 列表为准。
+
+### 插件认证（登录）
+
+声明 `auth` 的插件（如 OAuth 订阅类插件 `opencode-antigravity-auth`）可在「设置 → 插件 → 点击插件 → 插件认证」卡片中完成登录：
+
+*   卡片显示插件声明的 `auth.provider` 与登录状态（已登录 / 未登录），点击进入认证弹窗。
+*   弹窗列出插件声明的登录方法（`auth.methods`，OAuth 或 API Key 类型）。
+*   **OAuth 流程**：点击方法后插件返回授权链接与操作说明 → 点击链接在系统浏览器中完成授权 → 按提示「输入授权码」提交或点「已完成授权」；成功后凭据（access/refresh token）由插件经 `client.auth.set` 写入宿主 `auth.json`。
+*   **API Key 流程**：直接输入 key 保存；插件声明了 `authorize` 时先执行其校验/转换逻辑。
+*   **退出登录**：删除该 provider 的凭据。
+
+认证后的请求行为取决于插件 `auth.loader` 的返回：
+
+*   返回 `headers` / `apiKey`：合并进该 provider 的 LLM 请求头（`apiKey` 按 provider 类型转 `Authorization: Bearer` / `x-api-key` / `x-goog-api-key`）。
+*   返回自定义 `fetch`（多账户轮换、OAuth 刷新、限流、响应转换等）：该 provider 的 LLM 请求（含流式 SSE）经容器内本地代理转发给插件处理，provider 的 API Key 可留空。
+
+凭据存储位置：宿主私有目录 `aicode/auth.json`（容器内 `/root/.aicode/auth.json`），明文存储，与 AiCode 用户 API Key（设置 → 模型）相互独立。
+
+### 插件 provider 自动注册（虚拟 provider）
+
+声明 `auth` 的插件加载后，会自动注册一个以 `auth.provider` 为 id 的**虚拟 provider**（如 `opencode-xai-oauth` 的 `xai`、`opencode-antigravity-auth` 的 `google`），随插件加载/卸载自动出现/消失，不写入用户提供商配置：
+
+*   **模型选择**：主页聊天输入框的模型选择弹窗与「设置 → 默认模型」中会出现该虚拟 provider（按插件名分组），模型列表来自内置模型目录（models.dev 数据）中同 id 提供商的对话模型（如 `xai` 下的 Grok 系列）；插件若声明 `provider.models` 则以其为准。
+*   **设置页提供商列表**：虚拟 provider 会显示在「设置 → AI 提供商」列表中（带 **插件认证** 标签），可点击进入编辑页管理模型：默认列出 models.dev 目录中的模型，可手动添加/删除模型，「拉取模型」展示该提供商的目录模型列表供勾选添加；凭据由插件提供（编辑页不显示 API Key 输入，Base URL 只读展示自动解析值）；不支持左滑删除（生命周期归插件）。
+*   **对话使用**：会话绑定该 provider 后，请求自动匹配插件 `auth.loader`（返回自定义 `fetch` 时经本地代理转发），API Key 无需填写；类型（OpenAI/Anthropic/Gemini）用 models.dev 的 `npm` 字段判断（`@ai-sdk/anthropic` → Anthropic，`@ai-sdk/google` → Gemini，其他 → OpenAI 兼容），兜底为 OpenAI 兼容。
+*   若用户在设置中手动添加了同 id 的提供商，以用户配置为准（覆盖虚拟 provider）。
 
 ## 6. 不支持
 
 以下 OpenCode 能力 **AiCode 明确不支持**（无对应机制）：`config`（插件配置的读写，即 `client.config.set`）、`experimental.text.complete`、`experimental_workspace` / `serverUrl`。社区插件若依赖上述能力需改造或放弃。
-*   插件 Hook 侧 `auth.loader` 可动态提供认证头；`client.auth.set`（静默改凭据）不开放。
+*   插件认证：`auth.methods`（OAuth / API Key 登录）与 `client.auth.*`（凭据读写）已支持，见上文「插件认证（登录）」；插件无法读写 AiCode 用户配置的 API Key（`ai_providers` 表），凭据存独立 `auth.json`。
 *   `client.session.prompt` 已开放（插件可驱动普通会话与子代理会话，产生 token 费用），`agent`/`system`/`tools` 等 opencode 字段暂不生效；`parts` 支持 `text`（发消息）与 `subtask`（派发子代理，opencode 子代理协议）。
 
 ## 7. 简单示例

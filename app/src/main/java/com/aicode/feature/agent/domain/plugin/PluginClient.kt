@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -52,6 +53,11 @@ class PluginClient(
 
     @Volatile
     var plugins: List<PluginDescriptor> = emptyList()
+        private set
+
+    /** runner 上报的配置文件解析失败（plugins.json JSON 语法错误等），供设置页展示警告。 */
+    @Volatile
+    var invalidConfigs: List<PluginConfigIssue> = emptyList()
         private set
 
     /** 建立连接并拉取工具列表与插件列表。失败抛 [PluginException]。 */
@@ -106,11 +112,37 @@ class PluginClient(
                     version = (obj["version"] as? JsonPrimitive)?.contentOrNull,
                     tools = (obj["tools"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty(),
                     hooks = (obj["hooks"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty(),
+                    disabled = (obj["disabled"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                    missing = (obj["missing"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                    auth = (obj["auth"] as? JsonObject)?.let { a ->
+                        PluginAuthDeclaration(
+                            provider = (a["provider"] as? JsonPrimitive)?.contentOrNull,
+                            methods = (a["methods"] as? JsonArray)?.mapNotNull { el ->
+                                val mo = el as? JsonObject ?: return@mapNotNull null
+                                PluginAuthMethodInfo(
+                                    label = (mo["label"] as? JsonPrimitive)?.contentOrNull ?: "",
+                                    type = (mo["type"] as? JsonPrimitive)?.contentOrNull ?: "oauth"
+                                )
+                            }.orEmpty()
+                        )
+                    },
                     error = (obj["error"] as? JsonPrimitive)?.contentOrNull
                 )
             }.orEmpty()
         }.getOrElse {
             FileLogger.w(TAG, "[$name] 解析插件列表失败: ${it.message}")
+            emptyList()
+        }
+        invalidConfigs = runCatching {
+            (result["invalidConfigs"] as? JsonArray)?.mapNotNull { el ->
+                val obj = el as? JsonObject ?: return@mapNotNull null
+                PluginConfigIssue(
+                    scope = (obj["scope"] as? JsonPrimitive)?.contentOrNull ?: "",
+                    error = (obj["error"] as? JsonPrimitive)?.contentOrNull ?: ""
+                )
+            }.orEmpty()
+        }.getOrElse {
+            FileLogger.w(TAG, "[$name] 解析配置问题列表失败: ${it.message}")
             emptyList()
         }
     }
@@ -189,6 +221,72 @@ class PluginClient(
         transport.notify("event", params)
     }
 
+    /** 查询插件声明的登录方法（auth.methods.list）。 */
+    suspend fun authMethodsList(): List<ProviderAuthMethods> {
+        val response = transport.request("auth.methods.list")
+        val result = response.result as? JsonObject ?: return emptyList()
+        return (result["providers"] as? JsonArray)?.mapNotNull { el ->
+            val obj = el as? JsonObject ?: return@mapNotNull null
+            val provider = (obj["provider"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+            val methods = (obj["methods"] as? JsonArray)?.mapNotNull { m ->
+                val mo = m as? JsonObject ?: return@mapNotNull null
+                PluginAuthMethod(
+                    provider = provider,
+                    label = (mo["label"] as? JsonPrimitive)?.contentOrNull ?: "",
+                    type = (mo["type"] as? JsonPrimitive)?.contentOrNull ?: "oauth",
+                    plugin = (mo["plugin"] as? JsonPrimitive)?.contentOrNull ?: ""
+                )
+            }.orEmpty()
+            ProviderAuthMethods(provider, methods)
+        }.orEmpty()
+    }
+
+    /** 执行登录授权（auth.authorize）：返回 url/instructions/method；requiresKey 表示 api 型需宿主收集 key。 */
+    suspend fun authAuthorize(provider: String, methodIndex: Int, inputs: JsonObject? = null): PluginAuthorizeResult {
+        val params = buildJsonObject {
+            put("provider", provider)
+            put("methodIndex", methodIndex)
+            inputs?.let { put("inputs", it) }
+        }
+        val response = transport.request("auth.authorize", params)
+        val result = response.result as? JsonObject ?: return PluginAuthorizeResult(error = "auth.authorize 无 result")
+        return PluginAuthorizeResult(
+            url = (result["url"] as? JsonPrimitive)?.contentOrNull ?: "",
+            instructions = (result["instructions"] as? JsonPrimitive)?.contentOrNull ?: "",
+            method = (result["method"] as? JsonPrimitive)?.contentOrNull ?: "auto",
+            type = (result["type"] as? JsonPrimitive)?.contentOrNull ?: "oauth",
+            requiresKey = (result["requiresKey"] as? JsonPrimitive)?.booleanOrNull ?: false,
+            completed = (result["completed"] as? JsonPrimitive)?.booleanOrNull ?: false,
+            error = (result["error"] as? JsonPrimitive)?.contentOrNull
+        )
+    }
+
+    /** 提交登录回调（auth.callback）：code 为 code 模式的用户输入，auto 模式传 null。 */
+    suspend fun authCallback(provider: String, code: String? = null): PluginAuthCallbackResult {
+        val params = buildJsonObject {
+            put("provider", provider)
+            if (code != null) put("code", code)
+        }
+        val response = transport.request("auth.callback", params)
+        val result = response.result as? JsonObject ?: return PluginAuthCallbackResult("failed", "auth.callback 无 result")
+        return PluginAuthCallbackResult(
+            type = (result["type"] as? JsonPrimitive)?.contentOrNull ?: "failed",
+            error = (result["error"] as? JsonPrimitive)?.contentOrNull
+        )
+    }
+
+    /** 查询 auth.loader 返回自定义 fetch 的 provider 代理地址（provider → baseUrl）。 */
+    suspend fun authProxyInfo(): Map<String, String> {
+        val response = transport.request("auth.proxy")
+        val result = response.result as? JsonObject ?: return emptyMap()
+        val providers = result["providers"] as? JsonObject ?: return emptyMap()
+        return providers.mapNotNull { (k, v) ->
+            val obj = v as? JsonObject ?: return@mapNotNull null
+            val baseUrl = (obj["baseUrl"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+            k to baseUrl
+        }.toMap()
+    }
+
     fun close() = transport.close()
 }
 
@@ -200,14 +298,41 @@ data class PluginToolDescriptor(
     val plugin: String? = null
 )
 
-/** 插件描述符（来自 runner 的 plugins.list）。version 为插件包版本（npm 读 package.json，本地目录型读其 package.json，单文件插件为 null）。error 非空表示加载失败。 */
+/** 插件描述符（来自 runner 的 plugins.list）。version 为插件包版本（npm 读 package.json，本地目录型读其 package.json，单文件插件为 null）。error 非空表示加载失败；disabled 表示被配置禁用（不加载）；missing 表示 npm 依赖未安装（不加载）。 */
 data class PluginDescriptor(
     val name: String,
     val source: String,
     val version: String? = null,
     val tools: List<String>,
     val hooks: List<String>,
-    val error: String? = null
+    val auth: PluginAuthDeclaration? = null,
+    val error: String? = null,
+    val disabled: Boolean = false,
+    val missing: Boolean = false
+)
+
+/** 插件配置文件解析失败信息（scope: global/project）。 */
+data class PluginConfigIssue(
+    val scope: String,
+    val error: String
+)
+
+/** 插件声明的 auth（对齐 opencode AuthHook 的可序列化子集）。 */
+data class PluginAuthDeclaration(
+    val provider: String? = null,
+    val methods: List<PluginAuthMethodInfo> = emptyList()
+)
+
+/** 插件 auth.methods 中单个登录方法的展示信息。 */
+data class PluginAuthMethodInfo(
+    val label: String,
+    val type: String
+)
+
+/** 某 provider 下所有插件声明的登录方法。 */
+data class ProviderAuthMethods(
+    val provider: String,
+    val methods: List<PluginAuthMethod>
 )
 
 /** hook 分发结果：合并后的 output + 各插件执行错误。 */

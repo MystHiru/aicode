@@ -10,6 +10,7 @@ import com.aicode.feature.agent.data.remote.openai.OpenAIApi
 import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.model.AgentImage
 import com.aicode.feature.agent.domain.model.AgentMessage
+import com.aicode.feature.agent.domain.plugin.PluginHookGateway
 import com.aicode.feature.agent.domain.provider.AIProvider
 import com.aicode.feature.agent.domain.provider.AnthropicAdapter
 import com.aicode.feature.agent.domain.provider.GeminiAdapter
@@ -54,6 +55,7 @@ class ViewImageTool @Inject constructor(
     private val visionModelSettingsRepository: VisionModelSettingsRepository,
     private val modelMetadataService: ModelMetadataService,
     private val sessionUseCase: SessionUseCase,
+    private val pluginManager: PluginHookGateway,
     private val openAIApi: OpenAIApi,
     private val anthropicApi: AnthropicApi,
     private val geminiApi: GeminiApi
@@ -229,17 +231,22 @@ class ViewImageTool @Inject constructor(
         val visionProviderId = visionModelSettingsRepository.getVisionProviderId().trim()
         val visionModel = visionModelSettingsRepository.getVisionModel().trim()
         if (visionProviderId.isNotEmpty() && visionModel.isNotEmpty()) {
-            val config = aiProviderRepository.getProviderById(visionProviderId)
-            if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
+            val config = resolveProviderConfigById(visionProviderId)
+            if (config != null && config.isEnabled && (config.apiKey.isNotBlank() || pluginManager.hasPluginAuth(config.id))) {
                 return createStandaloneProvider(config.copy(selectedModel = visionModel), sessionId)
             }
         }
         val config = resolveCurrentChatConfig(sessionId)
             ?: throw IllegalStateException("尚未配置 AI 提供商，请到设置中添加并选择一个")
-        if (config.apiKey.isBlank()) throw IllegalStateException("「${config.name}」未填写 API Key")
+        if (config.apiKey.isBlank() && !pluginManager.hasPluginAuth(config.id)) throw IllegalStateException("「${config.name}」未填写 API Key")
         if (config.effectiveModel.isBlank()) throw IllegalStateException("「${config.name}」未选择模型")
         return createStandaloneProvider(config, sessionId)
     }
+
+    /** 按 id 解析 provider 配置：优先 Room 记录，查不到时回退插件 auth 虚拟 provider。 */
+    private suspend fun resolveProviderConfigById(providerId: String): AIProviderConfig? =
+        aiProviderRepository.getProviderById(providerId)
+            ?: pluginManager.pluginProviders().firstOrNull { it.id == providerId }
 
     private suspend fun resolveCurrentChatConfig(sessionId: String?): AIProviderConfig? {
         if (sessionId != null) {
@@ -247,8 +254,8 @@ class ViewImageTool @Inject constructor(
             val boundProviderId = session?.providerId
             val boundModel = session?.model
             if (!boundProviderId.isNullOrBlank()) {
-                val config = aiProviderRepository.getProviderById(boundProviderId)
-                if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
+                val config = resolveProviderConfigById(boundProviderId)
+                if (config != null && config.isEnabled && (config.apiKey.isNotBlank() || pluginManager.hasPluginAuth(config.id))) {
                     return if (!boundModel.isNullOrBlank()) config.copy(selectedModel = boundModel) else config
                 }
             }
@@ -256,8 +263,8 @@ class ViewImageTool @Inject constructor(
         val defaultProviderId = defaultModelSettingsRepository.getDefaultProviderId()
         val defaultModel = defaultModelSettingsRepository.getDefaultModel()
         if (defaultProviderId.isNotBlank() && defaultModel.isNotBlank()) {
-            val config = aiProviderRepository.getProviderById(defaultProviderId)
-            if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
+            val config = resolveProviderConfigById(defaultProviderId)
+            if (config != null && config.isEnabled && (config.apiKey.isNotBlank() || pluginManager.hasPluginAuth(config.id))) {
                 return config.copy(selectedModel = defaultModel)
             }
         }
@@ -268,10 +275,14 @@ class ViewImageTool @Inject constructor(
         val provider: AIProvider = when (config.type) {
             ProviderType.ANTHROPIC -> AnthropicAdapter(anthropicApi).also {
                 it.cacheBreakpointsEnabled = config.anthropicCacheBreakpoints
+                it.pluginManager = pluginManager
             }
-            ProviderType.GEMINI -> GeminiAdapter(geminiApi)
+            ProviderType.GEMINI -> GeminiAdapter(geminiApi).also {
+                it.pluginManager = pluginManager
+            }
             else -> OpenAIAdapter(openAIApi).also {
                 it.chatCacheKeyEnabled = config.openaiChatCacheKey
+                it.pluginManager = pluginManager
             }
         }
         provider.apiKey = config.apiKey

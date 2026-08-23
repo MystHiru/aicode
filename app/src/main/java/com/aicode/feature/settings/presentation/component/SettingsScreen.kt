@@ -399,6 +399,7 @@ fun SettingsScreen(
                     }
                 )
                 SettingsSection.Providers -> ProvidersSection(
+                    // 插件认证虚拟 provider 一并展示（认证入口在插件详情页，模型列表支持自定义增删/拉取目录）
                     providers = providers,
                     onEdit = {
                         editingProvider = it
@@ -447,7 +448,10 @@ fun SettingsScreen(
                 SettingsSection.Plugins -> PluginsSection(
                     status = pluginStatus,
                     plugins = pluginList,
-                    onOpenDetail = { selectedPlugin = it },
+                    onOpenDetail = {
+                        selectedPlugin = it
+                        viewModel.refreshPluginAuth()
+                    },
                     onDelete = { pluginToDelete = it }
                 )
                 SettingsSection.SkillDetail -> selectedSkill?.let { entry ->
@@ -627,9 +631,24 @@ fun SettingsScreen(
     }
 
     selectedPlugin?.let { plugin ->
+        val authProvider = plugin.auth?.provider
+        val pluginAuthMethods by viewModel.pluginAuthMethods.collectAsStateWithLifecycle()
+        val pluginAuthStatus by viewModel.pluginAuthStatus.collectAsStateWithLifecycle()
+        val pluginAuthBusy by viewModel.pluginAuthBusy.collectAsStateWithLifecycle()
         PluginDetailDialog(
             plugin = plugin,
             tools = viewModel.getPluginTools(plugin.name),
+            authMethods = authProvider?.let { provider ->
+                pluginAuthMethods.firstOrNull { it.provider == provider }?.methods ?: emptyList()
+            } ?: emptyList(),
+            authLoggedIn = authProvider?.let { pluginAuthStatus[it] == true } == true,
+            authBusy = pluginAuthBusy,
+            disabled = viewModel.isPluginDisabled(plugin),
+            onToggleDisabled = { disabled -> viewModel.setPluginDisabled(plugin, disabled) },
+            onAuthorize = { index -> viewModel.pluginAuthAuthorize(authProvider ?: "", index) },
+            onSubmit = { code -> viewModel.pluginAuthSubmit(authProvider ?: "", code) },
+            onSaveApiKey = { key -> viewModel.pluginAuthSaveApiKey(authProvider ?: "", key) },
+            onLogout = { viewModel.pluginAuthLogout(authProvider ?: "") },
             onDismiss = { selectedPlugin = null }
         )
     }

@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.plugin.PluginHookGateway
+import com.aicode.feature.settings.data.ProviderBaseUrlStore
+import com.aicode.feature.settings.data.ProviderSdkStore
 import com.aicode.feature.settings.data.local.CustomModelMetadataStore
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.domain.model.ProviderType
@@ -36,7 +38,9 @@ import javax.inject.Singleton
 class ModelMetadataService @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val customModelMetadataStore: CustomModelMetadataStore,
-    private val pluginManager: PluginHookGateway
+    private val pluginManager: PluginHookGateway,
+    private val providerBaseUrlStore: ProviderBaseUrlStore,
+    private val providerSdkStore: ProviderSdkStore
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -77,6 +81,14 @@ class ModelMetadataService @Inject constructor(
                 mergeCustom(providerId, modelId, merged)
             }
         }
+
+    /** 插件虚拟 provider 的对话模型列表：内置目录中该 provider id 下支持工具调用的 CHAT 模型；目录无此 provider 时返回空。 */
+    fun chatModelsForProvider(providerId: String): List<String> {
+        if (providerId.isBlank()) return emptyList()
+        return loadCatalog()[providerId].orEmpty()
+            .filter { (_, m) -> m.modelType == ModelMetadata.ModelType.CHAT && m.supportsTools }
+            .keys.sorted()
+    }
 
     /** provider.models hook：插件提供的模型元数据（优先于 models.dev 拉取，仍低于用户自定义）。 */
     private suspend fun pluginModelMetadata(providerId: String, modelId: String): ModelMetadata? {
@@ -306,7 +318,19 @@ class ModelMetadataService @Inject constructor(
 
     private fun parseCatalog(root: JsonElement): Map<String, Map<String, ModelMetadata>> {
         return root.jsonObject.mapValues { (providerId, providerEl) ->
-            val models = providerEl.jsonObject["models"]?.jsonObject.orEmpty()
+            val provider = providerEl.jsonObject
+            // provider 级 api 字段（models.dev：字符串或 {baseURL} 对象）写入 Store，供插件虚拟 provider 解析端点。
+            val apiEl = provider["api"]
+            val baseUrl = when (apiEl) {
+                is JsonPrimitive -> apiEl.contentOrNull
+                is JsonObject -> (apiEl["baseURL"] as? JsonPrimitive)?.contentOrNull
+                else -> null
+            }
+            if (!baseUrl.isNullOrBlank()) providerBaseUrlStore.update(providerId, baseUrl)
+            // provider 级 npm 字段（models.dev：SDK 包名）写入 Store，供插件虚拟 provider 判断协议类型。
+            val npm = (provider["npm"] as? JsonPrimitive)?.contentOrNull
+            providerSdkStore.update(providerId, npm)
+            val models = provider["models"]?.jsonObject.orEmpty()
             models.mapValues { (_, modelEl) ->
                 val model = modelEl.jsonObject
                 val limit = model["limit"]?.jsonObject
