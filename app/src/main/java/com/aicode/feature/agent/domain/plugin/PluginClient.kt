@@ -187,7 +187,7 @@ class PluginClient(
             put("args", arguments)
             if (sessionId != null) put("sessionID", sessionId)
         }
-        val response = transport.request("tool.call", params)
+        val response = transport.request("tool.call", params, timeoutMs = null)
         val result = response.result as? JsonObject ?: throw PluginException(message = "tool.call 无 result")
         val call = result["result"] as? JsonObject ?: return PluginCallResult("", true)
         val status = (call["status"] as? JsonPrimitive)?.contentOrNull

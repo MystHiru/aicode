@@ -1,0 +1,8 @@
+{
+  "name": "aicode-plugins",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "opencode-readseek": "0.9.13"
+  }
+}

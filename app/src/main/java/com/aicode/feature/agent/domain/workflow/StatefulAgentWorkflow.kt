@@ -43,6 +43,7 @@ import com.aicode.feature.agent.domain.provider.AnthropicAdapter
 import com.aicode.feature.agent.domain.provider.GeminiAdapter
 import com.aicode.feature.agent.domain.provider.OpenAIAdapter
 import com.aicode.feature.agent.domain.plugin.PluginHookGateway
+import com.aicode.feature.agent.domain.plugin.hostapi.MessageMapper
 import com.aicode.feature.settings.domain.model.ProviderType
 import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import kotlinx.coroutines.CancellationException
@@ -68,6 +69,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import android.os.SystemClock
 import javax.inject.Inject
 
@@ -722,7 +724,8 @@ class StatefulAgentWorkflow @Inject constructor(
     /** 历史消息转换 hook：插件可裁剪、脱敏消息。
      *  对齐 opencode：output 为 `{info: Message, parts: Part[]}[]`，复用 MessageMapper 反向转换回 AiCode AgentMessage。 */
     private suspend fun applyMessagesTransform(messages: List<AgentMessage>, sessionId: String?): List<AgentMessage> {
-        // 把 AiCode AgentMessage 列表转换为 opencode 形状（简化版：只保留 USER/ASSISTANT + text part）
+        // 把 AiCode AgentMessage 列表转换为 opencode `{info, parts}[]` 形状（对齐 MessageMapper 语义）：
+        // assistant 携带 text/reasoning/tool 声明 part，tool 结果作为独立 role=tool 消息（tool part）。
         val openCodeMessages = buildJsonArray {
             messages.forEach { msg ->
                 when (msg) {
@@ -744,12 +747,32 @@ class StatefulAgentWorkflow @Inject constructor(
                             put("id", msg.id)
                             put("sessionID", sessionId ?: "")
                             put("role", "assistant")
+                            if (msg.signature.isNotBlank()) put("signature", msg.signature)
                         })
                         putJsonArray("parts") {
-                            add(buildJsonObject {
-                                put("type", "text")
-                                put("text", msg.content)
-                            })
+                            if (msg.content.isNotBlank()) {
+                                add(buildJsonObject {
+                                    put("type", "text")
+                                    put("text", msg.content)
+                                })
+                            }
+                            if (msg.reasoning.isNotBlank()) {
+                                add(buildJsonObject {
+                                    put("type", "reasoning")
+                                    put("text", msg.reasoning)
+                                })
+                            }
+                            msg.toolCalls.forEach { tc ->
+                                add(buildJsonObject {
+                                    put("type", "tool")
+                                    put("tool", tc.name)
+                                    put("callID", tc.id)
+                                    putJsonObject("state") {
+                                        put("status", "running")
+                                        put("input", JsonObject(tc.arguments))
+                                    }
+                                })
+                            }
                         }
                     })
                     is AgentMessage.ToolResultMessage -> add(buildJsonObject {
@@ -763,10 +786,10 @@ class StatefulAgentWorkflow @Inject constructor(
                                 put("type", "tool")
                                 put("tool", msg.toolName)
                                 put("callID", msg.id)
-                                put("state", buildJsonObject {
+                                putJsonObject("state") {
                                     put("status", "completed")
                                     put("output", msg.result)
-                                })
+                                }
                             })
                         }
                     })
@@ -779,26 +802,11 @@ class StatefulAgentWorkflow @Inject constructor(
             buildJsonObject { put("messages", openCodeMessages) }
         )
         val arr = (result.output["messages"] as? JsonArray) ?: return messages
-        // 反向转换：从 opencode `{info, parts}[]` 提取 text parts 拼接为 AiCode AgentMessage
-        val transformed = arr.mapNotNull { el ->
-            val obj = el as? JsonObject ?: return@mapNotNull null
-            val info = obj["info"] as? JsonObject ?: return@mapNotNull null
-            val parts = obj["parts"] as? JsonArray ?: return@mapNotNull null
-            val id = (info["id"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
-            val sessionID = (info["sessionID"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
-            val role = (info["role"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
-            val text = parts.mapNotNull { p ->
-                val pObj = p as? JsonObject ?: return@mapNotNull null
-                if ((pObj["type"] as? JsonPrimitive)?.content == "text") {
-                    (pObj["text"] as? JsonPrimitive)?.contentOrNull
-                } else null
-            }.joinToString("\n")
-            when (role) {
-                "user" -> AgentMessage.UserMessage(id = id, content = text)
-                "assistant" -> AgentMessage.AssistantMessage(id = id, content = text)
-                else -> null
-            }
-        }
+        // 插件未修改消息（无插件/未实现该 hook 时输出与输入一致）：直接返回原始消息，
+        // 避免 JSON 往返剥掉 tool_calls / reasoning / tool 结果，导致模型看不到工具结果而死循环重试。
+        if (arr === openCodeMessages || arr.toString() == openCodeMessages.toString()) return messages
+        // 反向转换：从 opencode `{info, parts}[]` 完整还原（text/reasoning/toolCalls/tool 结果）。
+        val transformed = MessageMapper.fromOpenCodeMessages(arr)
         return if (transformed.isEmpty()) messages else transformed
     }
 

@@ -16,7 +16,9 @@ sealed class PluginSessionCommand {
         /** true 时仅注入上下文（落库 user 消息），不触发 AI 回复。 */
         val noReply: Boolean = false,
         /** 可选模型覆盖：providerId to modelId，prompt 前更新会话绑定。 */
-        val model: Pair<String, String>? = null
+        val model: Pair<String, String>? = null,
+        /** 工具排除（对齐 opencode prompt body.tools）：值为 false 的工具在本轮会话中不可用，null=不过滤。 */
+        val tools: Map<String, Boolean>? = null
     ) : PluginSessionCommand()
 
     /** 删除会话（含子代理会话级联删除）。 */

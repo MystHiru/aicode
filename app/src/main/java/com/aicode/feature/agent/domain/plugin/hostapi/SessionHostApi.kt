@@ -15,6 +15,7 @@ import com.aicode.feature.agent.domain.subagent.SubAgentEventBus
 import com.aicode.feature.agent.domain.subagent.SubAgentEventType
 import com.aicode.feature.settings.data.repository.DefaultModelSettingsRepository
 import com.aicode.feature.workspace.data.repository.WorkspaceRepository
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -73,11 +74,15 @@ class SessionHostApi @Inject constructor(
         return ok(messageMapper.sessionToJson(session))
     }
 
-    /** client.session.list：返回当前工作区会话列表。 */
+    /** client.session.list：返回当前工作区会话列表。
+     * 排序：按 updatedAt 升序（最旧在前）——opencode 生态部分插件用 `findLast(s => !s.parentID)`
+     * 推断「当前会话」作为子代理父会话，升序保证列表末尾的根会话是最近更新的会话（对应用户当前会话），
+     * 使插件创建的子代理挂到用户可见的会话下（对齐 opencode 下单一根会话时的行为）。
+     */
     suspend fun handleSessionList(plugin: String?): JsonRpcResponse {
         FileLogger.d(TAG, "插件查询会话列表" + pluginTag(plugin))
         val path = workspaceRepository.currentPath()
-        val sessions = chatSessionDao.getAllSessionsByWorkspaceOnce(path)
+        val sessions = chatSessionDao.getAllSessionsByWorkspaceOnce(path).sortedBy { it.updatedAt }
         return ok(buildJsonArray {
             sessions.forEach { s -> add(messageMapper.sessionToJson(s)) }
         })
@@ -133,8 +138,22 @@ class SessionHostApi @Inject constructor(
         return ok(messageMapper.sessionToJson(entity))
     }
 
-    /** client.session.prompt：向会话发送消息触发 AI 回复。 */
-    suspend fun handleSessionPrompt(params: JsonObject, plugin: String?): JsonRpcResponse {
+    /** client.session.prompt：向会话发送消息并阻塞等待 AI 回复完成（对齐 opencode prompt）。 */
+    suspend fun handleSessionPrompt(params: JsonObject, plugin: String?): JsonRpcResponse =
+        handlePrompt(params, plugin, await = true)
+
+    /** client.session.promptAsync：向会话异步派发消息，立即返回（对齐 opencode prompt_async）。 */
+    suspend fun handleSessionPromptAsync(params: JsonObject, plugin: String?): JsonRpcResponse =
+        handlePrompt(params, plugin, await = false)
+
+    /**
+     * prompt 公共实现。[await] 为 true 时阻塞等待目标会话运行结束（opencode prompt 语义）；
+     * false 时注册 busy 后立即返回（opencode prompt_async 语义）。
+     * busy 注册前移到命令 emit 之前：插件在 prompt 返回后查询 session.status 必然可见 busy，
+     * 不会把「工作流尚未启动」误判为「已完成」。noReply 仅注入上下文、不启动工作流，
+     * 无人会移除 busy，故不注册也不等待。
+     */
+    private suspend fun handlePrompt(params: JsonObject, plugin: String?, await: Boolean): JsonRpcResponse {
         val id = (params["id"] as? JsonPrimitive)?.contentOrNull ?: return error(-32602, "session.prompt 缺少 id")
         if (chatSessionDao.getById(id) == null) return error(-32004, "session not found: $id")
         val body = (params["body"] as? JsonObject) ?: buildJsonObject { }
@@ -185,10 +204,22 @@ class SessionHostApi @Inject constructor(
             val modelId = (m["modelID"] as? JsonPrimitive)?.contentOrNull
             if (!providerId.isNullOrBlank() && !modelId.isNullOrBlank()) providerId to modelId else null
         }
+        val tools = extractTools(body)
+        if (noReply) {
+            sessionCommandBus.emit(
+                PluginSessionCommand.Prompt(sessionId = id, text = text, noReply = true, model = model, tools = tools)
+            )
+            FileLogger.i(TAG, "插件 prompt(noReply): session=$id$pluginLog")
+            return ok()
+        }
+        sessionActivityRegistry.add(id)
         sessionCommandBus.emit(
-            PluginSessionCommand.Prompt(sessionId = id, text = text, noReply = noReply, model = model)
+            PluginSessionCommand.Prompt(sessionId = id, text = text, noReply = false, model = model, tools = tools)
         )
-        FileLogger.i(TAG, "插件 prompt: session=$id noReply=$noReply text=${text.take(80)}$pluginLog")
+        if (await) {
+            sessionActivityRegistry.running.first { id !in it }
+        }
+        FileLogger.i(TAG, "插件 prompt: session=$id await=$await text=${text.take(80)}$pluginLog")
         return ok()
     }
 
@@ -310,6 +341,15 @@ class SessionHostApi @Inject constructor(
                 null
             }
         }
+    }
+
+    /** 提取 body.tools（工具排除 map，对齐 opencode prompt body.tools：false=排除，true/未列出=保留）。 */
+    private fun extractTools(body: JsonObject): Map<String, Boolean>? {
+        val tools = body["tools"] as? JsonObject ?: return null
+        if (tools.isEmpty()) return null
+        return tools.mapNotNull { (name, value) ->
+            (value as? JsonPrimitive)?.booleanOrNull?.let { name to it }
+        }.toMap()
     }
 
     private fun ok(result: JsonElement = buildJsonObject { }): JsonRpcResponse = JsonRpcResponse(result = result)

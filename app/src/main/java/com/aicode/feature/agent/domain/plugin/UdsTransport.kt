@@ -42,7 +42,7 @@ class UdsTransport(
     private companion object {
         const val TAG = "PluginUdsTransport"
 
-        /** 单次请求等待响应的上限：插件 hook 可能执行异步逻辑（如网络调用），给足时间。 */
+        /** 单次请求默认等待响应的上限：插件 hook 可能执行异步逻辑（如网络调用），给足时间；tool.call 等长任务可用 [request] 的 timeoutMs 覆盖。 */
         const val REQUEST_TIMEOUT_MS = 30_000L
 
         @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
@@ -91,7 +91,11 @@ class UdsTransport(
         scope.launch { readLoop() }
     }
 
-    suspend fun request(method: String, params: JsonObject? = null): JsonRpcResponse {
+    /**
+     * 向 runner 发送请求并等待响应。[timeoutMs] 为 null 时无限等待（对齐 opencode：插件工具执行不受框架超时限制），
+     * 连接断开/进程退出由 failAllPending 兜底，协程取消照常传播。
+     */
+    suspend fun request(method: String, params: JsonObject? = null, timeoutMs: Long? = REQUEST_TIMEOUT_MS): JsonRpcResponse {
         ensureConnected()
         val id = idCounter.incrementAndGet()
         val payload = JsonRpcRequest(id = id, method = method, params = params)
@@ -106,10 +110,14 @@ class UdsTransport(
             throw PluginException(message = "写入 UDS 失败: ${e.message}", cause = e)
         }
 
-        val response = withTimeoutOrNull(REQUEST_TIMEOUT_MS) { deferred.await() }
+        val response = if (timeoutMs != null) {
+            withTimeoutOrNull(timeoutMs) { deferred.await() }
+        } else {
+            deferred.await()
+        }
         if (response == null) {
             pending.remove(id)
-            throw PluginException(message = "请求 $method 超时（${REQUEST_TIMEOUT_MS}ms）")
+            throw PluginException(message = "请求 $method 超时（${timeoutMs}ms）")
         }
         response.error?.let {
             throw PluginException(rpcCode = it.code, message = "$method 返回错误 [${it.code}] ${it.message}")

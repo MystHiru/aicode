@@ -24,7 +24,9 @@ data class SubAgentEvent(
     val subSessionId: String,
     val parentSessionId: String,
     val type: SubAgentEventType,
-    val detail: String = ""
+    val detail: String = "",
+    /** SPAWNED 专用：子代理完成时是否向父会话注入后台通知（仅内置 task 工具创建时启用）。 */
+    val notifyParent: Boolean = false
 )
 
 /**
@@ -43,6 +45,9 @@ class SubAgentEventBus @Inject constructor() {
     private val _activeSubSessionIds = MutableStateFlow<Set<String>>(emptySet())
     val activeSubSessionIds: StateFlow<Set<String>> = _activeSubSessionIds.asStateFlow()
 
+    /** 完成时需要向父会话注入通知的子代理 id（仅内置 task 工具 SPAWNED 时注册，一次性消费）。 */
+    private val _notifyOnFinish = MutableStateFlow<Set<String>>(emptySet())
+
     /** 运行中的子代理数量。 */
     val activeCount: Int get() = _activeSubSessionIds.value.size
 
@@ -54,11 +59,25 @@ class SubAgentEventBus @Inject constructor() {
         when (event.type) {
             SubAgentEventType.SPAWNED -> {
                 _activeSubSessionIds.value = _activeSubSessionIds.value + event.subSessionId
+                if (event.notifyParent) {
+                    _notifyOnFinish.value = _notifyOnFinish.value + event.subSessionId
+                }
             }
-            SubAgentEventType.COMPLETED, SubAgentEventType.FAILED, SubAgentEventType.STOPPED -> {
+            SubAgentEventType.COMPLETED, SubAgentEventType.FAILED -> {
                 _activeSubSessionIds.value = _activeSubSessionIds.value - event.subSessionId
+            }
+            SubAgentEventType.STOPPED -> {
+                _activeSubSessionIds.value = _activeSubSessionIds.value - event.subSessionId
+                _notifyOnFinish.value = _notifyOnFinish.value - event.subSessionId
             }
         }
         _events.tryEmit(event)
+    }
+
+    /** 消费子代理完成回调资格：返回该子代理完成时是否应向父会话注入通知，并清除注册（一次性）。 */
+    fun consumeParentNotification(subSessionId: String): Boolean {
+        val shouldNotify = subSessionId in _notifyOnFinish.value
+        _notifyOnFinish.value = _notifyOnFinish.value - subSessionId
+        return shouldNotify
     }
 }

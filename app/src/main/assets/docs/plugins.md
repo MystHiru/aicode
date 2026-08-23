@@ -91,11 +91,11 @@
 | `client.global.health()` | ✅ 已支持 | 健康检查（本地实现，opencode 无此端点） |
 | `client.project.get()` | ✅ 已支持 | 项目信息（对齐 opencode `Project`：id/worktree/vcsDir/vcs/time） |
 | `client.session.get()` | ✅ 已支持 | 按 id 查会话（对齐 opencode `Session`：id/slug/projectID/directory/title/version/time/model/agent/parentID 等） |
-| `client.session.list()` | ✅ 已支持 | 当前工作区会话列表（对齐 opencode `Session[]` 直接数组） |
+| `client.session.list()` | ✅ 已支持 | 当前工作区会话列表（对齐 opencode `Session[]` 直接数组）；**按 updatedAt 升序**（最旧在前，列表末尾的根会话为最近更新的会话），便于插件用 `findLast(s => !s.parentID)` 推断当前会话 |
 | `client.session.children()` | ✅ 已支持 | 指定会话的全部子会话（子代理）列表（对齐 `Session[]`） |
 | `client.session.create()` | ✅ 已支持 | 创建会话（返回 `Session`）；`body.parentID` 存在时创建**子代理会话**（继承父会话模型配置，禁止嵌套） |
-| `client.session.prompt()` | ✅ 已支持 | 向会话发送消息触发 AI 回复（对齐 opencode `prompt_async`，立即返回 void）；`body.noReply=true` 仅注入上下文不触发回复；`body.model` 可选覆盖会话模型；`parts` 中 text 部分拼接为消息，**subtask 部分（`{type:"subtask",prompt,description,agent}`）创建子代理会话并自动启动执行**（每个 subtask 一个子代理，受 5 个并发上限约束） |
-| `client.session.promptAsync()` | ✅ 已支持 | `prompt` 的别名（AiCode 的 prompt 本就异步派发、立即返回，语义一致） |
+| `client.session.prompt()` | ✅ 已支持 | 向会话发送消息并**阻塞等待 AI 回复完成**（对齐 opencode `prompt`，resolve 时目标会话已结束，插件可直接接着轮询 `session.status` 确认 idle）；`body.noReply=true` 仅注入上下文不触发回复（立即返回）；`body.model` 可选覆盖会话模型；`body.tools`（`Record<工具名, boolean>`）可选排除工具，值为 `false` 的工具在本轮会话中不可用（对齐 opencode，true/未列出保留）；`parts` 中 text 部分拼接为消息，**subtask 部分（`{type:"subtask",prompt,description,agent}`）创建子代理会话并自动启动执行**（每个 subtask 一个子代理，受 5 个并发上限约束，异步派发不等待） |
+| `client.session.promptAsync()` | ✅ 已支持 | 异步派发消息后立即返回（对齐 opencode `prompt_async`）；发送后 `session.status` 立即可见 `busy`，完成时消失 |
 | `client.session.status()` | ✅ 已支持 | 运行中会话（对齐 opencode `Record<sessionID, {type:"busy"}>`） |
 | `client.session.delete()` | ✅ 已支持 | 删除会话（含全部子代理会话与消息，运行中先停止；返回 boolean） |
 | `client.session.update()` | ✅ 已支持 | 更新会话元数据（目前仅 `title`，返回 `Session`） |

@@ -156,13 +156,14 @@ class TaskTool @Inject constructor(
             put("title", description)
         })
 
-        // 通知 ViewModel 在子会话上启动 AI 工作流
+        // 通知 ViewModel 在子会话上启动 AI 工作流（notifyParent=true：完成后向父会话注入通知）
         eventBus.emit(
             SubAgentEvent(
                 subSessionId = subSessionId,
                 parentSessionId = parentSessionId,
                 type = SubAgentEventType.SPAWNED,
-                detail = prompt
+                detail = prompt,
+                notifyParent = true
             )
         )
         FileLogger.i(TAG, "子代理已创建: session=$subSessionId parent=$parentSessionId")

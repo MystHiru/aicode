@@ -440,7 +440,11 @@ class AIAgentViewModel @Inject constructor(
                     SubAgentEventType.SPAWNED -> spawnSubAgentWorkflow(event)
                     SubAgentEventType.STOPPED -> stopAgentSession(event.subSessionId)
                     SubAgentEventType.COMPLETED, SubAgentEventType.FAILED -> {
-                        enqueueSubAgentNotification(event)
+                        // 仅内置 task 工具创建的子代理（SPAWNED 时注册过回调资格）完成才注入父会话通知，
+                        // 插件等其它方式创建的子代理不回调（其生命周期由插件自行管理）。
+                        if (subAgentEventBus.consumeParentNotification(event.subSessionId)) {
+                            enqueueSubAgentNotification(event)
+                        }
                     }
                 }
             }
@@ -479,7 +483,8 @@ class AIAgentViewModel @Inject constructor(
         executeAgentRequestStream(
             request = command.text,
             targetSessionId = command.sessionId,
-            skipTitleUpdate = isSub
+            skipTitleUpdate = isSub,
+            toolFilter = command.tools
         )
     }
 
@@ -790,7 +795,9 @@ class AIAgentViewModel @Inject constructor(
         targetSessionId: String? = null,
         isAutoTrigger: Boolean = false,
         /** 子代理等场景：已预设会话标题，跳过首条消息的标题推导/生成，保留预设标题。 */
-        skipTitleUpdate: Boolean = false
+        skipTitleUpdate: Boolean = false,
+        /** 工具排除（对齐 opencode prompt body.tools）：值为 false 的工具本轮不可用，null=不过滤。 */
+        toolFilter: Map<String, Boolean>? = null
     ): Job = viewModelScope.launch {
         val sessionId = targetSessionId ?: ensureSession()
         if (sessionId.isBlank()) {
@@ -863,7 +870,10 @@ class AIAgentViewModel @Inject constructor(
 
             val isSub = sessionUseCase.getSessionById(sessionId)?.parentId != null
             val allTools = toolRegistry.getAvailableTools()
-            val tools = if (isSub) allTools.filterNot { it.name == "task" } else allTools
+            val baseTools = if (isSub) allTools.filterNot { it.name == "task" } else allTools
+            val tools = if (toolFilter == null) baseTools else baseTools.filter { tool ->
+                toolFilter[tool.name] != false
+            }
 
             agentWorkflow.executeEvents(
                 userRequest = modelRequest,

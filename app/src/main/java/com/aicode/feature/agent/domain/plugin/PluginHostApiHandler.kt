@@ -41,6 +41,7 @@ class PluginHostApiHandler @Inject constructor(
                 method == "client.session.children" -> sessionHostApi.handleSessionChildren(params, plugin)
                 method == "client.session.create" -> sessionHostApi.handleSessionCreate(params, plugin)
                 method == "client.session.prompt" -> sessionHostApi.handleSessionPrompt(params, plugin)
+                method == "client.session.promptAsync" -> sessionHostApi.handleSessionPromptAsync(params, plugin)
                 method == "client.session.status" -> sessionHostApi.handleSessionStatus(plugin)
                 method == "client.session.delete" -> sessionHostApi.handleSessionDelete(params, plugin)
                 method == "client.session.update" -> sessionHostApi.handleSessionUpdate(params, plugin)

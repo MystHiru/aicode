@@ -4,13 +4,17 @@ import com.aicode.feature.agent.data.local.dao.AgentMessageDao
 import com.aicode.feature.agent.data.local.dao.ChatSessionDao
 import com.aicode.feature.agent.data.local.entity.AgentMessageEntity
 import com.aicode.feature.agent.data.local.entity.ChatSessionEntity
+import com.aicode.feature.agent.domain.model.AgentMessage
+import com.aicode.feature.agent.domain.tool.ToolCall
 import com.aicode.feature.agent.presentation.MessageRole
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -220,11 +224,99 @@ class MessageMapper @Inject constructor() {
     }
 
     companion object {
-        /** 把 opencode `{info, parts}[]` 格式反向转换为 AiCode AgentMessage 列表。
-         *  用于 experimental.chat.messages.transform hook（插件改写后回写到 AiCode 模型）。 */
-        fun fromOpenCodeMessages(json: JsonArray): List<com.aicode.feature.agent.domain.model.AgentMessage> {
-            // TODO: 完整实现反向转换（Phase 2 补齐）
-            return emptyList()
+        /**
+         * 把 opencode `{info, parts}[]` 格式反向转换为 AiCode AgentMessage 列表。
+         * 用于 experimental.chat.messages.transform hook（插件改写后回写到 AiCode 模型）。
+         *
+         * 与 [toOpenCodeMessages] 互逆（对 TOOL 行合并进 assistant tool part 的格式同样兼容）：
+         * - text part → content（多段拼接）
+         * - reasoning part → AssistantMessage.reasoning
+         * - assistant 下 pending/running 的 tool part → AssistantMessage.toolCalls
+         * - assistant 下已完成/出错的 tool part → 拆出 ToolCall + 紧跟一条 ToolResultMessage
+         * - 独立 role=tool 消息（tool part）→ ToolResultMessage
+         *
+         * 保证工具调用链（assistant tool_calls ↔ tool 结果）在插件改写后仍能完整回写到模型上下文，
+         * 避免工具循环轮次上下文缺失导致模型重复调用同一工具。
+         */
+        fun fromOpenCodeMessages(json: JsonArray): List<AgentMessage> {
+            val result = mutableListOf<AgentMessage>()
+            for (el in json) {
+                val obj = el as? JsonObject ?: continue
+                val info = obj["info"] as? JsonObject ?: continue
+                val parts = obj["parts"] as? JsonArray ?: continue
+                val role = (info["role"] as? JsonPrimitive)?.contentOrNull ?: continue
+                val id = (info["id"] as? JsonPrimitive)?.contentOrNull ?: continue
+                val signature = (info["signature"] as? JsonPrimitive)?.contentOrNull
+
+                val textParts = mutableListOf<String>()
+                val reasoningParts = mutableListOf<String>()
+                val toolCalls = mutableListOf<ToolCall>()
+                // 已完成/出错的 tool part：callID → (toolName, output)，逐个拆为 ToolResultMessage。
+                val completedTools = mutableListOf<Triple<String, String, String>>()
+
+                for (p in parts) {
+                    val pObj = p as? JsonObject ?: continue
+                    when ((pObj["type"] as? JsonPrimitive)?.contentOrNull) {
+                        "text" -> (pObj["text"] as? JsonPrimitive)?.contentOrNull?.let { textParts.add(it) }
+                        "reasoning" -> (pObj["text"] as? JsonPrimitive)?.contentOrNull?.let { reasoningParts.add(it) }
+                        "tool" -> {
+                            val callID = (pObj["callID"] as? JsonPrimitive)?.contentOrNull ?: continue
+                            val toolName = (pObj["tool"] as? JsonPrimitive)?.contentOrNull ?: continue
+                            val state = pObj["state"] as? JsonObject
+                            val status = (state?.get("status") as? JsonPrimitive)?.contentOrNull
+                            val input = (state?.get("input") as? JsonObject)?.toMap().orEmpty()
+                            toolCalls.add(ToolCall(id = callID, name = toolName, arguments = input))
+                            if (status == "completed" || status == "error") {
+                                val output = (state?.get("output") as? JsonPrimitive)?.contentOrNull
+                                    ?: (state?.get("error") as? JsonPrimitive)?.contentOrNull
+                                    ?: ""
+                                completedTools.add(Triple(callID, toolName, output))
+                            }
+                        }
+                    }
+                }
+
+                val content = textParts.joinToString("\n")
+                when (role) {
+                    "user" -> {
+                        result.add(AgentMessage.UserMessage(id = id, content = content))
+                    }
+                    "assistant" -> {
+                        if (content.isNotBlank() || toolCalls.isNotEmpty() || reasoningParts.isNotEmpty()) {
+                            result.add(
+                                AgentMessage.AssistantMessage(
+                                    id = id,
+                                    content = content,
+                                    toolCalls = toolCalls,
+                                    reasoning = reasoningParts.joinToString("\n"),
+                                    signature = signature ?: ""
+                                )
+                            )
+                            completedTools.forEach { (callID, toolName, output) ->
+                                result.add(
+                                    AgentMessage.ToolResultMessage(
+                                        id = callID,
+                                        toolName = toolName,
+                                        result = output
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    "tool" -> {
+                        completedTools.forEach { (callID, toolName, output) ->
+                            result.add(
+                                AgentMessage.ToolResultMessage(
+                                    id = callID,
+                                    toolName = toolName,
+                                    result = output
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+            return result
         }
     }
 }

@@ -76,7 +76,7 @@ export function createClient(pluginName, hostRequest, workspaceDir) {
       return { data: undefined };
     },
     promptAsync: async ({ path, body } = {}) => {
-      await host('client.session.prompt', { id: path?.id, body: body || {} });
+      await host('client.session.promptAsync', { id: path?.id, body: body || {} });
       return { data: undefined };
     },
     status: async () => ({
