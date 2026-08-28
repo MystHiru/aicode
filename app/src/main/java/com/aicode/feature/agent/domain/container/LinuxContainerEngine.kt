@@ -510,8 +510,8 @@ class LinuxContainerEngine @Inject constructor(
         // 每次进入终端页前确保提取最新的内置文档
         containerInstaller.extractDocs()
         if (containerInstaller.isInstalledFor(profile)) {
-            // 旧 rootfs（如已导入的 Ubuntu 26.04）不会重新解压，这里兜底修复 rust-coreutils 权限
-            containerInstaller.fixCoreutilsPermissions(containerInstaller.rootfsDirFor(profile))
+            // 旧 rootfs（如已导入的 Ubuntu 26.04）不会重新解压，这里兜底巡检修复已知兼容性问题
+            containerInstaller.repairRootfsCompatibility(containerInstaller.rootfsDirFor(profile))
             _initProgress.value = ContainerInitState.Ready
             refreshContainerHome()
             detectAndCacheOsIfNeeded(profile)
