@@ -389,7 +389,10 @@ fun SettingsScreen(
                         editingProvider = it
                         section = SettingsSection.ProviderEditor
                     },
-                    onDelete = { viewModel.deleteProvider(it.id) }
+                    onDelete = { viewModel.deleteProvider(it.id) },
+                    onReorder = { fromIndex, toIndex ->
+                        viewModel.reorderProviders(fromIndex, toIndex)
+                    }
                 )
                 SettingsSection.DefaultModels -> DefaultModelsSection(
                     providers = providers,

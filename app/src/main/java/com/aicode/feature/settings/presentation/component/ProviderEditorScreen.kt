@@ -240,6 +240,7 @@ fun ProviderEditorScreen(
         balanceScriptPath = balanceScriptPath,
         balanceRefreshInterval = balanceRefreshInterval,
         userAgent = userAgent,
+        sortOrder = initialProvider?.sortOrder ?: -1,
         proxyEnabled = proxyEnabled,
         proxyType = proxyType,
         proxyHost = proxyHost,
