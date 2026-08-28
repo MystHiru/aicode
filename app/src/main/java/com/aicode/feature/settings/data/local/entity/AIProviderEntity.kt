@@ -28,5 +28,12 @@ data class AIProviderEntity(
     /** 套餐余量自动刷新间隔（分钟）。默认 5 分钟。 */
     val balanceRefreshInterval: Int = 5,
     /** 自定义请求头 User-Agent；留空使用默认。 */
-    val userAgent: String = ""
+    val userAgent: String = "",
+    /** 单独为该提供商配置代理（关闭时跟随全局代理设置）。 */
+    val proxyEnabled: Boolean = false,
+    val proxyType: String = "HTTP",
+    val proxyHost: String = "",
+    val proxyPort: Int = 0,
+    val proxyUsername: String = "",
+    val proxyPassword: String = ""
 )

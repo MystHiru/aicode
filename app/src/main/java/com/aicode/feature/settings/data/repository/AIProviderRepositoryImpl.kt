@@ -5,6 +5,7 @@ import com.aicode.feature.settings.data.local.dao.AIProviderDao
 import com.aicode.feature.settings.data.local.entity.AIProviderEntity
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.ProviderType
+import com.aicode.feature.settings.domain.model.ProxyType
 import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -73,7 +74,13 @@ class AIProviderRepositoryImpl @Inject constructor(
             openaiChatCacheKey = openaiChatCacheKey,
             balanceScriptPath = balanceScriptPath,
             balanceRefreshInterval = balanceRefreshInterval,
-            userAgent = userAgent
+            userAgent = userAgent,
+            proxyEnabled = proxyEnabled,
+            proxyType = runCatching { ProxyType.valueOf(proxyType) }.getOrDefault(ProxyType.HTTP),
+            proxyHost = proxyHost,
+            proxyPort = proxyPort,
+            proxyUsername = proxyUsername,
+            proxyPassword = proxyPassword
         )
     }
 
@@ -94,7 +101,13 @@ class AIProviderRepositoryImpl @Inject constructor(
             openaiChatCacheKey = openaiChatCacheKey,
             balanceScriptPath = balanceScriptPath,
             balanceRefreshInterval = balanceRefreshInterval,
-            userAgent = userAgent
+            userAgent = userAgent,
+            proxyEnabled = proxyEnabled,
+            proxyType = proxyType.name,
+            proxyHost = proxyHost,
+            proxyPort = proxyPort,
+            proxyUsername = proxyUsername,
+            proxyPassword = proxyPassword
         )
     }
 }
