@@ -51,6 +51,10 @@ class DelegatingFileAccess @Inject constructor(
 
     override fun delete(path: String) = delegate().delete(path)
 
+    override fun deleteRecursively(path: String) = delegate().deleteRecursively(path)
+
+    override fun rename(path: String, newPath: String) = delegate().rename(path, newPath)
+
     override fun mkdirs(path: String) = delegate().mkdirs(path)
 
     override fun parentPath(path: String): String? = delegate().parentPath(path)

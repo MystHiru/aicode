@@ -350,6 +350,26 @@ fun AppNavigation() {
                         navController.navigate("editor?path=${android.net.Uri.encode(filePath)}")
                     },
                     onRefreshBrowse = { agentViewModel.refreshBrowse() },
+                    onCreateFile = { name ->
+                        agentViewModel.createBrowseFile(name) { ok ->
+                            if (!ok) toastFileOpFailed(context, R.string.file_browser_create_failed)
+                        }
+                    },
+                    onCreateFolder = { name ->
+                        agentViewModel.createBrowseFolder(name) { ok ->
+                            if (!ok) toastFileOpFailed(context, R.string.file_browser_create_failed)
+                        }
+                    },
+                    onRenameEntry = { path, newName ->
+                        agentViewModel.renameBrowseEntry(path, newName) { ok ->
+                            if (!ok) toastFileOpFailed(context, R.string.file_browser_rename_failed)
+                        }
+                    },
+                    onDeleteEntry = { path ->
+                        agentViewModel.deleteBrowseEntry(path) { ok ->
+                            if (!ok) toastFileOpFailed(context, R.string.file_browser_delete_failed)
+                        }
+                    },
                     onSelect = {
                         agentViewModel.selectSession(it.id)
                         scope.launch { drawerState.close() }
@@ -463,4 +483,9 @@ fun AppNavigation() {
             }
         )
     }
+}
+
+/** 侧边栏文件页写操作失败提示（新建 / 重命名 / 删除共用）。 */
+private fun toastFileOpFailed(context: android.content.Context, messageRes: Int) {
+    Toast.makeText(context, context.getString(messageRes), Toast.LENGTH_SHORT).show()
 }

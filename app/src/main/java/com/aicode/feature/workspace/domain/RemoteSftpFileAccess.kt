@@ -8,6 +8,7 @@ import com.aicode.feature.workspace.domain.WorkspacePathMapper.Companion.CONTAIN
 import kotlinx.coroutines.runBlocking
 import java.io.BufferedReader
 import java.io.File
+import java.io.IOException
 import java.io.InputStreamReader
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.NoSuchFileException
@@ -215,6 +216,22 @@ class RemoteSftpFileAccess @Inject constructor(
         val remote = toRemotePath(path)
         // -r 递归删目录，-f 忽略不存在
         execExitCode("rm -rf ${shellQuote(remote)}")
+    }
+
+    override fun deleteRecursively(path: String) {
+        val remote = toRemotePath(path)
+        val exit = execExitCode("rm -rf ${shellQuote(remote)}")
+        if (exit != 0) throw IOException("rm -rf 退出码=$exit: $remote")
+    }
+
+    override fun rename(path: String, newPath: String) {
+        val from = toRemotePath(path)
+        val to = toRemotePath(newPath)
+        if (!exists(path)) throw NoSuchFileException(File(from))
+        // busybox mv 未必支持 -n，先自行判存再 mv，避免静默覆盖同名目标
+        if (exists(newPath)) throw FileAlreadyExistsException(File(to))
+        val exit = execExitCode("mv ${shellQuote(from)} ${shellQuote(to)}")
+        if (exit != 0) throw IOException("mv 退出码=$exit: $from -> $to")
     }
 
     override fun mkdirs(path: String) {

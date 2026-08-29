@@ -2,6 +2,8 @@ package com.aicode.feature.agent.presentation.component
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -65,17 +67,20 @@ import com.aicode.feature.agent.presentation.AgentUIState
 import com.aicode.feature.agent.presentation.FileBrowseState
 import com.aicode.feature.workspace.domain.FileEntry
 import com.aicode.feature.workspace.domain.WorkspacePathMapper
+import com.aicode.feature.workspace.domain.isValidFileEntryName
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.ArrowUp
 import compose.icons.feathericons.ChevronDown
 import compose.icons.feathericons.ChevronRight
 import compose.icons.feathericons.Download
 import compose.icons.feathericons.Edit2
-import compose.icons.feathericons.FileText
+import compose.icons.feathericons.FilePlus
 import compose.icons.feathericons.Folder
+import compose.icons.feathericons.FolderPlus
 import compose.icons.feathericons.RefreshCw
 import compose.icons.feathericons.Settings
 import compose.icons.feathericons.Trash2
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.aicode.R
 import java.text.SimpleDateFormat
@@ -107,6 +112,10 @@ fun ChatDrawerContent(
     onBrowseUp: () -> Unit,
     onOpenFile: (String) -> Unit,
     onRefreshBrowse: () -> Unit,
+    onCreateFile: (String) -> Unit,
+    onCreateFolder: (String) -> Unit,
+    onRenameEntry: (String, String) -> Unit,
+    onDeleteEntry: (String) -> Unit,
     onNavigateToSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -160,7 +169,11 @@ fun ChatDrawerContent(
                     onOpenDir = onOpenDir,
                     onBrowseUp = onBrowseUp,
                     onOpenFile = onOpenFile,
-                    onRefresh = onRefreshBrowse
+                    onRefresh = onRefreshBrowse,
+                    onCreateFile = onCreateFile,
+                    onCreateFolder = onCreateFolder,
+                    onRenameEntry = onRenameEntry,
+                    onDeleteEntry = onDeleteEntry
                 )
             }
         }
@@ -439,8 +452,17 @@ private fun FileBrowserTab(
     onOpenDir: (String) -> Unit,
     onBrowseUp: () -> Unit,
     onOpenFile: (String) -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    onCreateFile: (String) -> Unit,
+    onCreateFolder: (String) -> Unit,
+    onRenameEntry: (String, String) -> Unit,
+    onDeleteEntry: (String) -> Unit
 ) {
+    var creating by remember { mutableStateOf<CreateKind?>(null) }
+    var menuEntry by remember { mutableStateOf<FileEntry?>(null) }
+    var pendingRename by remember { mutableStateOf<FileEntry?>(null) }
+    var pendingDelete by remember { mutableStateOf<FileEntry?>(null) }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             FileBreadcrumb(
@@ -448,6 +470,28 @@ private fun FileBrowserTab(
                 onNavigate = onOpenDir,
                 modifier = Modifier.weight(1f)
             )
+            IconButton(
+                onClick = { creating = CreateKind.FILE },
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = FeatherIcons.FilePlus,
+                    contentDescription = stringResource(R.string.file_browser_new_file),
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(
+                onClick = { creating = CreateKind.FOLDER },
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = FeatherIcons.FolderPlus,
+                    contentDescription = stringResource(R.string.file_browser_new_folder),
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             IconButton(onClick = onRefresh, modifier = Modifier.size(32.dp)) {
                 Icon(
                     imageVector = FeatherIcons.RefreshCw,
@@ -459,7 +503,7 @@ private fun FileBrowserTab(
         }
         if (path != WorkspacePathMapper.CONTAINER_ROOT) {
             FileBrowserRow(
-                icon = FeatherIcons.ArrowUp,
+                icon = FileTypeIcon.Mono(FeatherIcons.ArrowUp),
                 label = stringResource(R.string.file_browser_up),
                 emphasized = true,
                 onClick = onBrowseUp
@@ -501,17 +545,175 @@ private fun FileBrowserTab(
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(state.entries, key = { it.name }) { entry ->
                         FileBrowserRow(
-                            icon = if (entry.isDirectory) FeatherIcons.Folder else FeatherIcons.FileText,
+                            icon = if (entry.isDirectory) {
+                                FileTypeIcon.Mono(FeatherIcons.Folder)
+                            } else {
+                                fileTypeIconFor(entry.name)
+                            },
                             label = entry.name,
                             emphasized = entry.isDirectory,
                             onClick = {
                                 val child = "$path/${entry.name}"
                                 if (entry.isDirectory) onOpenDir(child) else onOpenFile(child)
-                            }
+                            },
+                            onLongClick = { menuEntry = entry }
                         )
                     }
                 }
             }
+        }
+    }
+
+    creating?.let { kind ->
+        FileNameInputDialog(
+            title = stringResource(
+                if (kind == CreateKind.FILE) R.string.file_browser_new_file else R.string.file_browser_new_folder
+            ),
+            confirmLabel = stringResource(R.string.common_create),
+            initialName = "",
+            onConfirm = { name ->
+                if (kind == CreateKind.FILE) onCreateFile(name) else onCreateFolder(name)
+                creating = null
+            },
+            onDismiss = { creating = null }
+        )
+    }
+
+    menuEntry?.let { entry ->
+        FileEntryActionSheet(
+            name = entry.name,
+            onRename = {
+                menuEntry = null
+                pendingRename = entry
+            },
+            onDelete = {
+                menuEntry = null
+                pendingDelete = entry
+            },
+            onDismiss = { menuEntry = null }
+        )
+    }
+
+    pendingRename?.let { entry ->
+        FileNameInputDialog(
+            title = stringResource(R.string.common_rename),
+            confirmLabel = stringResource(R.string.common_rename),
+            initialName = entry.name,
+            onConfirm = { name ->
+                onRenameEntry("$path/${entry.name}", name)
+                pendingRename = null
+            },
+            onDismiss = { pendingRename = null }
+        )
+    }
+
+    pendingDelete?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text(stringResource(R.string.common_delete)) },
+            text = {
+                Text(
+                    stringResource(
+                        if (entry.isDirectory) {
+                            R.string.file_browser_delete_folder_confirm
+                        } else {
+                            R.string.file_browser_delete_file_confirm
+                        },
+                        entry.name
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteEntry("$path/${entry.name}")
+                    pendingDelete = null
+                }) { Text(stringResource(R.string.common_delete), color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text(stringResource(R.string.common_cancel)) }
+            }
+        )
+    }
+}
+
+/** 新建对象类型，决定确认后调创建文件还是创建文件夹。 */
+private enum class CreateKind { FILE, FOLDER }
+
+/** 新建 / 重命名共用的名称输入弹窗：名称非法或与原名相同时禁用确认。 */
+@Composable
+private fun FileNameInputDialog(
+    title: String,
+    confirmLabel: String,
+    initialName: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var name by remember { mutableStateOf(initialName) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            AppTextField(
+                value = name,
+                onValueChange = { name = it },
+                singleLine = true,
+                label = stringResource(R.string.file_browser_name_label),
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(name) },
+                enabled = isValidFileEntryName(name) && name.trim() != initialName
+            ) { Text(confirmLabel) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) }
+        }
+    )
+}
+
+/** 文件/目录行长按弹出的功能菜单：重命名 / 删除。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FileEntryActionSheet(
+    name: String,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(),
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = Spacing.xl)
+        ) {
+            Text(
+                text = name,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .padding(horizontal = Spacing.lg)
+                    .padding(bottom = Spacing.md)
+            )
+            SheetActionRow(
+                icon = FeatherIcons.Edit2,
+                label = stringResource(R.string.common_rename),
+                tint = MaterialTheme.colorScheme.onSurface,
+                onClick = onRename
+            )
+            SheetActionRow(
+                icon = FeatherIcons.Trash2,
+                label = stringResource(R.string.common_delete),
+                tint = MaterialTheme.colorScheme.error,
+                onClick = onDelete
+            )
         }
     }
 }
@@ -574,27 +776,34 @@ private fun FileBreadcrumb(
     }
 }
 
-/** 文件浏览的单行：目录 / 文件 / 上一级均复用。 */
+/** 文件浏览的单行：目录 / 文件 / 上一级均复用。[onLongClick] 为 null 时不响应长按（如「上一级」）。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileBrowserRow(
-    icon: ImageVector,
+    icon: FileTypeIcon,
     label: String,
     emphasized: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
 ) {
-    Surface(
-        onClick = onClick,
-        color = Color.Transparent,
-        shape = RoundedCornerShape(10.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = Spacing.lg, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Spacing.lg, vertical = 11.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = icon,
+        when (icon) {
+            is FileTypeIcon.Colored -> Icon(
+                painter = painterResource(icon.res),
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                // 彩色文件类型图标保留原色，不随主题染色
+                tint = Color.Unspecified
+            )
+            is FileTypeIcon.Mono -> Icon(
+                imageVector = icon.vector,
                 contentDescription = null,
                 modifier = Modifier.size(18.dp),
                 tint = if (emphasized) {
@@ -603,16 +812,16 @@ private fun FileBrowserRow(
                     MaterialTheme.colorScheme.onSurfaceVariant
                 }
             )
-            Spacer(Modifier.width(Spacing.md))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
         }
+        Spacer(Modifier.width(Spacing.md))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 

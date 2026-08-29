@@ -44,6 +44,7 @@ import com.aicode.feature.workspace.domain.FileAccessProvider
 import com.aicode.feature.workspace.domain.FileEntry
 import com.aicode.feature.workspace.domain.WorkspaceDirWatcher
 import com.aicode.feature.workspace.domain.WorkspacePathMapper
+import com.aicode.feature.workspace.domain.isValidFileEntryName
 import com.aicode.feature.agent.domain.workflow.AgentEvent
 import com.aicode.feature.agent.domain.tool.ToolPermissionManager
 import com.aicode.feature.agent.domain.tool.ToolRegistry
@@ -246,6 +247,63 @@ class AIAgentViewModel @Inject constructor(
     /** 切换工作区后回到根目录，避免停在旧工作区的子路径上。 */
     fun resetBrowseToRoot() {
         _browsePath.value = WorkspacePathMapper.CONTAINER_ROOT
+    }
+
+    /**
+     * 文件浏览的写操作共用包装：跑 IO 调度器，成功后主动重读目录（远程模式无 inotify）。
+     * [block] 返回 false 表示名称非法或同名已存在，抛异常表示 IO 失败，两者均回报失败。
+     */
+    private fun mutateBrowse(onResult: (Boolean) -> Unit, block: () -> Boolean) = viewModelScope.launch {
+        val success = withContext(Dispatchers.IO) {
+            runCatching(block)
+                .onFailure { FileLogger.w(TAG, "文件操作失败: ${_browsePath.value}", it) }
+                .getOrDefault(false)
+        }
+        if (success) refreshBrowse()
+        onResult(success)
+    }
+
+    /** 当前浏览目录下的子路径；名称非法时返回 null。 */
+    private fun browseChildPath(name: String): String? =
+        if (isValidFileEntryName(name)) "${_browsePath.value}/${name.trim()}" else null
+
+    /** 在当前浏览目录新建空文件。 */
+    fun createBrowseFile(name: String, onResult: (Boolean) -> Unit) = mutateBrowse(onResult) {
+        val target = browseChildPath(name)
+        if (target == null || fileAccess.exists(target)) {
+            false
+        } else {
+            fileAccess.writeFile(target, "", overwrite = false)
+            true
+        }
+    }
+
+    /** 在当前浏览目录新建文件夹。 */
+    fun createBrowseFolder(name: String, onResult: (Boolean) -> Unit) = mutateBrowse(onResult) {
+        val target = browseChildPath(name)
+        if (target == null || fileAccess.exists(target)) {
+            false
+        } else {
+            fileAccess.mkdirs(target)
+            fileAccess.isDirectory(target)
+        }
+    }
+
+    /** 重命名条目（仅同目录内改名，不跨目录移动）。 */
+    fun renameBrowseEntry(path: String, newName: String, onResult: (Boolean) -> Unit) = mutateBrowse(onResult) {
+        val parent = path.substringBeforeLast('/', "")
+        if (parent.isEmpty() || !isValidFileEntryName(newName)) {
+            false
+        } else {
+            fileAccess.rename(path, "$parent/${newName.trim()}")
+            true
+        }
+    }
+
+    /** 删除条目；目录连同内容递归删除。 */
+    fun deleteBrowseEntry(path: String, onResult: (Boolean) -> Unit) = mutateBrowse(onResult) {
+        fileAccess.deleteRecursively(path)
+        true
     }
 
     /** 当前会话完整信息（根会话与子会话通用；null 表示尚未解析出会话）。 */

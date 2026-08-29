@@ -86,6 +86,15 @@ interface FileAccessProvider {
     /** 删除文件或空目录。 */
     fun delete(path: String)
 
+    /** 递归删除文件或目录（目录非空时连同内容一起删）。目标不存在时静默返回。 */
+    fun deleteRecursively(path: String)
+
+    /**
+     * 重命名 / 移动。[newPath] 已存在时抛 [FileAlreadyExistsException]，
+     * [path] 不存在时抛 [NoSuchFileException]，其它失败抛 [java.io.IOException]。
+     */
+    fun rename(path: String, newPath: String)
+
     /** 创建目录（含父目录）。 */
     fun mkdirs(path: String)
 
@@ -94,4 +103,17 @@ interface FileAccessProvider {
 
     /** 把内部真实路径还原为 AI 视角的容器路径（回显用）。 */
     fun toDisplayPath(path: String): String
+}
+
+/**
+ * 单个目录条目名是否合法：非空、不含路径分隔符、不是 `.` 或 `..`。
+ * 拦掉 `../` 这类会跳出当前目录的输入，供文件浏览的新建/重命名使用。
+ */
+fun isValidFileEntryName(name: String): Boolean {
+    val trimmed = name.trim()
+    return trimmed.isNotEmpty() &&
+        !trimmed.contains('/') &&
+        !trimmed.contains('\\') &&
+        trimmed != "." &&
+        trimmed != ".."
 }

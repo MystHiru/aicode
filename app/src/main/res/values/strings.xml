@@ -370,6 +370,14 @@
     <string name="file_browser_empty">空目录</string>
     <string name="file_browser_error">读取目录失败</string>
     <string name="file_browser_refresh">刷新</string>
+    <string name="file_browser_new_file">新建文件</string>
+    <string name="file_browser_new_folder">新建文件夹</string>
+    <string name="file_browser_name_label">名称</string>
+    <string name="file_browser_delete_file_confirm">确定删除文件“%1$s”？</string>
+    <string name="file_browser_delete_folder_confirm">确定删除文件夹“%1$s”及其全部内容？</string>
+    <string name="file_browser_create_failed">创建失败，可能已存在同名项或无写入权限</string>
+    <string name="file_browser_rename_failed">重命名失败，可能已存在同名项</string>
+    <string name="file_browser_delete_failed">删除失败</string>
     <string name="editor_readonly">只读</string>
     <string name="editor_file_too_large">文件过大（%1$d MB），暂不支持打开</string>
     <string name="editor_load_failed">文件打开失败</string>

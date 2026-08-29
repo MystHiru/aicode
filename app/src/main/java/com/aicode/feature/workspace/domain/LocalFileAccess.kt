@@ -1,6 +1,7 @@
 package com.aicode.feature.workspace.domain
 
 import java.io.File
+import java.io.IOException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.NoSuchFileException
 import javax.inject.Inject
@@ -85,6 +86,23 @@ class LocalFileAccess @Inject constructor(
 
     override fun delete(path: String) {
         resolve(path).delete()
+    }
+
+    override fun deleteRecursively(path: String) {
+        val file = resolve(path)
+        if (!file.exists()) return
+        if (!file.deleteRecursively()) throw IOException("delete failed: ${file.absolutePath}")
+    }
+
+    override fun rename(path: String, newPath: String) {
+        val source = resolve(path)
+        val target = resolve(newPath)
+        if (!source.exists()) throw NoSuchFileException(source)
+        if (target.exists()) throw FileAlreadyExistsException(target)
+        target.parentFile?.mkdirs()
+        if (!source.renameTo(target)) {
+            throw IOException("rename failed: ${source.absolutePath} -> ${target.absolutePath}")
+        }
     }
 
     override fun mkdirs(path: String) {

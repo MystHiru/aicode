@@ -375,6 +375,14 @@
     <string name="file_browser_empty">Empty folder</string>
     <string name="file_browser_error">Failed to read folder</string>
     <string name="file_browser_refresh">Refresh</string>
+    <string name="file_browser_new_file">New file</string>
+    <string name="file_browser_new_folder">New folder</string>
+    <string name="file_browser_name_label">Name</string>
+    <string name="file_browser_delete_file_confirm">Delete file "%1$s"?</string>
+    <string name="file_browser_delete_folder_confirm">Delete folder "%1$s" and all of its contents?</string>
+    <string name="file_browser_create_failed">Create failed: name may already exist or the folder is not writable</string>
+    <string name="file_browser_rename_failed">Rename failed: the name may already exist</string>
+    <string name="file_browser_delete_failed">Delete failed</string>
     <string name="editor_readonly">Read-only</string>
     <string name="editor_file_too_large">File too large (%1$d MB) to open</string>
     <string name="editor_load_failed">Failed to open file</string>
