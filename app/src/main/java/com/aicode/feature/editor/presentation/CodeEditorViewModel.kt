@@ -27,6 +27,7 @@ sealed interface EditorUiState {
     data object Loading : EditorUiState
     data class Success(val content: String, val scopeName: String?) : EditorUiState
     data class TooLarge(val sizeBytes: Long) : EditorUiState
+    data object Binary : EditorUiState
     data class Error(val detail: String?) : EditorUiState
 }
 
@@ -68,6 +69,10 @@ class CodeEditorViewModel @Inject constructor(
                 if (size > MAX_EDITABLE_BYTES) {
                     return@runCatching EditorUiState.TooLarge(size)
                 }
+                val bytes = fileAccess.readBytes(path)
+                if (looksBinary(bytes)) {
+                    return@runCatching EditorUiState.Binary
+                }
                 // 语法包解析放在这里，确保 AndroidView factory 在主线程创建编辑器时 registry 已就绪。
                 TextMateSetup.ensureInitialized(context)
                 val scope = TextMateSetup.scopeNameFor(path)
@@ -78,7 +83,7 @@ class CodeEditorViewModel @Inject constructor(
                     runCatching { TextMateLanguage.create(scope, false).destroy() }
                 }
                 EditorUiState.Success(
-                    content = fileAccess.readFile(path),
+                    content = bytes.toString(Charsets.UTF_8),
                     scopeName = scope
                 )
             }.getOrElse { e ->
@@ -109,5 +114,17 @@ class CodeEditorViewModel @Inject constructor(
 
         /** 全量读入内存，超过该体积拒绝打开以避免 OOM 与长时间卡顿。 */
         const val MAX_EDITABLE_BYTES = 2L * 1024 * 1024
+
+        /** 二进制嗅探的采样字节数：与 git 一致，仅看开头一段。 */
+        const val BINARY_SNIFF_BYTES = 8000
+
+        /** 二进制判定：开头采样段内出现 NUL 字节即视为二进制（文本文件不含 NUL，误判率极低）。 */
+        fun looksBinary(bytes: ByteArray): Boolean {
+            val limit = minOf(bytes.size, BINARY_SNIFF_BYTES)
+            for (i in 0 until limit) {
+                if (bytes[i].toInt() == 0) return true
+            }
+            return false
+        }
     }
 }

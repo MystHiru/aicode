@@ -301,6 +301,9 @@ fun CodeEditorScreen(
                     )
                 )
             }
+            is EditorUiState.Binary -> CenterBox(content) {
+                HintText(stringResource(R.string.editor_binary_unsupported))
+            }
             is EditorUiState.Error -> CenterBox(content) {
                 HintText(s.detail ?: stringResource(R.string.editor_load_failed))
             }

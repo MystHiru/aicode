@@ -1,18 +1,25 @@
 package com.aicode.feature.agent.presentation.component
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,6 +57,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -257,60 +265,71 @@ fun ChatDrawerContent(
     }
 }
 
-/** 侧边栏顶部 Tab 切换条（会话 / 文件），胶囊选中样式。 */
+/**
+ * 侧边栏顶部 Tab 切换条（会话 / 文件）。
+ * iOS 风分段控件：中性灰轨道 + 白色（深色下为抬起灰）滑块，选中时滑块弹性滑到对应一侧。
+ * 不用主题蓝填充，让整体与下方扫描式列表协调，只用中性色与轻阴影表现层次。
+ */
 @Composable
 private fun DrawerTopTabs(
     selected: Int,
     onSelect: (Int) -> Unit
 ) {
-    Row(
+    val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val trackColor = if (dark) Color(0xFF16202E) else Color(0xFFEEF1F5)
+    val thumbColor = if (dark) Color(0xFF2B3A4F) else Color.White
+    val labels = listOf(R.string.subagent_tab_sessions, R.string.drawer_tab_files)
+
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .background(
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                RoundedCornerShape(Radius.pill)
-            )
-            .padding(3.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp)
+            .height(34.dp)
+            .clip(RoundedCornerShape(9.dp))
+            .background(trackColor)
+            .padding(3.dp)
     ) {
-        DrawerTabItem(
-            label = stringResource(R.string.subagent_tab_sessions),
-            selected = selected == 0,
-            onClick = { onSelect(0) },
-            modifier = Modifier.weight(1f)
+        val thumbWidth = maxWidth / 2
+        // 选中滑块位移：临界阻尼弹簧（不过冲），切换时滑块顺滑到位，不是硬切。
+        val thumbOffset by animateDpAsState(
+            targetValue = if (selected == 0) 0.dp else thumbWidth,
+            animationSpec = spring(dampingRatio = 1f, stiffness = Spring.StiffnessMediumLow),
+            label = "tab-thumb"
         )
-        DrawerTabItem(
-            label = stringResource(R.string.drawer_tab_files),
-            selected = selected == 1,
-            onClick = { onSelect(1) },
-            modifier = Modifier.weight(1f)
-        )
-    }
-}
-
-@Composable
-private fun DrawerTabItem(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(Radius.pill),
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-        modifier = modifier
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
+        Surface(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp)
+                .offset(x = thumbOffset)
+                .width(thumbWidth)
+                .fillMaxHeight(),
+            shape = RoundedCornerShape(7.dp),
+            color = thumbColor,
+            shadowElevation = 2.dp,
+            content = {}
         )
+        Row(modifier = Modifier.fillMaxSize()) {
+            labels.forEachIndexed { index, labelRes ->
+                val isSelected = selected == index
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(7.dp))
+                        // 禁用点击波纹：选中滑块位移已是反馈，ripple 残留的深色阴影反而吓眼。
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { onSelect(index) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = stringResource(labelRes),
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (isSelected) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -552,6 +571,7 @@ private fun FileBrowserTab(
                             },
                             label = entry.name,
                             emphasized = entry.isDirectory,
+                            subtitle = fileRowSubtitle(entry),
                             onClick = {
                                 val child = "$path/${entry.name}"
                                 if (entry.isDirectory) onOpenDir(child) else onOpenFile(child)
@@ -776,7 +796,8 @@ private fun FileBreadcrumb(
     }
 }
 
-/** 文件浏览的单行：目录 / 文件 / 上一级均复用。[onLongClick] 为 null 时不响应长按（如「上一级」）。 */
+/** 文件浏览的单行：目录 / 文件 / 上一级均复用。左侧图标，右侧两行（名称 + 修改时间·大小）。
+ * [subtitle] 为 null 时只显单行名称（如「上一级」）；[onLongClick] 为 null 时不响应长按。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileBrowserRow(
@@ -784,28 +805,29 @@ private fun FileBrowserRow(
     label: String,
     emphasized: Boolean,
     onClick: () -> Unit,
-    onLongClick: (() -> Unit)? = null
+    onLongClick: (() -> Unit)? = null,
+    subtitle: String? = null
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = Spacing.lg, vertical = 11.dp),
+            .padding(horizontal = Spacing.sm, vertical = Spacing.xs + 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         when (icon) {
             is FileTypeIcon.Colored -> Icon(
                 painter = painterResource(icon.res),
                 contentDescription = null,
-                modifier = Modifier.size(18.dp),
+                modifier = Modifier.size(22.dp),
                 // 彩色文件类型图标保留原色，不随主题染色
                 tint = Color.Unspecified
             )
             is FileTypeIcon.Mono -> Icon(
                 imageVector = icon.vector,
                 contentDescription = null,
-                modifier = Modifier.size(18.dp),
+                modifier = Modifier.size(22.dp),
                 tint = if (emphasized) {
                     MaterialTheme.colorScheme.primary
                 } else {
@@ -814,16 +836,40 @@ private fun FileBrowserRow(
             )
         }
         Spacer(Modifier.width(Spacing.md))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (subtitle != null) {
+                Spacer(Modifier.height(1.dp))
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
 }
+
+/** 文件行副标题：目录只显修改时间，文件显「修改时间 · 大小」；无有效信息时返回 null。 */
+private fun fileRowSubtitle(entry: FileEntry): String? {
+    val time = if (entry.lastModified > 0) formatModifiedTime(entry.lastModified) else null
+    if (entry.isDirectory) return time
+    val size = formatBytes(entry.size)
+    return if (time != null) "$time  ·  $size" else size
+}
+
+/** 修改时间格式化为本地时区的 yyyy-MM-dd HH:mm。 */
+private fun formatModifiedTime(millis: Long): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+        .format(java.util.Date(millis))
 
 /** 面包屑根节点显示名，对应容器路径 `~/workspace`。 */
 private const val WORKSPACE_LABEL = "workspace"

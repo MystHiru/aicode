@@ -58,7 +58,7 @@ fun ChatSessionRow(
                 onClick = onClick,
                 onLongClick = onLongClick
             )
-            .padding(horizontal = Spacing.lg, vertical = 11.dp),
+            .padding(horizontal = Spacing.lg, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (isExecuting) {
