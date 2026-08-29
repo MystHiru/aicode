@@ -4,19 +4,25 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicode.core.util.FileLogger
+import com.aicode.feature.editor.data.EditorSettings
+import com.aicode.feature.editor.data.EditorSettingsRepository
 import com.aicode.feature.editor.domain.TextMateSetup
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.rosemoe.sora.langs.textmate.TextMateLanguage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** 编辑器页状态。一期只读，故没有脏标记与保存态。 */
+/** 编辑器页状态。 */
 sealed interface EditorUiState {
     data object Loading : EditorUiState
     data class Success(val content: String, val scopeName: String?) : EditorUiState
@@ -24,14 +30,27 @@ sealed interface EditorUiState {
     data class Error(val detail: String?) : EditorUiState
 }
 
+/** 保存结果，一次性事件，经 [CodeEditorViewModel.saveEvents] 下发。 */
+sealed interface SaveResult {
+    data object Success : SaveResult
+    data class Error(val detail: String?) : SaveResult
+}
+
 @HiltViewModel
 class CodeEditorViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val fileAccess: FileAccessProvider
+    private val fileAccess: FileAccessProvider,
+    private val editorSettings: EditorSettingsRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<EditorUiState>(EditorUiState.Loading)
     val uiState: StateFlow<EditorUiState> = _uiState.asStateFlow()
+
+    private val _saveEvents = Channel<SaveResult>(Channel.BUFFERED)
+    val saveEvents = _saveEvents.receiveAsFlow()
+
+    val settings: StateFlow<EditorSettings> = editorSettings.settingsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), EditorSettings())
 
     private var loadedPath: String? = null
 
@@ -66,6 +85,22 @@ class CodeEditorViewModel @Inject constructor(
                 FileLogger.w(TAG, "打开文件失败: $path", e)
                 EditorUiState.Error(e.message)
             }
+        }
+    }
+
+    /** 把编辑器当前内容写回文件。写入在 IO 线程进行，结果通过 [saveEvents] 通知。 */
+    fun save(content: String) {
+        val path = loadedPath ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching { fileAccess.writeFile(path, content) }
+                .fold(
+                    onSuccess = { SaveResult.Success },
+                    onFailure = { e ->
+                        FileLogger.w(TAG, "保存文件失败: $path", e)
+                        SaveResult.Error(e.message)
+                    }
+                )
+            _saveEvents.send(result)
         }
     }
 

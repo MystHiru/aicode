@@ -1,52 +1,90 @@
 package com.aicode.feature.editor.presentation
 
 import android.graphics.Typeface
+import android.util.TypedValue
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicode.R
 import com.aicode.core.theme.Spacing
+import com.aicode.feature.agent.presentation.component.MarkdownContent
+import com.aicode.feature.editor.data.EditorSettings
 import com.aicode.feature.editor.domain.TextMateSetup
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.ArrowLeft
+import compose.icons.feathericons.ChevronLeft
+import compose.icons.feathericons.ChevronRight
+import compose.icons.feathericons.Code
+import compose.icons.feathericons.Eye
+import compose.icons.feathericons.Save
+import compose.icons.feathericons.Settings
+import io.github.rosemoe.sora.event.ContentChangeEvent
+import io.github.rosemoe.sora.event.SelectionChangeEvent
 import io.github.rosemoe.sora.langs.textmate.TextMateColorScheme
 import io.github.rosemoe.sora.langs.textmate.TextMateLanguage
 import io.github.rosemoe.sora.langs.textmate.registry.ThemeRegistry
 import io.github.rosemoe.sora.widget.CodeEditor
+import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
 
 /**
- * 独立全屏代码查看页。一期只读：不提供保存，避免与 AI 的 editFile 写冲突。
+ * 独立全屏代码编辑页。支持语法高亮、撤销/重做、底部符号快捷栏与保存。
+ * 保存直接覆盖写回，不做外部并发写检测——AI 工具或终端可能同时改同一文件。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,53 +93,163 @@ fun CodeEditorScreen(
     onBack: () -> Unit,
     viewModel: CodeEditorViewModel = hiltViewModel()
 ) {
-    BackHandler { onBack() }
     LaunchedEffect(path) { viewModel.load(path) }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
+    val editorRef = remember { mutableStateOf<CodeEditor?>(null) }
+    var canUndo by remember { mutableStateOf(false) }
+    var canRedo by remember { mutableStateOf(false) }
+    var dirty by remember { mutableStateOf(false) }
+    var pendingExit by remember { mutableStateOf(false) }
+    var showUnsavedDialog by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    var previewMode by remember { mutableStateOf(false) }
+    var cursorLine by remember { mutableStateOf(1) }
+    var cursorColumn by remember { mutableStateOf(1) }
+    val isMarkdown = remember(path) {
+        path.substringAfterLast('.', "").lowercase() in setOf("md", "markdown")
+    }
+    var editorBackground by remember { mutableStateOf<Color?>(null) }
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+
+    // 切换文件时重置编辑态，避免旧文件的撤销/脏标记残留到新文件。
+    LaunchedEffect(path) {
+        canUndo = false
+        canRedo = false
+        dirty = false
+        pendingExit = false
+        cursorLine = 1
+        cursorColumn = 1
+        previewMode = false
+    }
+
+    val context = LocalContext.current
+    val savedText = stringResource(R.string.editor_save_success)
+    val saveFailedText = stringResource(R.string.editor_save_failed)
+    LaunchedEffect(Unit) {
+        viewModel.saveEvents.collect { result ->
+            when (result) {
+                is SaveResult.Success -> {
+                    dirty = false
+                    Toast.makeText(context, savedText, Toast.LENGTH_SHORT).show()
+                    if (pendingExit) {
+                        pendingExit = false
+                        onBack()
+                    }
+                }
+                is SaveResult.Error -> {
+                    pendingExit = false
+                    Toast.makeText(
+                        context,
+                        result.detail ?: saveFailedText,
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
+
+    fun requestSave() {
+        editorRef.value?.let { viewModel.save(it.text.toString()) }
+    }
+
+    fun handleBack() {
+        if (dirty) showUnsavedDialog = true else onBack()
+    }
+
+    BackHandler(enabled = !showSettings) { handleBack() }
+    BackHandler(enabled = showSettings) { showSettings = false }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = path.substringAfterLast('/'),
-                            style = MaterialTheme.typography.titleSmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = path,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+            Column {
+                TopAppBar(
+                    title = {},
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onBackground
+                    ),
+                    navigationIcon = {
+                        IconButton(onClick = { handleBack() }) {
+                            Icon(
+                                FeatherIcons.ArrowLeft,
+                                contentDescription = stringResource(R.string.common_back)
+                            )
+                        }
+                    },
+                    actions = {
+                        val editable = state is EditorUiState.Success
+                        if (isMarkdown && editable) {
+                            IconButton(onClick = { previewMode = !previewMode }) {
+                                Icon(
+                                    if (previewMode) FeatherIcons.Code else FeatherIcons.Eye,
+                                    contentDescription = stringResource(
+                                        if (previewMode) R.string.editor_md_show_source
+                                        else R.string.editor_md_preview
+                                    )
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = { editorRef.value?.undo() },
+                            enabled = editable && canUndo
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Undo,
+                                contentDescription = stringResource(R.string.editor_undo)
+                            )
+                        }
+                        IconButton(
+                            onClick = { editorRef.value?.redo() },
+                            enabled = editable && canRedo
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Redo,
+                                contentDescription = stringResource(R.string.editor_redo)
+                            )
+                        }
+                        IconButton(
+                            onClick = { requestSave() },
+                            enabled = editable && dirty
+                        ) {
+                            Icon(
+                                FeatherIcons.Save,
+                                contentDescription = stringResource(R.string.common_save)
+                            )
+                        }
+                        IconButton(
+                            onClick = { showSettings = true },
+                            enabled = editable
+                        ) {
+                            Icon(
+                                FeatherIcons.Settings,
+                                contentDescription = stringResource(R.string.editor_settings)
+                            )
+                        }
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onBackground
-                ),
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            FeatherIcons.ArrowLeft,
-                            contentDescription = stringResource(R.string.common_back)
-                        )
-                    }
-                },
-                actions = {
-                    Text(
-                        text = stringResource(R.string.editor_readonly),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(end = Spacing.lg)
-                    )
-                }
-            )
+                )
+                HorizontalDivider(thickness = 0.5.dp)
+                FileTitleBar(
+                    fileName = path.substringAfterLast('/'),
+                    dirty = dirty,
+                    line = cursorLine,
+                    column = cursorColumn
+                )
+                HorizontalDivider()
+            }
+        },
+        bottomBar = {
+            if (state is EditorUiState.Success && !previewMode) {
+                EditorSymbolBar(
+                    backgroundColor = editorBackground ?: MaterialTheme.colorScheme.background,
+                    onInsert = { editorRef.value?.commitText(it) },
+                    onIndent = { editorRef.value?.commitText("\t") },
+                    onMoveLeft = { editorRef.value?.let { moveCursorHorizontally(it, forward = false) } },
+                    onMoveRight = { editorRef.value?.let { moveCursorHorizontally(it, forward = true) } }
+                )
+            }
         }
     ) { padding ->
         val content = Modifier
@@ -109,7 +257,40 @@ fun CodeEditorScreen(
             .padding(padding)
         when (val s = state) {
             is EditorUiState.Loading -> CenterBox(content) { CircularProgressIndicator() }
-            is EditorUiState.Success -> EditorSurface(s, content)
+            is EditorUiState.Success -> Box(modifier = content) {
+                EditorSurface(
+                    state = s,
+                    modifier = Modifier.fillMaxSize(),
+                    editorRef = editorRef,
+                    settings = settings,
+                    onBackgroundResolved = { editorBackground = it },
+                    onCursorChanged = { l, c ->
+                        cursorLine = l
+                        cursorColumn = c
+                    },
+                    onContentChanged = { undo, redo ->
+                        canUndo = undo
+                        canRedo = redo
+                        dirty = true
+                    }
+                )
+                if (previewMode) {
+                    // 预览覆盖在编辑器上方（编辑器保留在组合中不销毁，切回源码不丢状态）。
+                    // 进入预览时快照编辑器当前文本，确保反映未保存的编辑。
+                    val previewText = remember(previewMode) {
+                        editorRef.value?.text?.toString() ?: s.content
+                    }
+                    MarkdownContent(
+                        text = previewText,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.background)
+                            .verticalScroll(rememberScrollState())
+                            .padding(Spacing.lg)
+                    )
+                }
+            }
             is EditorUiState.TooLarge -> CenterBox(content) {
                 HintText(
                     stringResource(
@@ -123,15 +304,91 @@ fun CodeEditorScreen(
             }
         }
     }
+
+    if (showUnsavedDialog) {
+        AlertDialog(
+            onDismissRequest = { showUnsavedDialog = false },
+            title = { Text(stringResource(R.string.editor_unsaved_title)) },
+            text = { Text(stringResource(R.string.editor_unsaved_message)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showUnsavedDialog = false
+                    pendingExit = true
+                    requestSave()
+                }) { Text(stringResource(R.string.editor_save_and_exit)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showUnsavedDialog = false
+                    onBack()
+                }) { Text(stringResource(R.string.editor_dont_save)) }
+            }
+        )
+    }
+
+    if (showSettings) {
+        EditorSettingsScreen(onBack = { showSettings = false })
+    }
+    }
+}
+
+/** 导航栏下方的文件名小栏：左侧文件名（未保存时名前加星号），右侧行:列与文件编码。 */
+@Composable
+private fun FileTitleBar(fileName: String, dirty: Boolean, line: Int, column: Int) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .height(FILE_TITLE_BAR_HEIGHT)
+            .padding(horizontal = FILE_TITLE_HORIZONTAL_PADDING),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (dirty) {
+            Text(
+                text = "*",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(end = 2.dp)
+            )
+        }
+        Text(
+            text = fileName,
+            style = MaterialTheme.typography.labelMedium,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = "$line:$column",
+            style = MaterialTheme.typography.labelMedium,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = Spacing.sm)
+        )
+        Text(
+            text = FILE_ENCODING,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = Spacing.md)
+        )
+    }
 }
 
 @Composable
-private fun EditorSurface(state: EditorUiState.Success, modifier: Modifier) {
+private fun EditorSurface(
+    state: EditorUiState.Success,
+    modifier: Modifier,
+    editorRef: MutableState<CodeEditor?>,
+    settings: EditorSettings,
+    onBackgroundResolved: (Color) -> Unit,
+    onCursorChanged: (line: Int, column: Int) -> Unit,
+    onContentChanged: (canUndo: Boolean, canRedo: Boolean) -> Unit
+) {
     // 与实际渲染出的 Compose 主题保持一致，而非跟随系统设置——应用内可单独切换主题。
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     // sora 的语法分析在后台线程跑，首帧必然还没上色。用一次渐显护住这段窗口，
-    // 把「先纯文本后突然上色」的跳变变成内容渐现；分析超过该窗口的大文件仍会看到跳变，
-    // 那是库的异步设计，无法彻底消除。
+    // 把「先纯文本后突然上色」的跳变变成内容渐现。
     var revealed by remember(state.content) { mutableStateOf(false) }
     LaunchedEffect(state.content) { revealed = true }
     val contentAlpha by animateFloatAsState(
@@ -139,24 +396,135 @@ private fun EditorSurface(state: EditorUiState.Success, modifier: Modifier) {
         animationSpec = tween(durationMillis = HIGHLIGHT_REVEAL_MS),
         label = "editor-reveal"
     )
-    // 语法主题是 ThemeRegistry 全局单态，深浅切换后需重建编辑器才能整体换色。
-    key(dark) {
-        AndroidView(
-            modifier = modifier.graphicsLayer { alpha = contentAlpha },
-            factory = { ctx ->
-                TextMateSetup.applyTheme(dark)
-                CodeEditor(ctx).apply {
-                    isEditable = false
-                    typefaceText = Typeface.MONOSPACE
-                    colorScheme = TextMateColorScheme.create(ThemeRegistry.getInstance())
-                    state.scopeName?.let { scope ->
-                        setEditorLanguage(TextMateLanguage.create(scope, false))
-                    }
-                    setText(state.content)
+
+    AndroidView(
+        modifier = modifier.graphicsLayer { alpha = contentAlpha },
+        factory = { ctx ->
+            TextMateSetup.applyTheme(dark)
+            CodeEditor(ctx).apply {
+                isEditable = true
+                typefaceText = Typeface.MONOSPACE
+                setTextSize(settings.fontSizeSp.toFloat())
+                setWordwrap(settings.wordWrap)
+                // 关闭光标移动动画：切换行/列时当前行高亮原位消失、目标位出现，不逐行滑动。
+                isCursorAnimationEnabled = false
+                // 行号左侧固定预留一点间距，避免数字贴边。
+                setLineNumberMarginLeft(spToPx(ctx, LINE_NUMBER_MARGIN_SP))
+                // 滚到底后仍可再上滑一段：额外视口空间为半屏（sora 默认值，显式固定）。
+                verticalExtraSpaceFactor = VERTICAL_EXTRA_SPACE_FACTOR
+                isBlockLineEnabled = settings.showIndentGuide
+                nonPrintablePaintingFlags =
+                    nonPrintableFlags(settings.showWhitespace, settings.showWrapArrow)
+                colorScheme = TextMateColorScheme.create(ThemeRegistry.getInstance())
+                applyLineNumberBackground(this, dark)
+                state.scopeName?.let { scope ->
+                    setEditorLanguage(TextMateLanguage.create(scope, false))
                 }
-            },
-            onRelease = { it.release() }
-        )
+                // 先 setText 再订阅：初始设置不计入脏标记，只有用户后续编辑才触发。
+                setText(state.content)
+                subscribeAlways(ContentChangeEvent::class.java) {
+                    onContentChanged(canUndo(), canRedo())
+                }
+                subscribeAlways(SelectionChangeEvent::class.java) {
+                    onCursorChanged(cursor.leftLine + 1, cursor.leftColumn + 1)
+                }
+                editorRef.value = this
+            }
+        },
+        onRelease = {
+            editorRef.value = null
+            it.release()
+        }
+    )
+
+    // 深浅主题切换时重设配色，而非重建编辑器——保住未保存内容与撤销栈。
+    val editor = editorRef.value
+    LaunchedEffect(dark, editor) {
+        editor ?: return@LaunchedEffect
+        TextMateSetup.applyTheme(dark)
+        editor.colorScheme = TextMateColorScheme.create(ThemeRegistry.getInstance())
+        applyLineNumberBackground(editor, dark)
+        editor.invalidate()
+        onBackgroundResolved(Color(editor.colorScheme.getColor(EditorColorScheme.WHOLE_BACKGROUND)))
+    }
+    LaunchedEffect(settings.fontSizeSp, editor) {
+        editor?.setTextSize(settings.fontSizeSp.toFloat())
+    }
+    LaunchedEffect(settings.wordWrap, editor) {
+        editor?.setWordwrap(settings.wordWrap)
+    }
+    LaunchedEffect(settings.showIndentGuide, editor) {
+        editor?.isBlockLineEnabled = settings.showIndentGuide
+    }
+    LaunchedEffect(settings.showWhitespace, settings.showWrapArrow, editor) {
+        editor?.nonPrintablePaintingFlags =
+            nonPrintableFlags(settings.showWhitespace, settings.showWrapArrow)
+    }
+}
+
+@Composable
+private fun EditorSymbolBar(
+    backgroundColor: Color,
+    onInsert: (String) -> Unit,
+    onIndent: () -> Unit,
+    onMoveLeft: () -> Unit,
+    onMoveRight: () -> Unit
+) {
+    Surface(
+        color = backgroundColor,
+        modifier = Modifier
+            .fillMaxWidth()
+            .imePadding()
+    ) {
+        Row(
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = Spacing.sm, vertical = Spacing.xs),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SymbolKey(onClick = onMoveLeft) {
+                Icon(
+                    FeatherIcons.ChevronLeft,
+                    contentDescription = stringResource(R.string.editor_cursor_left)
+                )
+            }
+            SymbolKey(onClick = onMoveRight) {
+                Icon(
+                    FeatherIcons.ChevronRight,
+                    contentDescription = stringResource(R.string.editor_cursor_right)
+                )
+            }
+            SymbolKey(onClick = onIndent) {
+                Text(
+                    text = stringResource(R.string.editor_indent),
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+            EDITOR_SYMBOLS.forEach { symbol ->
+                SymbolKey(onClick = { onInsert(symbol) }) {
+                    Text(
+                        text = symbol,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SymbolKey(onClick: () -> Unit, content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .padding(horizontal = 2.dp)
+            .clip(RoundedCornerShape(Spacing.sm))
+            .clickable(onClick = onClick)
+            .defaultMinSize(minWidth = 40.dp, minHeight = 40.dp)
+            .padding(horizontal = Spacing.sm),
+        contentAlignment = Alignment.Center
+    ) {
+        content()
     }
 }
 
@@ -176,5 +544,73 @@ private fun HintText(text: String) {
     )
 }
 
+/** 行号 gutter 背景与编辑区拉开一点亮度差便于区分。基于编辑器背景色自适应，随主题走。 */
+private fun applyLineNumberBackground(editor: CodeEditor, dark: Boolean) {
+    val scheme = editor.colorScheme
+    val base = Color(scheme.getColor(EditorColorScheme.WHOLE_BACKGROUND))
+    val target = if (dark) Color.White else Color.Black
+    scheme.setColor(EditorColorScheme.LINE_NUMBER_BACKGROUND, lerp(base, target, 0.08f).toArgb())
+}
+
+/** 把 sp 换算为像素，用于行号左边距等需 px 的 sora API。 */
+private fun spToPx(context: android.content.Context, sp: Float): Float =
+    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, sp, context.resources.displayMetrics)
+
+/** 根据“显示空白符号”与“显示自动换行箭头”开关合成 sora 的非打印字符绘制标志。 */
+private fun nonPrintableFlags(showWhitespace: Boolean, showWrapArrow: Boolean): Int {
+    var flags = 0
+    if (showWhitespace) {
+        flags = flags or CodeEditor.FLAG_DRAW_WHITESPACE_LEADING or
+            CodeEditor.FLAG_DRAW_WHITESPACE_INNER or
+            CodeEditor.FLAG_DRAW_WHITESPACE_TRAILING or
+            CodeEditor.FLAG_DRAW_WHITESPACE_FOR_EMPTY_LINE or
+            CodeEditor.FLAG_DRAW_LINE_SEPARATOR
+    }
+    if (showWrapArrow) {
+        flags = flags or CodeEditor.FLAG_DRAW_SOFT_WRAP
+    }
+    return flags
+}
+
+/** 符号栏方向键：把光标水平移动一个字符，跨越行首/行尾时换到相邻行。 */
+private fun moveCursorHorizontally(editor: CodeEditor, forward: Boolean) {
+    val cursor = editor.cursor
+    val line = cursor.leftLine
+    val column = cursor.leftColumn
+    if (forward) {
+        val lineLength = editor.text.getColumnCount(line)
+        when {
+            column < lineLength -> editor.setSelection(line, column + 1)
+            line < editor.lineCount - 1 -> editor.setSelection(line + 1, 0)
+        }
+    } else {
+        when {
+            column > 0 -> editor.setSelection(line, column - 1)
+            line > 0 -> editor.setSelection(line - 1, editor.text.getColumnCount(line - 1))
+        }
+    }
+}
+
+/** 底部快捷栏的常用符号，点击在光标处插入。 */
+private val EDITOR_SYMBOLS = listOf(
+    "{", "}", "(", ")", "[", "]", "<", ">",
+    "=", "+", "-", "*", "/", "\\",
+    ";", ":", ",", ".", "_", "\"", "'", "`",
+    "|", "&", "!", "?", "@", "#", "\$", "%"
+)
+
 /** 内容渐显时长：给后台语法分析留出窗口，同时不致于让用户觉得打开变慢。 */
 private const val HIGHLIGHT_REVEAL_MS = 200
+
+/** 行号左侧预留间距（sp）。 */
+private const val LINE_NUMBER_MARGIN_SP = 2f
+
+/** 文件名小栏高度与左右内边距。 */
+private val FILE_TITLE_BAR_HEIGHT = 16.dp
+private val FILE_TITLE_HORIZONTAL_PADDING = 12.dp
+
+/** 文件读写统一按 UTF-8，小栏右侧展示用。 */
+private const val FILE_ENCODING = "UTF-8"
+
+/** 垂直额外视口空间系数（占编辑器高度的比例，取值 [0,1]），用于底部过度滚动。 */
+private const val VERTICAL_EXTRA_SPACE_FACTOR = 0.5f

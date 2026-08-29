@@ -16,8 +16,8 @@ import org.eclipse.tm4e.core.registry.IThemeSource
  */
 object TextMateSetup {
 
-    const val THEME_DARK = "darcula"
-    const val THEME_LIGHT = "quietlight"
+    const val THEME_DARK = "dark_plus"
+    const val THEME_LIGHT = "light_plus"
 
     @Volatile
     private var initialized = false
@@ -59,19 +59,7 @@ object TextMateSetup {
      */
     fun scopeNameFor(path: String): String? {
         val fileName = path.substringAfterLast('/')
-        return scopeByFileName(fileName)
-            ?: scopeByExtension(fileName.substringAfterLast('.', "").lowercase())
-    }
-
-    /** Dockerfile / Makefile / .env 这类靠文件名而非扩展名识别的类型。 */
-    private fun scopeByFileName(fileName: String): String? {
-        val lower = fileName.lowercase()
-        return when {
-            lower == "dockerfile" || lower.startsWith("dockerfile.") -> "source.dockerfile"
-            lower == "makefile" || lower == "gnumakefile" -> "source.makefile"
-            lower == ".env" || lower.startsWith(".env.") -> "source.dotenv"
-            else -> null
-        }
+        return scopeByExtension(fileName.substringAfterLast('.', "").lowercase())
     }
 
     private fun scopeByExtension(ext: String): String? = when (ext) {
@@ -91,14 +79,7 @@ object TextMateSetup {
         "cpp", "cc", "cxx", "hpp", "hh", "hxx" -> "source.cpp"
         "cs" -> "source.cs"
         "css" -> "source.css"
-        "sql" -> "source.sql"
-        // toml 未打包专用语法，用 ini 近似（注释与键值对形式接近）
-        "ini", "cfg", "conf", "properties", "toml" -> "source.ini"
-        "gradle", "groovy" -> "source.groovy"
-        "dart" -> "source.dart"
-        "swift" -> "source.swift"
         "php" -> "source.php"
-        "rb" -> "source.ruby"
         "lua" -> "source.lua"
         "xml" -> "text.xml"
         "html", "htm" -> "text.html.basic"

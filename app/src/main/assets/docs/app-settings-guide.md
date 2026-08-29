@@ -21,7 +21,7 @@
 13. **Git 版本管理**：请读取 `~/.aicode/docs/git-page.md`
 14. **自定义提示词 (Custom Prompts)**：请读取 `~/.aicode/docs/custom-prompts.md`
 15. **代理设置 (Proxy)**：见本文档「4.2 代理设置」
-16. **文件浏览与代码查看**：请读取 `~/.aicode/docs/file-browser-and-editor.md`
+16. **文件浏览与代码编辑**：请读取 `~/.aicode/docs/file-browser-and-editor.md`
 
 ---
 
@@ -45,7 +45,7 @@ App 最顶部是聊天页标题栏，包含：
     *   **删除**：弹出确认框，确认后删除该会话及其所有消息。
 *   **子代理展开**：派生过子代理的会话，行尾显示子代理数量与展开箭头，点开即在该会话下方缩进列出其子代理（详见 `~/.aicode/docs/subagent.md`）。
 
-**文件页**：浏览当前工作区文件（面包屑 + 单层目录），点文件打开只读代码查看页；面包屑右侧有新建文件 / 新建文件夹 / 刷新按钮，长按条目可重命名或删除（详见 `~/.aicode/docs/file-browser-and-editor.md`）。
+**文件页**：浏览当前工作区文件（面包屑 + 单层目录），点文件打开代码编辑页；面包屑右侧有新建文件 / 新建文件夹 / 刷新按钮，长按条目可重命名或删除（详见 `~/.aicode/docs/file-browser-and-editor.md`）。
 
 *   **设置**：底部入口，点击跳转到设置页。
 
