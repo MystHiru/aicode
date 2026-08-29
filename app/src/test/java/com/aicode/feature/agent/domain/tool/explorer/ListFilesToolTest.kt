@@ -50,6 +50,8 @@ class ListFilesToolTest {
         override fun copyToLocal(path: String): File = throw UnsupportedOperationException()
         override fun delete(path: String) = throw UnsupportedOperationException()
         override fun mkdirs(path: String) = throw UnsupportedOperationException()
+        override fun deleteRecursively(path: String) = throw UnsupportedOperationException()
+        override fun rename(path: String, newPath: String) = throw UnsupportedOperationException()
     }
 
     private fun runList(args: String): ToolResult = runBlocking {
