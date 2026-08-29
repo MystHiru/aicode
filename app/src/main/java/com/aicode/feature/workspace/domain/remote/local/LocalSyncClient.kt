@@ -115,10 +115,7 @@ class LocalSyncClient : RemoteSyncClient {
             probe.writeText("ok")
             probe.delete()
         }.getOrElse { e ->
-            throw IOException(
-                "本地目标目录不可写: ${dir.absolutePath}。请授予存储权限，或改用 /storage/emulated/0/Android/data/<包名>/files/ 下的目录（debug 构建为 <包名>=com.aicode.debug，release 为 com.aicode）。",
-                e
-            )
+            throw IOException("本地工作区不可写，存储权限不足，请授予权限后重试", e)
         }
     }
 }

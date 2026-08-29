@@ -91,7 +91,7 @@ class RemoteServerViewModel @Inject constructor(
             val updatedFailed = if (result.isFailure) _uiState.value.failedMountIds + id else _uiState.value.failedMountIds - id
             _uiState.value = _uiState.value.copy(isLoading = false, failedMountIds = updatedFailed)
             if (result.isFailure) {
-                _uiState.value = _uiState.value.copy(error = "Connection failed: ${result.exceptionOrNull()?.message}")
+                _uiState.value = _uiState.value.copy(error = result.exceptionOrNull()?.message)
             }
         }
     }

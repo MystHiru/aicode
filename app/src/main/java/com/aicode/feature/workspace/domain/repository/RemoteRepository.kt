@@ -182,6 +182,7 @@ class RemoteRepository @Inject constructor(
     }
 
     suspend fun connectMount(mountId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        var connProtocol: RemoteProtocol? = null
         try {
             // 已存在旧连接时先清理，避免重复/并发连接泄漏 engine
             activeEngines[mountId]?.shutdown()
@@ -192,6 +193,7 @@ class RemoteRepository @Inject constructor(
             val connEntity = dao.getConnectionById(mountEntity.connectionId) ?: return@withContext Result.failure(Exception("Connection not found"))
             
             val conn = connEntity.toDomainModel()
+            connProtocol = conn.protocol
             val mount = mountEntity.toDomainModel(conn)
 
             val client = when (conn.protocol) {
@@ -231,6 +233,8 @@ class RemoteRepository @Inject constructor(
             val pending = hostKeyVerifier.consumePending()
             if (pending != null) {
                 Result.failure(Exception("主机密钥未确认，请先在「连接配置」页测试连通性完成确认"))
+            } else if (connProtocol == RemoteProtocol.LOCAL) {
+                Result.failure(Exception(e.message ?: "本地工作区连接失败", e))
             } else {
                 Result.failure(Exception(friendlySshError(e), e))
             }
@@ -294,7 +298,11 @@ class RemoteRepository @Inject constructor(
                     pending.host, pending.port, pending.keyType, pending.fingerprint, pending.changed
                 )
             }
-            Result.failure(Exception(friendlySshError(e), e))
+            if (protocol == RemoteProtocol.LOCAL) {
+                Result.failure(Exception(e.message ?: "本地工作区连接失败", e))
+            } else {
+                Result.failure(Exception(friendlySshError(e), e))
+            }
         }
     }
 
