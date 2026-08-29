@@ -229,7 +229,12 @@ fun RemoteConnectionCard(
         onDelete = { onDelete(conn) },
         onClick = { onEdit(conn) }
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.lg, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             RowIconBox(FeatherIcons.Server)
             Spacer(modifier = Modifier.width(Spacing.md))
             Column(modifier = Modifier.weight(1f)) {
@@ -271,7 +276,13 @@ fun RemoteMountCard(
 ) {
     val isLocal = mount.connection?.protocol == RemoteProtocol.LOCAL
     SwipeToDeleteRow(onDelete = { onDelete(mount) }) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.lg, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             RowIconBox(FeatherIcons.Folder)
             Spacer(modifier = Modifier.width(Spacing.md))
             Column(modifier = Modifier.weight(1f)) {
@@ -317,7 +328,7 @@ fun RemoteMountCard(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = Spacing.lg, end = Spacing.lg, bottom = Spacing.sm),
+                    .padding(start = Spacing.lg, end = Spacing.lg, top = Spacing.sm, bottom = Spacing.sm),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (mount.isActive) {
@@ -370,5 +381,6 @@ fun RemoteMountCard(
                     }
                 }
             }
+        }
         }
 }
