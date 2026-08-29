@@ -91,6 +91,7 @@ import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
 fun CodeEditorScreen(
     path: String,
     onBack: () -> Unit,
+    initialLine: Int = 0,
     viewModel: CodeEditorViewModel = hiltViewModel()
 ) {
     LaunchedEffect(path) { viewModel.load(path) }
@@ -263,6 +264,7 @@ fun CodeEditorScreen(
                     modifier = Modifier.fillMaxSize(),
                     editorRef = editorRef,
                     settings = settings,
+                    initialLine = initialLine,
                     onBackgroundResolved = { editorBackground = it },
                     onCursorChanged = { l, c ->
                         cursorLine = l
@@ -381,6 +383,7 @@ private fun EditorSurface(
     modifier: Modifier,
     editorRef: MutableState<CodeEditor?>,
     settings: EditorSettings,
+    initialLine: Int = 0,
     onBackgroundResolved: (Color) -> Unit,
     onCursorChanged: (line: Int, column: Int) -> Unit,
     onContentChanged: (canUndo: Boolean, canRedo: Boolean) -> Unit
@@ -452,6 +455,13 @@ private fun EditorSurface(
     }
     LaunchedEffect(settings.wordWrap, editor) {
         editor?.setWordwrap(settings.wordWrap)
+    }
+    // 从聊天区链接带行号打开时，内容就绪后跳到目标行并滚动到可视区（行号 1 基，sora 为 0 基）。
+    LaunchedEffect(editor, initialLine, state.content) {
+        if (editor != null && initialLine > 0) {
+            val target = (initialLine - 1).coerceIn(0, (editor.lineCount - 1).coerceAtLeast(0))
+            editor.jumpToLine(target)
+        }
     }
     LaunchedEffect(settings.showIndentGuide, editor) {
         editor?.isBlockLineEnabled = settings.showIndentGuide

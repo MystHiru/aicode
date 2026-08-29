@@ -24,6 +24,7 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Surface
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -347,7 +348,7 @@ fun AppNavigation() {
                     onBrowseUp = { agentViewModel.browseUp() },
                     onOpenFile = { filePath ->
                         scope.launch { drawerState.close() }
-                        navController.navigate("editor?path=${android.net.Uri.encode(filePath)}")
+                        navController.navigate("editor?path=${android.net.Uri.encode(filePath)}&drawer=true")
                     },
                     onRefreshBrowse = { agentViewModel.refreshBrowse() },
                     onCreateFile = { name ->
@@ -399,14 +400,28 @@ fun AppNavigation() {
             popExitTransition = { ExitTransition.None }
         ) {
             composable("chat") {
-                AIChatPanel(
-                    viewModel = agentViewModel,
-                    settingsViewModel = settingsViewModel,
-                    workspaceViewModel = workspaceViewModel,
-                    drawerState = drawerState,
-                    onNavigateToTerminal = { navController.navigate("terminal") },
-                    onNavigateToGit = { navController.navigate("git") }
-                )
+                // 聊天区内覆盖 LocalUriHandler：Markdown 链接点击默认经此 handler 派发。
+                // 文件路径类链接（无 scheme 或 file://）拦下来跳编辑器，其余（http/https 等）仍走系统浏览器。
+                val defaultUriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                val fileUriHandler = remember(defaultUriHandler) {
+                    FileAwareUriHandler(defaultUriHandler) { filePath, line ->
+                        navController.navigate(
+                            "editor?path=${android.net.Uri.encode(filePath)}&line=$line"
+                        )
+                    }
+                }
+                CompositionLocalProvider(
+                    androidx.compose.ui.platform.LocalUriHandler provides fileUriHandler
+                ) {
+                    AIChatPanel(
+                        viewModel = agentViewModel,
+                        settingsViewModel = settingsViewModel,
+                        workspaceViewModel = workspaceViewModel,
+                        drawerState = drawerState,
+                        onNavigateToTerminal = { navController.navigate("terminal") },
+                        onNavigateToGit = { navController.navigate("git") }
+                    )
+                }
             }
             composable("settings") {
                 // 复用 Activity 级 settingsViewModel（MainActivity 顶部已创建并 init），
@@ -444,21 +459,31 @@ fun AppNavigation() {
                 )
             }
             composable(
-                route = "editor?path={path}",
+                route = "editor?path={path}&line={line}&drawer={drawer}",
                 arguments = listOf(
                     navArgument("path") {
                         type = NavType.StringType
                         defaultValue = ""
+                    },
+                    navArgument("line") {
+                        type = NavType.IntType
+                        defaultValue = 0
+                    },
+                    navArgument("drawer") {
+                        type = NavType.BoolType
+                        defaultValue = false
                     }
                 )
             ) { entry ->
+                // 从侧边栏文件页进入时返回要重新弹出抽屉（否则看完一个文件就得重新拉开抽屉进目录）；
+                // 从聊天区链接进入时返回应回到聊天，不弹抽屉。
+                val openDrawerOnBack = entry.arguments?.getBoolean("drawer") ?: false
                 CodeEditorScreen(
                     path = entry.arguments?.getString("path").orEmpty(),
-                    // 从编辑器返回时重新弹出侧边栏（与设置页返回一致），
-                    // 否则看完一个文件就要重新拉开抽屉、重新进目录。
+                    initialLine = entry.arguments?.getInt("line") ?: 0,
                     onBack = {
                         navController.popBackStack()
-                        scope.launch { drawerState.open() }
+                        if (openDrawerOnBack) scope.launch { drawerState.open() }
                     }
                 )
             }
@@ -488,4 +513,48 @@ fun AppNavigation() {
 /** 侧边栏文件页写操作失败提示（新建 / 重命名 / 删除共用）。 */
 private fun toastFileOpFailed(context: android.content.Context, messageRes: Int) {
     Toast.makeText(context, context.getString(messageRes), Toast.LENGTH_SHORT).show()
+}
+
+/**
+ * 聊天区 Markdown 链接处理：把「容器文件路径」链接拦下来交给 [onOpenFile] 打开编辑器，
+ * 其余（http/https/mailto 等带 scheme 的网址）委托给系统默认 [delegate]（浏览器）。
+ *
+ * 约定：AI 用 `[显示文本](路径)` 输出可点击路径，路径可带 `:行号` 后缀（如 `~/workspace/a.kt:42`）。
+ * 判定规则：URL 无 scheme（相对/绝对容器路径）或 scheme 为 `file` 视为文件路径；否则视为网址。
+ */
+private class FileAwareUriHandler(
+    private val delegate: androidx.compose.ui.platform.UriHandler,
+    private val onOpenFile: (path: String, line: Int) -> Unit
+) : androidx.compose.ui.platform.UriHandler {
+    override fun openUri(uri: String) {
+        val filePath = asFilePath(uri)
+        if (filePath == null) {
+            delegate.openUri(uri)
+            return
+        }
+        val (path, line) = splitPathAndLine(filePath)
+        onOpenFile(path, line)
+    }
+
+    private companion object {
+        private val SCHEME = Regex("^([a-zA-Z][a-zA-Z0-9+.-]*):")
+        private val TRAILING_LINE = Regex("^(.*):(\\d+)$")
+
+        /** 返回归一化后的文件路径；若判定为网址（非 file scheme）返回 null。 */
+        fun asFilePath(uri: String): String? {
+            val scheme = SCHEME.find(uri)?.groupValues?.get(1)?.lowercase()
+            return when (scheme) {
+                null -> uri // 无 scheme：相对或容器绝对路径
+                "file" -> android.net.Uri.decode(uri.removePrefix("file://"))
+                else -> null // http/https/mailto/tel 等交给浏览器
+            }
+        }
+
+        /** 拆出可选的 `:行号` 后缀；无则行号为 0。 */
+        fun splitPathAndLine(path: String): Pair<String, Int> {
+            val cleaned = path.substringBefore('#').trim()
+            val m = TRAILING_LINE.find(cleaned) ?: return cleaned to 0
+            return m.groupValues[1] to m.groupValues[2].toInt()
+        }
+    }
 }
