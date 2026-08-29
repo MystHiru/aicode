@@ -3,6 +3,7 @@ package com.aicode.feature.agent.presentation
 import androidx.compose.runtime.Immutable
 import com.aicode.feature.agent.domain.model.AgentImage
 import com.aicode.feature.agent.domain.provider.RetryErrorInfo
+import com.aicode.feature.workspace.domain.FileEntry
 import kotlinx.serialization.Serializable
 
 /** 单轮工作流的最终结果状态（供 [AgentUIState.Result] 使用）。 */
@@ -16,6 +17,13 @@ sealed class AgentUIState {
     object Streaming : AgentUIState()
     data class Result(val status: WorkflowStatus) : AgentUIState()
     data class Error(val message: String) : AgentUIState()
+}
+
+/** 侧边栏「文件」Tab 的目录读取状态。远程模式走 SFTP/exec，读取可能失败或较慢，故区分三态。 */
+sealed interface FileBrowseState {
+    data object Loading : FileBrowseState
+    data class Success(val entries: List<FileEntry>) : FileBrowseState
+    data class Error(val detail: String?) : FileBrowseState
 }
 
 /**

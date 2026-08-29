@@ -368,8 +368,16 @@
 
     <!-- Subagent -->
     <string name="subagent_tab_sessions">Chats</string>
-    <string name="subagent_tab_subagents">Subagents</string>
-    <string name="subagent_no_subagents">No subagents yet in this session</string>
+    <string name="drawer_tab_files">Files</string>
+    <string name="drawer_expand_subagents">Expand subagents</string>
+    <string name="drawer_collapse_subagents">Collapse subagents</string>
+    <string name="file_browser_up">Up one level</string>
+    <string name="file_browser_empty">Empty folder</string>
+    <string name="file_browser_error">Failed to read folder</string>
+    <string name="file_browser_refresh">Refresh</string>
+    <string name="editor_readonly">Read-only</string>
+    <string name="editor_file_too_large">File too large (%1$d MB) to open</string>
+    <string name="editor_load_failed">Failed to open file</string>
 
     <!-- Chat Input Bar -->
     <string name="chat_input_placeholder">Type a message to chat with AI…</string>

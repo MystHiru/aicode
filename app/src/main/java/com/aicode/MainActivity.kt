@@ -43,14 +43,17 @@ import androidx.core.view.WindowCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.aicode.core.theme.AIEditorTheme
 import com.aicode.feature.agent.presentation.AIAgentViewModel
 import com.aicode.feature.agent.presentation.component.AIChatPanel
 import com.aicode.feature.agent.presentation.component.ChatDrawerContent
+import com.aicode.feature.editor.presentation.CodeEditorScreen
 import com.aicode.feature.git.presentation.GitViewModel
 import com.aicode.feature.credentials.presentation.component.CredentialScreen
 import com.aicode.feature.git.presentation.component.GitScreen
@@ -268,6 +271,11 @@ fun AppNavigation() {
         settingsViewModel.checkUpdate(manual = false)
     }
 
+    // 抽屉每次打开时刷一次文件列表：本地模式兼顾 inotify 漏事件，远程模式则完全靠它。
+    androidx.compose.runtime.LaunchedEffect(drawerState.isOpen) {
+        if (drawerState.isOpen) agentViewModel.refreshBrowse()
+    }
+
     // 侧边栏打开时，系统返回键先收起侧边栏。
     BackHandler(enabled = drawerState.isOpen) {
         scope.launch { drawerState.close() }
@@ -279,12 +287,15 @@ fun AppNavigation() {
         // 远程模式连接未就绪时 currentWorkspace 为 null，不触发 setWorkspace，避免空路径点燃 session 加载
         val path = currentWorkspace?.path ?: return@LaunchedEffect
         agentViewModel.setWorkspace(path)
+        agentViewModel.resetBrowseToRoot()
     }
 
     val sessions by agentViewModel.sessions.collectAsStateWithLifecycle()
     val currentSessionId by agentViewModel.currentSessionId.collectAsStateWithLifecycle()
     val agentStates by agentViewModel.agentStates.collectAsStateWithLifecycle()
-    val subSessions by agentViewModel.subSessions.collectAsStateWithLifecycle()
+    val subSessionsByParent by agentViewModel.subSessionsByParent.collectAsStateWithLifecycle()
+    val browsePath by agentViewModel.browsePath.collectAsStateWithLifecycle()
+    val browseState by agentViewModel.browseState.collectAsStateWithLifecycle()
 
     // ── 导出会话：SAF 保存文件 ──
     var pendingExportSessionId by remember { mutableStateOf<String?>(null) }
@@ -329,7 +340,16 @@ fun AppNavigation() {
                     sessions = sessions,
                     currentSessionId = currentSessionId,
                     agentStates = agentStates,
-                    subSessions = subSessions,
+                    subSessionsByParent = subSessionsByParent,
+                    browsePath = browsePath,
+                    browseState = browseState,
+                    onOpenDir = { agentViewModel.openDir(it) },
+                    onBrowseUp = { agentViewModel.browseUp() },
+                    onOpenFile = { filePath ->
+                        scope.launch { drawerState.close() }
+                        navController.navigate("editor?path=${android.net.Uri.encode(filePath)}")
+                    },
+                    onRefreshBrowse = { agentViewModel.refreshBrowse() },
                     onSelect = {
                         agentViewModel.selectSession(it.id)
                         scope.launch { drawerState.close() }
@@ -401,6 +421,25 @@ fun AppNavigation() {
                 CredentialScreen(
                     viewModel = credentialViewModel,
                     onNavigateBack = { navController.popBackStack() }
+                )
+            }
+            composable(
+                route = "editor?path={path}",
+                arguments = listOf(
+                    navArgument("path") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    }
+                )
+            ) { entry ->
+                CodeEditorScreen(
+                    path = entry.arguments?.getString("path").orEmpty(),
+                    // 从编辑器返回时重新弹出侧边栏（与设置页返回一致），
+                    // 否则看完一个文件就要重新拉开抽屉、重新进目录。
+                    onBack = {
+                        navController.popBackStack()
+                        scope.launch { drawerState.open() }
+                    }
                 )
             }
         }

@@ -163,6 +163,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // sora-editor 的 language-textmate 在 API 33 以下设备必须依赖核心库脱糖（minSdk 26）。
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -306,6 +308,13 @@ dependencies {
     implementation("com.mikepenz:multiplatform-markdown-renderer-code:0.41.0")
     // 语法高亮引擎（markdown-renderer-code 传递引入，显式声明以供 diff 视图直接使用）
     implementation("dev.snipme:highlights-jvm:1.1.0")
+
+    // 代码编辑器（独立编辑器页）。只取纯 JVM 模块：language-treesitter 与 oniguruma-native 含 .so，
+    // 会与 ABI flavor 拆分和 F-Droid 可复现构建冲突，故不引入。
+    implementation(platform("io.github.rosemoe:editor-bom:0.24.4"))
+    implementation("io.github.rosemoe:editor")
+    implementation("io.github.rosemoe:language-textmate")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
     // WorkManager — 保活兜底：周期检查 TerminalKeepaliveService 存活并拉起（KeepaliveWorker）
     implementation("androidx.work:work-runtime-ktx:2.10.0")

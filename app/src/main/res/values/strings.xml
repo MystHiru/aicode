@@ -363,8 +363,16 @@
 
     <!-- Subagent -->
     <string name="subagent_tab_sessions">会话</string>
-    <string name="subagent_tab_subagents">子代理</string>
-    <string name="subagent_no_subagents">当前会话还没有子代理</string>
+    <string name="drawer_tab_files">文件</string>
+    <string name="drawer_expand_subagents">展开子代理</string>
+    <string name="drawer_collapse_subagents">收起子代理</string>
+    <string name="file_browser_up">上一级</string>
+    <string name="file_browser_empty">空目录</string>
+    <string name="file_browser_error">读取目录失败</string>
+    <string name="file_browser_refresh">刷新</string>
+    <string name="editor_readonly">只读</string>
+    <string name="editor_file_too_large">文件过大（%1$d MB），暂不支持打开</string>
+    <string name="editor_load_failed">文件打开失败</string>
     <string name="chat_rename_session">重命名会话</string>
     <string name="chat_session_name">会话名</string>
     <string name="chat_export_session">导出会话</string>

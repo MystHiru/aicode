@@ -41,6 +41,9 @@ import com.aicode.feature.terminal.domain.TAIL_LINES
 import com.aicode.feature.terminal.domain.TerminalSessionManager
 import com.aicode.feature.terminal.domain.takeTailLines
 import com.aicode.feature.workspace.domain.FileAccessProvider
+import com.aicode.feature.workspace.domain.FileEntry
+import com.aicode.feature.workspace.domain.WorkspaceDirWatcher
+import com.aicode.feature.workspace.domain.WorkspacePathMapper
 import com.aicode.feature.agent.domain.workflow.AgentEvent
 import com.aicode.feature.agent.domain.tool.ToolPermissionManager
 import com.aicode.feature.agent.domain.tool.ToolRegistry
@@ -66,6 +69,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.withContext
@@ -75,18 +79,21 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.OutputStream
 import java.util.UUID
 import javax.inject.Inject
 
-@OptIn(ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 @HiltViewModel
 class AIAgentViewModel @Inject constructor(
     private val agentWorkflow: AgentWorkflow,
@@ -111,6 +118,7 @@ class AIAgentViewModel @Inject constructor(
     private val agentSoundSettings: AgentSoundSettingsRepository,
     private val subAgentEventBus: SubAgentEventBus,
     val fileAccess: FileAccessProvider,
+    private val dirWatcher: WorkspaceDirWatcher,
     @param:ApplicationContext private val context: Context
 ) : ViewModel(), SlashCommandContext {
 
@@ -171,21 +179,74 @@ class AIAgentViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /** 当前会话（锚定父会话）的子代理会话列表（侧边栏 Tab2）。当前会话变化时自动切换；
-     * 若当前会话本身是子代理，则锚定到其父会话，保证进入子会话后仍能看到同一批子代理列表。 */
-    val subSessions: StateFlow<List<ChatSession>> = _currentSessionId
-        .flatMapLatest { id ->
-            if (id == null) flowOf(emptyList())
-            else flow {
-                val entity = chatSessionDao.getById(id)
-                val anchorId = entity?.parentId ?: id
-                emitAll(
-                    chatSessionDao.getSubSessionsByParent(anchorId)
-                        .map { list -> list.map { it.toDomain() } }
-                )
+    /**
+     * 所有根会话的子代理，按父会话 id 分组，供侧边栏会话行就地展开。
+     * 用全量查询而非逐行惰加载：同一张表一次读完，避开每展开一行开一个 Flow 的订阅风暴。
+     */
+    val subSessionsByParent: StateFlow<Map<String, List<ChatSession>>> = _currentWorkspace
+        .flatMapLatest { path ->
+            if (path.isBlank()) flowOf(emptyMap())
+            else chatSessionDao.getAllSessionsByWorkspace(path).map { list ->
+                list.filter { it.parentId != null }
+                    .groupBy({ it.parentId!! }, { it.toDomain() })
             }
         }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    /** 侧边栏「文件」Tab 当前目录（容器路径）。单层浏览，不做多层展开。 */
+    private val _browsePath = MutableStateFlow(WorkspacePathMapper.CONTAINER_ROOT)
+    val browsePath: StateFlow<String> = _browsePath.asStateFlow()
+
+    /** 手动刷新信号：远程模式无 inotify，只能靠它；本地模式作为兜底。 */
+    private val _browseRefresh = MutableStateFlow(0)
+
+    /**
+     * 当前目录条目。listFiles 在本地是阻塞 IO、远程是网络调用，必须跑 IO 调度器。
+     * 除首次进入外，目录发生变动（不限 AI，终端与其它 App 同样算）或手动刷新都会重读。
+     */
+    val browseState: StateFlow<FileBrowseState> = _browsePath
+        .flatMapLatest { path ->
+            val triggers = merge(
+                dirWatcher.watch(path).debounce(BROWSE_DEBOUNCE_MS),
+                // drop(1) 丢掉 StateFlow 重建时的当前值，否则刚切目录就会多读一次
+                _browseRefresh.drop(1).map { }
+            )
+            flow {
+                emit(FileBrowseState.Loading)
+                emit(readBrowseDir(path))
+                triggers.collect { emit(readBrowseDir(path)) }
+            }.flowOn(Dispatchers.IO)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FileBrowseState.Loading)
+
+    private fun readBrowseDir(path: String): FileBrowseState =
+        runCatching { fileAccess.listFiles(path) }.fold(
+            onSuccess = { FileBrowseState.Success(it.sortedWith(BROWSE_ORDER)) },
+            onFailure = { e ->
+                FileLogger.w(TAG, "列目录失败: $path", e)
+                FileBrowseState.Error(e.message)
+            }
+        )
+
+    fun refreshBrowse() {
+        _browseRefresh.value++
+    }
+
+    fun openDir(path: String) {
+        _browsePath.value = path
+    }
+
+    /** 退到上一级；已在工作区根时不动，不允许越出工作区。 */
+    fun browseUp() {
+        val current = _browsePath.value
+        if (current == WorkspacePathMapper.CONTAINER_ROOT) return
+        _browsePath.value = fileAccess.parentPath(current) ?: WorkspacePathMapper.CONTAINER_ROOT
+    }
+
+    /** 切换工作区后回到根目录，避免停在旧工作区的子路径上。 */
+    fun resetBrowseToRoot() {
+        _browsePath.value = WorkspacePathMapper.CONTAINER_ROOT
+    }
 
     /** 当前会话完整信息（根会话与子会话通用；null 表示尚未解析出会话）。 */
     val currentSessionState: StateFlow<ChatSession?> = _currentSessionId
@@ -405,6 +466,13 @@ class AIAgentViewModel @Inject constructor(
         const val AGENT_COMPLETE_NOTIFICATION_ID = 100
         /** 从后台任务通知文本中提取 <title> 内容，供系统通知正文展示。 */
         val TASK_NOTIFICATION_TITLE_REGEX = Regex("<title>([^<]+)</title>")
+        /** 文件浏览排序：目录在前，同类按名称不区分大小写。 */
+        val BROWSE_ORDER: Comparator<FileEntry> =
+            compareByDescending<FileEntry> { it.isDirectory }
+                .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }
+
+        /** 写文件会连珠触发多个 inotify 事件，合并后再重读目录。 */
+        const val BROWSE_DEBOUNCE_MS = 300L
     }
 
     init {

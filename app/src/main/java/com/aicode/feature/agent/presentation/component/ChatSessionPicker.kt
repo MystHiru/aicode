@@ -36,6 +36,7 @@ import compose.icons.FeatherIcons
 /**
  * 单条会话行：短按选中，长按弹出功能菜单（置顶/重命名/导出/删除）。供侧边栏历史记录列表复用。
  * 置顶会话显示浅蓝背景（primaryContainer）。
+ * [trailing] 用于行尾额外控件（如子代理展开箭头），它自己的点击不应触发整行选中。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -45,7 +46,8 @@ fun ChatSessionRow(
     isExecuting: Boolean = false,
     pinned: Boolean = false,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    trailing: (@Composable () -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
@@ -84,5 +86,6 @@ fun ChatSessionRow(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
+        trailing?.invoke()
     }
 }
