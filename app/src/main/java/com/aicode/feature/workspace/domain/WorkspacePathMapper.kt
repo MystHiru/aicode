@@ -99,8 +99,8 @@ class WorkspacePathMapper @Inject constructor(
             p.startsWith("$wsRoot/") -> File(root, p.removePrefix("$wsRoot/"))
             p == AICODE_ROOT || p == "$AICODE_ROOT/" -> aicodeRoot()
             p.startsWith("$AICODE_ROOT/") -> File(aicodeRoot(), p.removePrefix("$AICODE_ROOT/"))
-            p.startsWith("/") -> File(rootfsRoot(), p.removePrefix("/"))
-            else -> File(root, p)
+            else -> mountedHostFile(p)
+                ?: if (p.startsWith("/")) File(rootfsRoot(), p.removePrefix("/")) else File(root, p)
         }
         FileLogger.v(TAG, "toHostFile '$path' -> ${file.absolutePath}")
         return file
@@ -131,7 +131,45 @@ class WorkspacePathMapper @Inject constructor(
             abs.startsWith("$aicodePath/") -> AICODE_ROOT + "/" + abs.removePrefix("$aicodePath/")
             abs == rootfsPath -> "/"
             abs.startsWith("$rootfsPath/") -> "/" + abs.removePrefix("$rootfsPath/")
-            else -> hostPath
+            else -> mountedContainerPath(abs) ?: hostPath
         }
+    }
+
+    /**
+     * 当前 profile 的额外挂载（[ContainerProfile.extraBindings]，格式 `本地源:容器目标`）解析为
+     * (宿主源, 展开并去尾斜杠的容器目标)，按容器目标长度降序（最长前缀优先，避免嵌套挂载歧义）。
+     * 文件工具不进 PRoot，若不在此映射，挂载路径会被兜底落到 rootfs 内部，
+     * 与容器内 shell（proot `-b` bind mount）看到的不一致。
+     */
+    private fun extraMounts(): List<Pair<String, String>> =
+        currentProfile.extraBindings.mapNotNull { binding ->
+            val idx = binding.indexOf(':')
+            val src = (if (idx >= 0) binding.substring(0, idx) else binding).trim()
+            val dstRaw = if (idx >= 0) binding.substring(idx + 1) else binding
+            val dst = pathHomeResolver.expandHome(dstRaw.trim()).trimEnd('/')
+            if (src.isEmpty() || dst.isEmpty()) null else src to dst
+        }.sortedByDescending { it.second.length }
+
+    /** [p]（已展开的容器路径）落在某额外挂载目标下时，映射到宿主源真实文件；否则 null。 */
+    private fun mountedHostFile(p: String): File? {
+        for ((src, dst) in extraMounts()) {
+            when {
+                p == dst || p == "$dst/" -> return File(src)
+                p.startsWith("$dst/") -> return File(src, p.removePrefix("$dst/"))
+            }
+        }
+        return null
+    }
+
+    /** 宿主 [abs] 落在某额外挂载源下时，还原为容器目标路径；否则 null。 */
+    private fun mountedContainerPath(abs: String): String? {
+        for ((src, dst) in extraMounts()) {
+            val srcAbs = File(src).absolutePath
+            when {
+                abs == srcAbs -> return dst
+                abs.startsWith("$srcAbs/") -> return "$dst/" + abs.removePrefix("$srcAbs/")
+            }
+        }
+        return null
     }
 }
