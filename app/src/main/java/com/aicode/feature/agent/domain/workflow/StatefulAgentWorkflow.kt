@@ -187,7 +187,9 @@ class StatefulAgentWorkflow @Inject constructor(
             if (!boundProviderId.isNullOrBlank()) {
                 val config = aiProviderRepository.getProviderById(boundProviderId)
                 if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
-                    return if (!boundModel.isNullOrBlank()) config.copy(selectedModel = boundModel) else config
+                    // 绑定的模型可能已被移出该 provider 的模型列表，此时绑定失效、继续往下回退默认模型
+                    if (boundModel.isNullOrBlank()) return config
+                    if (boundModel in config.models) return config.copy(selectedModel = boundModel)
                 }
             }
         }
@@ -196,7 +198,7 @@ class StatefulAgentWorkflow @Inject constructor(
         val defaultModel = defaultModelSettingsRepository.getDefaultModel()
         if (defaultProviderId.isNotBlank() && defaultModel.isNotBlank()) {
             val config = aiProviderRepository.getProviderById(defaultProviderId)
-            if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
+            if (config != null && config.isEnabled && config.apiKey.isNotBlank() && defaultModel in config.models) {
                 return config.copy(selectedModel = defaultModel)
             }
         }

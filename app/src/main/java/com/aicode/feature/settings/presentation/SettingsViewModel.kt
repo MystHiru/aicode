@@ -1220,9 +1220,42 @@ class SettingsViewModel @Inject constructor(
 
     fun saveProvider(provider: AIProviderConfig) {
         viewModelScope.launch {
+            val removedModels = (repository.getProviderById(provider.id)?.models ?: emptyList())
+                .toSet() - provider.models.toSet()
             repository.saveProvider(provider)
+            if (removedModels.isNotEmpty()) cleanupRemovedModels(provider, removedModels)
             // 保存后重置该提供商在内存中的面板状态，以便主页即时以最新脚本与配置重新加载
             _providerBalances.update { it - provider.id }
+        }
+    }
+
+    /**
+     * 模型被移出列表后，清掉仍指向它的各处选中态，否则主页与各专用模型仍会拿已删除的模型发请求。
+     * 会话绑定模型不在此清理，由 resolveProviderConfig / AIChatPanel 读取时校验回退，避免遍历全部历史会话。
+     */
+    private suspend fun cleanupRemovedModels(provider: AIProviderConfig, removed: Set<String>) {
+        if (provider.selectedModel in removed) {
+            repository.setSelectedModel(provider.id, provider.models.firstOrNull() ?: "")
+        }
+        if (defaultModelSettingsRepository.getDefaultProviderId() == provider.id &&
+            defaultModelSettingsRepository.getDefaultModel() in removed
+        ) {
+            defaultModelSettingsRepository.clear()
+        }
+        if (visionModelSettingsRepository.getVisionProviderId() == provider.id &&
+            visionModelSettingsRepository.getVisionModel() in removed
+        ) {
+            visionModelSettingsRepository.clear()
+        }
+        if (compactionModelSettingsRepository.getCompactionProviderId() == provider.id &&
+            compactionModelSettingsRepository.getCompactionModel() in removed
+        ) {
+            compactionModelSettingsRepository.clear()
+        }
+        if (titleModelSettingsRepository.getTitleProviderId() == provider.id &&
+            titleModelSettingsRepository.getTitleModel() in removed
+        ) {
+            titleModelSettingsRepository.clear()
         }
     }
 

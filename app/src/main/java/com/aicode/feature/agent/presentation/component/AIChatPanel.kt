@@ -167,14 +167,18 @@ fun AIChatPanel(
     val defaultFallbackProvider = providers
         .find { it.id == defaultProviderId }
         ?.takeIf { it.apiKey.isNotBlank() }
-        ?.let { if (defaultModelName.isNotBlank()) it.copy(selectedModel = defaultModelName) else it }
+        ?.let { if (defaultModelName.isNotBlank() && defaultModelName in it.models) it.copy(selectedModel = defaultModelName) else it }
     val activeProvider = run {
         val (boundProviderId, boundModel) = sessionProviderModel
         if (!boundProviderId.isNullOrBlank()) {
             // 与 workflow.resolveProviderConfig 保持一致：绑定 provider 须启用且已填 apiKey，否则回退默认模型
-            providers.find { it.id == boundProviderId }?.takeIf { it.apiKey.isNotBlank() }?.let {
-                if (!boundModel.isNullOrBlank()) it.copy(selectedModel = boundModel) else it
-            } ?: defaultFallbackProvider
+            providers.find { it.id == boundProviderId }
+                ?.takeIf { it.apiKey.isNotBlank() }
+                // 绑定模型已被移出列表时绑定失效，回退默认模型（与 workflow.resolveProviderConfig 一致）
+                ?.takeIf { boundModel.isNullOrBlank() || boundModel in it.models }
+                ?.let {
+                    if (!boundModel.isNullOrBlank()) it.copy(selectedModel = boundModel) else it
+                } ?: defaultFallbackProvider
         } else {
             defaultFallbackProvider
         }
