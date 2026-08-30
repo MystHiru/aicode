@@ -425,8 +425,10 @@ fun AIChatPanel(
     // 打字机渲染进度：持有在 LazyColumn 之外，尾巴 item 滚出视口被 dispose 后进度不丢。
     // active = 上游仍在吐字；streamingText 清空后（active=false）打字机立即补全为完整
     // 文本，与上面保留期内尾巴无缝交接给落库消息。
+    // 文本优先取 streamingText（组合外的 ViewModel 状态）：切页返回的首帧 tailStreamingText
+    // 还没被上面的 LaunchedEffect 回填，此刻若传空文本，打字机会把恢复出的进度判成换轮从头重打。
     val typewriterRenderText = rememberTypewriterStreamingText(
-        text = tailStreamingText ?: "",
+        text = streamingText ?: tailStreamingText ?: "",
         active = streamingText != null
     )
     // 思考过程同样走打字机：与回复文本共用同一速率自适应逻辑。
