@@ -23,7 +23,9 @@ data class ModelMetadata(
     /** models.dev cost：输出单价（USD/1M tokens）。 */
     val outputCostUsdPerM: Double? = null,
     /** models.dev cost：缓存读取单价（USD/1M tokens）。 */
-    val cacheReadCostUsdPerM: Double? = null
+    val cacheReadCostUsdPerM: Double? = null,
+    /** models.dev cost：缓存写入单价（USD/1M tokens），通常高于普通输入价。 */
+    val cacheWriteCostUsdPerM: Double? = null
 ) {
     enum class ModelType { CHAT, EMBEDDING }
 
@@ -61,7 +63,8 @@ fun mergeModelMetadata(
         outputTokens = c.outputTokens ?: a.outputTokens,
         inputCostUsdPerM = c.inputCostUsdPerM ?: a.inputCostUsdPerM,
         outputCostUsdPerM = c.outputCostUsdPerM ?: a.outputCostUsdPerM,
-        cacheReadCostUsdPerM = c.cacheReadCostUsdPerM ?: a.cacheReadCostUsdPerM
+        cacheReadCostUsdPerM = c.cacheReadCostUsdPerM ?: a.cacheReadCostUsdPerM,
+        cacheWriteCostUsdPerM = c.cacheWriteCostUsdPerM ?: a.cacheWriteCostUsdPerM
     )
 }
 

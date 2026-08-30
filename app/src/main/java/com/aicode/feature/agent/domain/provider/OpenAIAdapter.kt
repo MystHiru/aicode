@@ -52,6 +52,9 @@ class OpenAIAdapter @Inject constructor(
     /** 自定义请求头 User-Agent；留空使用默认。 */
     override var userAgent: String = ""
 
+    // OpenAI 系不发输出上限参数（用服务端默认），仅为接口完整性保留。
+    override var maxOutputTokens: Int? = null
+
     private fun extraHeaders(): Map<String, String> =
         if (userAgent.isNotBlank()) mapOf("User-Agent" to userAgent) else emptyMap()
 

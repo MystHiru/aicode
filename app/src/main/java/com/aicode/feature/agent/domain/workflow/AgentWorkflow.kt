@@ -21,7 +21,9 @@ sealed class AgentEvent {
         val signature: String = "",
         val inputTokens: Int = 0,
         val outputTokens: Int = 0,
-        val cachedInputTokens: Int = 0
+        val cachedInputTokens: Int = 0,
+        /** Anthropic thinking / redacted_thinking 内容块的原样快照（JSON 数组文本），随 reasoning 落库供后续轮原样回传。 */
+        val thinkingBlocksJson: String = ""
     ) : AgentEvent()
 
     /** 流式过程中模型逐字吐出的文字（[accumulated] 为本轮已累积的完整文本，用于 UI 实时渲染，不落库）。 */
@@ -59,8 +61,12 @@ sealed class AgentEvent {
     /** 上下文压缩失败（如压缩模型不可用）。携带失败原因，UI 展示为可展开的失败卡片；不落库。 */
     data class CompactionFailed(val reason: String) : AgentEvent()
 
-    /** 整个流程因错误终止（如流式请求被网络中断、达到迭代上限）。与 [Completed] 区别：携带错误，UI 应展示错误而非成功。 */
-    data class Failed(val error: String) : AgentEvent()
+    /**
+     * 整个流程因错误终止（如流式请求被网络中断、达到迭代上限）。与 [Completed] 区别：携带错误，UI 应展示错误而非成功。
+     * [reasonCode] 为服务端给出的类型码（如 Anthropic 的 refusal / model_context_window_exceeded），
+     * 供 UI 换成本地化说明；null 时直接展示 [error]。
+     */
+    data class Failed(val error: String, val reasonCode: String? = null) : AgentEvent()
 
     /** 整个流程结束。 */
     object Completed : AgentEvent()

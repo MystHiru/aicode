@@ -31,6 +31,8 @@ data class LlmCallRecordEntity(
     val outputTokens: Int = 0,
     /** 本轮输入中命中服务端缓存的部分（OpenAI cached_tokens / Anthropic cache_read_input_tokens / Gemini cachedContentTokenCount）。 */
     val cachedInputTokens: Int = 0,
+    /** 本轮写入服务端缓存的 token 数（Anthropic cache_creation_input_tokens），按高于输入的单价计费。 */
+    val cacheCreationTokens: Int = 0,
     /** 首字延迟（毫秒）：流式调用首个文本块到达 - 请求发出；非流式或失败为 null。 */
     val ttfbMillis: Int? = null,
     /** 总耗时（毫秒）：结束 - 请求发出。 */
