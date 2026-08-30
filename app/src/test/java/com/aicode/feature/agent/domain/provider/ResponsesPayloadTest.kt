@@ -48,6 +48,8 @@ class ResponsesPayloadTest {
         assertEquals("readFile", json.get("name").asString)
         assertTrue(json.has("description"))
         assertTrue(json.has("parameters"))
+        // strict 在官方 schema 里不带 optional 标记，必须出现；工具 schema 不保证严格子集，固定 false
+        assertFalse(json.get("strict").asBoolean)
         // 嵌套写法会被服务端以「tools[0]: missing field `name`」拒绝
         assertFalse(json.has("function"))
     }

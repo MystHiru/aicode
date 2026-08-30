@@ -40,8 +40,10 @@ internal fun parseResponsesOutput(output: JsonArray?): ResponsesOutput {
             when (item.str("type")) {
                 ResponsesItem.MESSAGE -> item.arr("content")?.forEach { partEl ->
                     val part = partEl.asJsonObject
-                    if (part.str("type") == ResponsesPart.OUTPUT_TEXT) {
-                        text.append(part.str("text").orEmpty())
+                    when (part.str("type")) {
+                        ResponsesPart.OUTPUT_TEXT -> text.append(part.str("text").orEmpty())
+                        // 拒答说明在 refusal 字段，不归入则整个回复为空白
+                        ResponsesPart.REFUSAL -> text.append(part.str("refusal").orEmpty())
                     }
                 }
 
@@ -138,7 +140,7 @@ internal class ResponsesStreamAccumulator {
     /** 处理一个 SSE data 行解析出的事件对象，返回本次事件带来的增量文本（无则 null）。 */
     fun accept(event: JsonObject): ResponsesDelta? {
         when (event.str("type")) {
-            ResponsesEvent.OUTPUT_TEXT_DELTA -> {
+            ResponsesEvent.OUTPUT_TEXT_DELTA, ResponsesEvent.REFUSAL_DELTA -> {
                 val delta = event.str("delta").orEmpty()
                 if (delta.isEmpty()) return null
                 text.append(delta)

@@ -8,7 +8,12 @@ data class ResponsesToolDefinition(
     val type: String = "function",
     val name: String,
     val description: String,
-    val parameters: Map<String, Any>
+    val parameters: Map<String, Any>,
+    /**
+     * 官方 schema 里 `strict` 不带 optional 标记，固定发 false：严格模式要求入参 schema
+     * 满足结构化输出子集（全字段 required + additionalProperties:false），工具不保证满足。
+     */
+    val strict: Boolean = false
 )
 
 /**
@@ -18,6 +23,8 @@ data class ResponsesToolDefinition(
  */
 object ResponsesEvent {
     const val OUTPUT_TEXT_DELTA = "response.output_text.delta"
+    /** 模型拒答：拒答说明走单独事件与单独 part，不会出现在 output_text 里。 */
+    const val REFUSAL_DELTA = "response.refusal.delta"
     const val REASONING_TEXT_DELTA = "response.reasoning_text.delta"
     /** 官方推理模型（o 系列 / gpt-5 系列）的思考摘要走这个事件，而非 reasoning_text。 */
     const val REASONING_SUMMARY_TEXT_DELTA = "response.reasoning_summary_text.delta"
@@ -50,4 +57,6 @@ object ResponsesPart {
     const val REASONING_TEXT = "reasoning_text"
     /** reasoning item 的 `summary` 数组元素类型。 */
     const val SUMMARY_TEXT = "summary_text"
+    /** 模型拒答时 message item 里的 part，文本在 `refusal` 字段而非 `text`。 */
+    const val REFUSAL = "refusal"
 }

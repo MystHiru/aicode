@@ -361,4 +361,34 @@ class ResponsesStreamAccumulatorTest {
         assertEquals("已输出", acc.toResponse().content)
         assertEquals("stop", acc.toResponse().stopReason)
     }
+
+    @Test
+    fun refusal_delta_is_surfaced_as_content() {
+        val acc = ResponsesStreamAccumulator()
+        // 拒答不走 output_text：不收这个事件的话用户只能看到空白回复
+        acc.accept(event("{'type':'response.refusal.delta','delta':'抱歉，我不能'}"))
+        acc.accept(event("{'type':'response.refusal.delta','delta':'帮助这个请求。'}"))
+        acc.accept(terminalEvent(ResponsesEvent.COMPLETED, "completed"))
+
+        assertEquals("抱歉，我不能帮助这个请求。", acc.toResponse().content)
+    }
+
+    @Test
+    fun refusal_part_in_output_is_surfaced_as_content() {
+        val acc = ResponsesStreamAccumulator()
+        val messageItem = JsonObject().apply {
+            addProperty("type", "message")
+            add("content", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("type", "refusal")
+                    addProperty("refusal", "抱歉，我不能帮助这个请求。")
+                })
+            })
+        }
+        val output = JsonArray().apply { add(messageItem) }
+
+        acc.accept(terminalEvent(ResponsesEvent.COMPLETED, "completed", output = output))
+
+        assertEquals("抱歉，我不能帮助这个请求。", acc.toResponse().content)
+    }
 }
