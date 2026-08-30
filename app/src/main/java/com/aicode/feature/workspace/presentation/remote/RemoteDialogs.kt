@@ -1,7 +1,6 @@
 package com.aicode.feature.workspace.presentation.remote
 
 import android.net.Uri
-import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -39,6 +38,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import com.aicode.core.ui.AppSwitch
+import com.aicode.feature.workspace.domain.UriPathResolver
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.aicode.core.ui.AppTextField
@@ -237,7 +237,7 @@ fun AddRemoteConnectionDialog(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         if (uri != null) {
-            val path = uriToFilePath(context, uri)
+            val path = UriPathResolver.toFilePath(context, uri)
             if (path != null) host = path
         }
     }
@@ -775,21 +775,4 @@ fun RemoteDirectoryBrowserDialog(
             }
         }
     )
-}
-
-private fun uriToFilePath(context: android.content.Context, uri: Uri): String? {
-    if (DocumentsContract.isTreeUri(uri)) {
-        val docId = DocumentsContract.getTreeDocumentId(uri)
-        if (docId.startsWith("primary:")) {
-            val sub = docId.substringAfter("primary:", "")
-            return "/storage/emulated/0/" + sub.trimStart('/')
-        }
-        val parts = docId.split(":")
-        if (parts.size >= 2) {
-            val storage = parts[0]
-            val sub = parts[1]
-            return "/storage/$storage/$sub"
-        }
-    }
-    return null
 }

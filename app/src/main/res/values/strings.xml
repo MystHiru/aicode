@@ -975,6 +975,21 @@
     <string name="workspace_name_exists">已存在同名工作区</string>
     <string name="workspace_remote_root_create_failed">远程工作区目录创建失败，请检查路径与服务器权限</string>
     <string name="workspace_remote_default_create_failed">远程默认工作区创建失败，请检查服务器权限与磁盘空间</string>
+    <string name="workspace_add_local_dir">添加本地目录</string>
+    <string name="workspace_external_added">已添加本地目录工作区「%1$s」</string>
+    <string name="workspace_external_warning_title">添加本地目录工作区</string>
+    <string name="workspace_external_warning_message">AI 会直接读写所选目录中的真实文件。公共存储不支持软链，npm、yarn、pnpm、git 涉及软链的操作可能失败；移除工作区只解除关联，不会删除目录内容。</string>
+    <string name="workspace_external_warning_dont_show_again">不再提示</string>
+    <string name="workspace_external_warning_continue">继续</string>
+    <string name="workspace_external_remove_confirm">移除工作区「%1$s」？仅解除关联，不会删除该目录及其文件。</string>
+    <string name="workspace_external_unresolvable">无法解析所选目录，请从「内部存储」或「SD 卡」根目录进入选择，暂不支持其它文件提供方</string>
+    <string name="workspace_external_invalid">所选不是有效目录</string>
+    <string name="workspace_external_unsupported_path">该目录路径包含不支持的字符「:」</string>
+    <string name="workspace_external_unwritable">该目录不可写，请在系统设置中授予存储权限后重试</string>
+    <string name="workspace_external_exists">该目录已作为工作区</string>
+    <string name="workspace_external_unavailable_hint">该目录当前不可用（可能已被移动或删除），可移除该记录</string>
+    <string name="workspace_unavailable_current">工作区「%1$s」当前不可用（目录可能已被移动或删除）</string>
+    <string name="workspace_unavailable_fallback">工作区「%1$s」当前不可用，已切换到「%2$s」</string>
 
     <!-- Helper Strings -->
     <string name="container_channel_deleted">通道已删除</string>

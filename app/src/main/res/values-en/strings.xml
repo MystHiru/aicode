@@ -976,6 +976,21 @@
     <string name="workspace_name_exists">A workspace with this name already exists</string>
     <string name="workspace_remote_root_create_failed">Failed to create the remote workspace directory. Check the path and server permissions.</string>
     <string name="workspace_remote_default_create_failed">Failed to create the default remote workspace. Check server permissions and disk space.</string>
+    <string name="workspace_add_local_dir">Add Local Directory</string>
+    <string name="workspace_external_added">Local directory workspace "%1$s" added</string>
+    <string name="workspace_external_warning_title">Add local directory workspace</string>
+    <string name="workspace_external_warning_message">AI directly reads and writes the real files in the selected directory. Public storage does not support symlinks, so npm, yarn, pnpm, and git operations involving symlinks may fail. Removing the workspace only removes the association and does not delete directory contents.</string>
+    <string name="workspace_external_warning_dont_show_again">Don’t show again</string>
+    <string name="workspace_external_warning_continue">Continue</string>
+    <string name="workspace_external_remove_confirm">Remove workspace "%1$s"? Only the link is removed; the directory and its files will not be deleted.</string>
+    <string name="workspace_external_unresolvable">Could not resolve the selected directory. Pick from the "Internal storage" or "SD card" root; other file providers are not supported</string>
+    <string name="workspace_external_invalid">The selection is not a valid directory</string>
+    <string name="workspace_external_unsupported_path">The directory path contains the unsupported character ":"</string>
+    <string name="workspace_external_unwritable">This directory is not writable. Grant storage permission in system settings and try again</string>
+    <string name="workspace_external_exists">This directory is already a workspace</string>
+    <string name="workspace_external_unavailable_hint">This directory is currently unavailable (may have been moved or deleted). You can remove the record</string>
+    <string name="workspace_unavailable_current">Workspace "%1$s" is currently unavailable (the directory may have been moved or deleted)</string>
+    <string name="workspace_unavailable_fallback">Workspace "%1$s" is unavailable; switched to "%2$s"</string>
 
     <!-- Helper Strings -->
     <string name="container_channel_deleted">Channel deleted</string>
