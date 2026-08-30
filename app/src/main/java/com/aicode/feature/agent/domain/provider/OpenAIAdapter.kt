@@ -19,6 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.serialization.json.Json
@@ -54,18 +55,30 @@ class OpenAIAdapter @Inject constructor(
     private fun extraHeaders(): Map<String, String> =
         if (userAgent.isNotBlank()) mapOf("User-Agent" to userAgent) else emptyMap()
 
+    /**
+     * 目标端点：Responses API 开启时用 `v1/responses`，否则用 chat/completions 路径（[defaultProviderApiPath]）。
+     * useResponseApi 时请求体是 Responses 格式（`input`），若仍打到 chat/completions 会被服务端以
+     * 「missing field `messages`」拒绝，故必须同步切端点。useFullUrl 时直接用用户填的完整 baseUrl。
+     */
+    private fun resolveApiUrl(): String {
+        if (useFullUrl) return baseUrl
+        val path = if (useResponseApi) "v1/responses" else defaultProviderApiPath(ProviderType.OPENAI)
+        return joinUrl(baseUrl, path)
+    }
+
     override suspend fun complete(
         systemPrompt: String,
         messages: List<AgentMessage>,
         tools: List<AgentTool>,
         reasoningEffort: String?
     ): AIResponse {
+        if (useResponseApi) return completeViaResponses(systemPrompt, messages, tools, reasoningEffort)
+
         val openAIMessages = buildList {
             if (systemPrompt.isNotBlank()) {
-                val role = if (model.startsWith("o1") || model.startsWith("o3")) "developer" else "system"
-                add(OpenAIChatMessage(role = role, content = systemPrompt))
+                add(OpenAIChatMessage(role = systemRoleForModel(), content = systemPrompt))
             }
-            addAll(convertToOpenAIMessages(messages, useResponseApi))
+            addAll(convertToOpenAIMessages(messages))
         }
 
         val toolDefs = tools.takeIf { it.isNotEmpty() }?.map { tool ->
@@ -78,62 +91,7 @@ class OpenAIAdapter @Inject constructor(
             )
         }
 
-        val url = if (useFullUrl) baseUrl else joinUrl(baseUrl, defaultProviderApiPath(ProviderType.OPENAI))
-        if (useResponseApi) {
-            val request = mutableMapOf<String, Any?>(
-                "model" to model,
-                "input" to openAIMessages,
-                "tools" to toolDefs
-            )
-            reasoningEffort?.let { request["reasoning"] = mapOf("effort" to it) }
-            // Responses API 官方原生支持 prompt_cache_key：同会话路由到同一缓存 shard。
-            logSessionId?.let { request["prompt_cache_key"] = it }
-            AILogger.logRequest(logSessionId, "OpenAI", model, "POST", url, request)
-
-            val response = try {
-                retryStaircase {
-                    api.createResponses(url = url, authorization = "Bearer $apiKey", extraHeaders = extraHeaders(), request = request)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                val enriched = e.enrichWithHttpErrorBody()
-                AILogger.logError(logSessionId, "OpenAI", enriched)
-                throw enriched
-            }
-            AILogger.logResponse(logSessionId, "OpenAI", response)
-
-            val outputs = response.getAsJsonArray("output")
-            var content = ""
-            val toolCalls = mutableListOf<ToolCall>()
-            var finishReason: String? = null
-
-            outputs?.forEach { out ->
-                val msg = out.asJsonObject
-                if (msg.get("role")?.asString == "assistant") {
-                    msg.getAsJsonArray("content")?.forEach { partEl ->
-                        val part = partEl.asJsonObject
-                        when (part.get("type")?.asString) {
-                            "output_text" -> content += part.get("text")?.asString ?: ""
-                            "tool_call" -> {
-                                val id = part.get("id")?.asString ?: ""
-                                val name = part.get("name")?.asString ?: ""
-                                val args = part.get("arguments")?.asString ?: ""
-                                toolCalls.add(ToolCall(id, name, parseArgs(args)))
-                            }
-                        }
-                    }
-                }
-            }
-            // status of output items is completed
-            finishReason = "stop" // simplify for Responses API
-            val usage = response.get("usage")?.takeIf { it.isJsonObject }?.asJsonObject
-            val inputTokens = usage?.get("input_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: 0
-            val outputTokens = usage?.get("output_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: 0
-            val cachedInputTokens = usage?.getAsJsonObject("input_tokens_details")?.get("cached_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: 0
-            return AIResponse(content = content, toolCalls = toolCalls, stopReason = finishReason, inputTokens = inputTokens, outputTokens = outputTokens, cachedInputTokens = cachedInputTokens)
-        }
-
+        val url = resolveApiUrl()
         val request = ChatCompletionRequest(
             model = model,
             messages = openAIMessages,
@@ -169,18 +127,97 @@ class OpenAIAdapter @Inject constructor(
         return AIResponse(content = content, toolCalls = toolCalls, stopReason = finishReason, reasoning = reasoning, inputTokens = usage?.prompt_tokens ?: 0, outputTokens = usage?.completion_tokens ?: 0, cachedInputTokens = usage?.prompt_tokens_details?.cached_tokens ?: 0)
     }
 
+    /** o 系列推理模型不接受 system role，要求改用 developer。 */
+    private fun systemRoleForModel(): String =
+        if (model.startsWith("o1") || model.startsWith("o3")) "developer" else "system"
+
+    /**
+     * Responses 请求体。system prompt 作为首个 message item 进 `input`（与顶层 `instructions` 等价，
+     * 服务端同样按首条 system 消息处理），因此不再单独发 `instructions`。
+     */
+    private fun buildResponsesRequest(
+        systemPrompt: String,
+        messages: List<AgentMessage>,
+        tools: List<AgentTool>,
+        reasoningEffort: String?,
+        stream: Boolean
+    ): Map<String, Any?> {
+        val request = mutableMapOf<String, Any?>(
+            "model" to model,
+            "input" to buildResponsesInput(systemPrompt, systemRoleForModel(), messages)
+        )
+        buildResponsesTools(tools)?.let {
+            request["tools"] = it
+            request["tool_choice"] = "auto"
+        }
+        if (stream) request["stream"] = true
+        reasoningEffort?.let { request["reasoning"] = mapOf("effort" to it) }
+        // OpenAI 官方 Responses 原生支持 prompt_cache_key（同会话路由到同一缓存 shard）；
+        // 自动管理缓存的服务（如 DeepSeek）会静默忽略该字段，不会报错。
+        logSessionId?.let { request["prompt_cache_key"] = it }
+        return request
+    }
+
+    /**
+     * Responses API 的非流式请求。与 Chat Completions 的差异集中在三处：工具定义字段扁平、
+     * 历史是 input item 序列（见 [buildResponsesInput]）、结果从 `output` 的顶层 item 解析
+     * （工具调用是独立的 function_call item，不在 assistant 消息的 content 里）。
+     */
+    private suspend fun completeViaResponses(
+        systemPrompt: String,
+        messages: List<AgentMessage>,
+        tools: List<AgentTool>,
+        reasoningEffort: String?
+    ): AIResponse {
+        val url = resolveApiUrl()
+        val request = buildResponsesRequest(systemPrompt, messages, tools, reasoningEffort, stream = false)
+        AILogger.logRequest(logSessionId, "OpenAI", model, "POST", url, request)
+
+        val response = try {
+            retryStaircase {
+                api.createResponses(url = url, authorization = "Bearer $apiKey", extraHeaders = extraHeaders(), request = request)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val enriched = e.enrichWithHttpErrorBody()
+            AILogger.logError(logSessionId, "OpenAI", enriched)
+            throw enriched
+        }
+        AILogger.logResponse(logSessionId, "OpenAI", response)
+
+        val parsed = parseResponsesOutput(response.get("output")?.takeIf { it.isJsonArray }?.asJsonArray)
+        val usage = parseResponsesUsage(response.get("usage")?.takeIf { it.isJsonObject }?.asJsonObject)
+        val status = response.get("status")?.takeIf { it.isJsonPrimitive }?.asString
+        val incompleteReason = response.get("incomplete_details")?.takeIf { it.isJsonObject }?.asJsonObject
+            ?.get("reason")?.takeIf { it.isJsonPrimitive }?.asString
+        return AIResponse(
+            content = parsed.text,
+            toolCalls = parsed.toolCalls,
+            stopReason = responsesStopReason(status, incompleteReason, parsed.toolCalls.isNotEmpty()),
+            reasoning = parsed.reasoning.takeIf { it.isNotEmpty() },
+            inputTokens = usage.inputTokens,
+            outputTokens = usage.outputTokens,
+            cachedInputTokens = usage.cachedInputTokens
+        )
+    }
+
     override fun completeStream(
         systemPrompt: String,
         messages: List<AgentMessage>,
         tools: List<AgentTool>,
         reasoningEffort: String?
     ): Flow<AIStreamChunk> = flow {
+        if (useResponseApi) {
+            streamViaResponses(systemPrompt, messages, tools, reasoningEffort)
+            return@flow
+        }
+
         val openAIMessages = buildList {
             if (systemPrompt.isNotBlank()) {
-                val role = if (model.startsWith("o1") || model.startsWith("o3")) "developer" else "system"
-                add(OpenAIChatMessage(role = role, content = systemPrompt))
+                add(OpenAIChatMessage(role = systemRoleForModel(), content = systemPrompt))
             }
-            addAll(convertToOpenAIMessages(messages, useResponseApi))
+            addAll(convertToOpenAIMessages(messages))
         }
         val toolDefs = tools.takeIf { it.isNotEmpty() }?.map { tool ->
             OpenAIToolDefinition(
@@ -192,125 +229,7 @@ class OpenAIAdapter @Inject constructor(
             )
         }
 
-        val url = if (useFullUrl) baseUrl else joinUrl(baseUrl, defaultProviderApiPath(ProviderType.OPENAI))
-        
-        if (useResponseApi) {
-            val request = mutableMapOf<String, Any?>(
-                "model" to model,
-                "input" to openAIMessages,
-                "tools" to toolDefs,
-                "stream" to true
-            )
-            reasoningEffort?.let { request["reasoning"] = mapOf("effort" to it) }
-            logSessionId?.let { request["prompt_cache_key"] = it }
-            AILogger.logRequest(logSessionId, "OpenAI", model, "POST", url, request)
-            val rawSse = StringBuilder()
-            try {
-                streamWithStaircaseRetry(attemptOnce = { onContent ->
-                    val textBuilder = StringBuilder()
-                    val toolAccs = LinkedHashMap<Int, OpenAIToolAcc>()
-                    var finishReason: String? = null
-                    var streamInputTokens = 0
-                    var streamOutputTokens = 0
-                    var streamCachedInputTokens = 0
-
-                    val body = api.streamResponses(
-                        url = url,
-                        authorization = "Bearer $apiKey",
-                        extraHeaders = extraHeaders(),
-                        request = request
-                    )
-
-                    body.use { rb ->
-                        // 首字节超时 watchdog：60s 内未收到首个内容块则关闭流，触发可重试的 IOException。
-                        val firstByteReceived = java.util.concurrent.atomic.AtomicBoolean(false)
-                        val watchdog = launchFirstByteWatchdog({ rb.close() }) { firstByteReceived.get() }
-                        val closeHandle = coroutineContext[Job]?.invokeOnCompletion {
-                            runCatching { rb.close() }
-                        }
-                        try {
-                            val reader = rb.charStream().buffered()
-                            while (true) {
-                                coroutineContext.ensureActive()
-                                val line = reader.readLine()
-                                    ?: throw IOException("SSE 流被中断：未收到 [DONE] 结束标记（疑似网络断开）")
-                                if (!line.startsWith("data:")) continue
-                                val data = line.removePrefix("data:").trim()
-                                if (data.isEmpty()) continue
-                                rawSse.append(line).append('\n')
-                                if (data == "[DONE]") break
-                                val obj = runCatching { JsonParser.parseString(data).asJsonObject }.getOrNull() ?: continue
-                                obj.get("error")?.takeIf { it.isJsonObject }?.asJsonObject?.let { errObj ->
-                                    val code = errObj.get("code")?.takeIf { !it.isJsonNull }?.asString
-                                    val msg = errObj.get("message")?.takeIf { !it.isJsonNull }?.asString ?: "未知错误"
-                                    throw StreamApiException(code, msg)
-                                }
-                                try {
-                                    val eventType = obj.get("type")?.asString
-                                    if (eventType == "response.output_text.delta") {
-                                        val delta = obj.get("delta")?.asString ?: ""
-                                        if (delta.isNotEmpty()) {
-                                            textBuilder.append(delta)
-                                            if (firstByteReceived.compareAndSet(false, true)) watchdog.cancel()
-                                            onContent()
-                                            emit(AIStreamChunk.TextDelta(delta))
-                                        }
-                                    } else if (eventType == "response.completed") {
-                                        val outputs = obj.getAsJsonObject("response")?.getAsJsonArray("output")
-                                        outputs?.forEach { out ->
-                                            val msg = out.asJsonObject
-                                            if (msg.get("role")?.asString == "assistant") {
-                                                msg.getAsJsonArray("content")?.forEach { partEl ->
-                                                    val part = partEl.asJsonObject
-                                                    if (part.get("type")?.asString == "tool_call") {
-                                                        val id = part.get("id")?.asString ?: ""
-                                                        val name = part.get("name")?.asString ?: ""
-                                                        val args = part.get("arguments")?.asString ?: ""
-                                                        val idx = toolAccs.size
-                                                        val acc = toolAccs.getOrPut(idx) { OpenAIToolAcc() }
-                                                        acc.id = id
-                                                        acc.name = name
-                                                        acc.args.append(args)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        finishReason = "stop"
-                                        val usageObj = obj.get("response")?.takeIf { it.isJsonObject }?.asJsonObject
-                                            ?.get("usage")?.takeIf { it.isJsonObject }?.asJsonObject
-                                        streamInputTokens = usageObj?.get("input_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: 0
-                                        streamOutputTokens = usageObj?.get("output_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: 0
-                                        streamCachedInputTokens = usageObj?.getAsJsonObject("input_tokens_details")?.get("cached_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: 0
-                                    }
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (e: Exception) {
-                                    coroutineContext.ensureActive()
-                                }
-                            }
-                        } finally {
-                            watchdog.cancel()
-                            closeHandle?.dispose()
-                        }
-                    }
-
-                    val toolCalls = toolAccs.values
-                        .filter { it.id.isNotEmpty() || it.name.isNotEmpty() }
-                        .map { acc -> ToolCall(id = acc.id, name = acc.name, arguments = parseArgs(acc.args.toString())) }
-                    emit(AIStreamChunk.Final(AIResponse(content = textBuilder.toString(), toolCalls = toolCalls, stopReason = finishReason, inputTokens = streamInputTokens, outputTokens = streamOutputTokens, cachedInputTokens = streamCachedInputTokens)))
-                },
-                onRetry = { attempt, max, error -> emit(AIStreamChunk.Retrying(attempt, max, error)) }
-            )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                coroutineContext.ensureActive()
-                val enriched = e.enrichWithHttpErrorBody()
-                AILogger.logError(logSessionId, "OpenAI", enriched)
-                throw enriched
-            }
-            return@flow
-        }
+        val url = resolveApiUrl()
 
         val request = ChatCompletionRequest(
             model = model,
@@ -445,7 +364,7 @@ class OpenAIAdapter @Inject constructor(
 
             val toolCalls = toolAccs.values
                 .filter { it.id.isNotEmpty() || it.name.isNotEmpty() }
-                .map { acc -> ToolCall(id = acc.id, name = acc.name, arguments = parseArgs(acc.args.toString())) }
+                .map { acc -> ToolCall(id = acc.id, name = acc.name, arguments = parseToolArguments(acc.args.toString())) }
             emit(AIStreamChunk.Final(AIResponse(content = textBuilder.toString(), toolCalls = toolCalls, stopReason = finishReason, inputTokens = streamInputTokens, outputTokens = streamOutputTokens, cachedInputTokens = streamCachedInputTokens)))
             },
             onRetry = { attempt, max, error -> emit(AIStreamChunk.Retrying(attempt, max, error)) }
@@ -463,6 +382,109 @@ class OpenAIAdapter @Inject constructor(
         }
     }.flowOn(Dispatchers.IO)
 
+    /**
+     * Responses API 的流式请求。与 Chat Completions 的 delta 帧不同，这里是语义事件流（见
+     * [ResponsesStreamAccumulator]），且**官方不发 `[DONE]`**：结束只能按 response.completed /
+     * incomplete / failed 判定。沿用旧的“没收到 [DONE] 就报断流”会把正常结束当成错误，
+     * 故这里以 [ResponsesStreamAccumulator.terminated] 作为退出条件，读到流尾仍未终止才算被截断。
+     */
+    private suspend fun FlowCollector<AIStreamChunk>.streamViaResponses(
+        systemPrompt: String,
+        messages: List<AgentMessage>,
+        tools: List<AgentTool>,
+        reasoningEffort: String?
+    ) {
+        val url = resolveApiUrl()
+        val request = buildResponsesRequest(systemPrompt, messages, tools, reasoningEffort, stream = true)
+        AILogger.logRequest(logSessionId, "OpenAI", model, "POST", url, request)
+        // 累积原始 SSE，整轮结束（或失败）后整体落盘，避免高频写盘。
+        val rawSse = StringBuilder()
+        try {
+            streamWithStaircaseRetry(
+                attemptOnce = { onContent ->
+                    val acc = ResponsesStreamAccumulator()
+
+                    val body = api.streamResponses(
+                        url = url,
+                        authorization = "Bearer $apiKey",
+                        extraHeaders = extraHeaders(),
+                        request = request
+                    )
+
+                    body.use { rb ->
+                        // 首字节超时 watchdog：60s 内未收到首个内容块则关闭流，触发可重试的 IOException。
+                        val firstByteReceived = java.util.concurrent.atomic.AtomicBoolean(false)
+                        val watchdog = launchFirstByteWatchdog({ rb.close() }) { firstByteReceived.get() }
+                        val closeHandle = coroutineContext[Job]?.invokeOnCompletion {
+                            runCatching { rb.close() }
+                        }
+                        try {
+                            val reader = rb.charStream().buffered()
+                            while (!acc.terminated) {
+                                coroutineContext.ensureActive()
+                                val line = reader.readLine()
+                                    ?: throw IOException("SSE 流被中断：未收到 response.completed 结束事件（疑似网络断开）")
+                                if (!line.startsWith("data:")) continue
+                                val data = line.removePrefix("data:").trim()
+                                if (data.isEmpty()) continue
+                                rawSse.append(line).append('\n')
+                                // 官方 Responses 不发 [DONE]，但部分兼容服务会补发，收到即视为流结束。
+                                if (data == "[DONE]") break
+                                val obj = runCatching { JsonParser.parseString(data).asJsonObject }.getOrNull() ?: continue
+                                obj.get("error")?.takeIf { it.isJsonObject }?.asJsonObject?.let { errObj ->
+                                    val code = errObj.get("code")?.takeIf { !it.isJsonNull }?.asString
+                                    val msg = errObj.get("message")?.takeIf { !it.isJsonNull }?.asString ?: "未知错误"
+                                    throw StreamApiException(code, msg)
+                                }
+                                // 单个事件的字段类型异常不应废掉整条流，只跳过该事件；
+                                // 但 StreamApiException（response.failed）与取消信号必须放行。
+                                val delta = try {
+                                    acc.accept(obj)
+                                } catch (e: StreamApiException) {
+                                    throw e
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    coroutineContext.ensureActive()
+                                    null
+                                }
+                                when (delta) {
+                                    is ResponsesDelta.Text -> {
+                                        if (firstByteReceived.compareAndSet(false, true)) watchdog.cancel()
+                                        onContent()
+                                        emit(AIStreamChunk.TextDelta(delta.text))
+                                    }
+                                    // 思考增量仅用于 UI 展示，不计入正文；收到即说明连接已活，取消首字节超时。
+                                    is ResponsesDelta.Reasoning -> {
+                                        if (firstByteReceived.compareAndSet(false, true)) watchdog.cancel()
+                                        onContent()
+                                        emit(AIStreamChunk.ReasoningDelta(delta.text))
+                                    }
+                                    null -> {}
+                                }
+                            }
+                        } finally {
+                            watchdog.cancel()
+                            closeHandle?.dispose()
+                        }
+                    }
+
+                    emit(AIStreamChunk.Final(acc.toResponse()))
+                },
+                onRetry = { attempt, max, error -> emit(AIStreamChunk.Retrying(attempt, max, error)) }
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            coroutineContext.ensureActive()
+            val enriched = e.enrichWithHttpErrorBody()
+            AILogger.logError(logSessionId, "OpenAI", enriched)
+            throw enriched
+        } finally {
+            AILogger.logResponseStream(logSessionId, "OpenAI", rawSse.toString())
+        }
+    }
+
     /** 流式过程中按 index 累积的工具调用状态。 */
     private class OpenAIToolAcc {
         var id = ""
@@ -470,22 +492,12 @@ class OpenAIAdapter @Inject constructor(
         val args = StringBuilder()
     }
 
-    /** 把累积的工具入参 JSON 字符串解析为 JsonObject；为空或非法时回退为空对象。 */
-    private fun parseArgs(raw: String): JsonObject {
-        val trimmed = raw.trim()
-        if (trimmed.isEmpty()) return JsonObject(emptyMap())
-        return runCatching { Json.parseToJsonElement(trimmed).jsonObject }.getOrElse { JsonObject(emptyMap()) }
-    }
-
-    private fun convertToOpenAIMessages(
-        messages: List<AgentMessage>,
-        useResponsesContentParts: Boolean
-    ): MutableList<OpenAIChatMessage> {
+    private fun convertToOpenAIMessages(messages: List<AgentMessage>): MutableList<OpenAIChatMessage> {
         val raw = messages.map { message ->
             when (message) {
                 is AgentMessage.UserMessage -> OpenAIChatMessage(
                     role = "user",
-                    content = message.toOpenAIUserContent(useResponsesContentParts)
+                    content = message.toOpenAIUserContent()
                 )
                 is AgentMessage.AssistantMessage -> {
                     val toolCalls = if (message.toolCalls.isNotEmpty()) {
@@ -509,16 +521,10 @@ class OpenAIAdapter @Inject constructor(
                     val content: Any = if (message.images.isNotEmpty()) {
                         val parts = mutableListOf<Map<String, Any>>()
                         if (message.result.isNotBlank()) {
-                            parts.add(
-                                if (useResponsesContentParts) {
-                                    mapOf("type" to "input_text", "text" to message.result)
-                                } else {
-                                    mapOf("type" to "text", "text" to message.result)
-                                }
-                            )
+                            parts.add(mapOf("type" to "text", "text" to message.result))
                         }
                         message.images.forEach { image ->
-                            parts.add(image.toOpenAIImagePart(useResponsesContentParts))
+                            parts.add(image.toOpenAIImagePart())
                         }
                         parts
                     } else {
@@ -573,43 +579,26 @@ class OpenAIAdapter @Inject constructor(
         return cleaned
     }
 
-    private fun AgentMessage.UserMessage.toOpenAIUserContent(useResponsesContentParts: Boolean): Any {
+    private fun AgentMessage.UserMessage.toOpenAIUserContent(): Any {
         if (images.isEmpty()) return content
 
         val parts = mutableListOf<Map<String, Any>>()
         if (content.isNotBlank()) {
-            parts.add(
-                if (useResponsesContentParts) {
-                    mapOf("type" to "input_text", "text" to content)
-                } else {
-                    mapOf("type" to "text", "text" to content)
-                }
-            )
+            parts.add(mapOf("type" to "text", "text" to content))
         }
         images.forEach { image ->
-            parts.add(image.toOpenAIImagePart(useResponsesContentParts))
+            parts.add(image.toOpenAIImagePart())
         }
         return parts
     }
 
-    private fun AgentImage.toOpenAIImagePart(useResponsesContentParts: Boolean): Map<String, Any> {
-        val imageUrl = "data:$mimeType;base64,$base64Data"
-        return if (useResponsesContentParts) {
-            mapOf(
-                "type" to "input_image",
-                "image_url" to imageUrl,
-                "detail" to "auto"
-            )
-        } else {
-            mapOf(
-                "type" to "image_url",
-                "image_url" to mapOf(
-                    "url" to imageUrl,
-                    "detail" to "auto"
-                )
-            )
-        }
-    }
+    private fun AgentImage.toOpenAIImagePart(): Map<String, Any> = mapOf(
+        "type" to "image_url",
+        "image_url" to mapOf(
+            "url" to "data:$mimeType;base64,$base64Data",
+            "detail" to "auto"
+        )
+    )
 
     /**
      * OpenAI chat completion 返回的 content 可能是字符串或数组（多模态/生图模型）。
