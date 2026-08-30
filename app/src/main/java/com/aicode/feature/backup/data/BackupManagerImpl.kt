@@ -43,6 +43,7 @@ import com.aicode.feature.workspace.data.local.entity.RemoteMountEntity
 import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import com.aicode.feature.workspace.domain.model.RemoteProtocol
 import com.aicode.feature.workspace.domain.model.Workspace
+import com.aicode.feature.workspace.domain.model.WorkspaceType
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -363,9 +364,13 @@ class BackupManagerImpl @Inject constructor(
 
     // ── 工作区文件备份 ──────────────────────────────────────────
 
+    /** 仅备份内部本地工作区；外部本地工作区是用户设备上的目录，不属于 App 私有数据，不纳入备份。 */
+    private fun backupLocalWorkspaces(): List<Workspace> =
+        workspaceRepository.workspaces.value.filter { it.type != WorkspaceType.EXTERNAL_LOCAL }
+
     /** 第一遍：统计每个本地工作区将备份的文件数（写 metadata 用）。 */
     private fun collectWorkspaceMetas(): List<WorkspaceBackupMeta> =
-        workspaceRepository.workspaces.value.mapNotNull { ws ->
+        backupLocalWorkspaces().mapNotNull { ws ->
             var count = 0
             walkWorkspaceFiles(ws) { _, _ -> count++ }
             if (count > 0) WorkspaceBackupMeta(ws.name, count) else null
@@ -373,7 +378,7 @@ class BackupManagerImpl @Inject constructor(
 
     /** 第二遍：把各本地工作区文件写入 tar（`workspaces/<name>/<相对路径>`）。 */
     private fun writeWorkspaceEntries(tar: TarArchiveOutputStream) {
-        workspaceRepository.workspaces.value.forEach { ws ->
+        backupLocalWorkspaces().forEach { ws ->
             walkWorkspaceFiles(ws) { file, parts ->
                 writeTarFileEntry(tar, "workspaces/${ws.name}/${parts.joinToString("/")}", file)
             }
@@ -427,6 +432,7 @@ class BackupManagerImpl @Inject constructor(
     // ── 导入辅助 ──────────────────────────────────────────────
 
     private suspend fun restoreFromTar(tar: TarArchiveInputStream, selectedWorkspaces: Set<String>?): RestoreStats {
+        val restoreMapping = mutableMapOf<String, Workspace>()
         var metadata: BackupMetadata? = null
         var stats = RestoreStats()
         var entry = tar.nextEntry
@@ -461,7 +467,7 @@ class BackupManagerImpl @Inject constructor(
                 }
                 else -> {
                     if (entry.name.startsWith(WORKSPACE_PREFIX)) {
-                        stats += restoreWorkspaceEntry(tar, entry.name, selectedWorkspaces)
+                        stats += restoreWorkspaceEntry(tar, entry.name, selectedWorkspaces, restoreMapping)
                     }
                 }
             }
@@ -575,22 +581,34 @@ class BackupManagerImpl @Inject constructor(
 
     /**
      * 还原单个工作区文件条目：`workspaces/<name>/<相对路径>`。
-     * 仅处理勾选的工作区（[selectedWorkspaces] 非 null 时）；本地无同名工作区时自动创建，
+     * 仅处理勾选的工作区（[selectedWorkspaces] 非 null 时），且只允许写入内部工作区；本地无同名工作区时自动创建，
      * 避免新设备/重装后导入的工作区文件因找不到目标而丢失。
      */
     private suspend fun restoreWorkspaceEntry(
         tar: TarArchiveInputStream,
         entryName: String,
-        selectedWorkspaces: Set<String>?
+        selectedWorkspaces: Set<String>?,
+        restoreMapping: MutableMap<String, Workspace>
     ): RestoreStats {
         val segments = entryName.split("/", limit = 3)
         if (segments.size != 3) return RestoreStats()
         val wsName = segments[1]
         if (selectedWorkspaces != null && wsName !in selectedWorkspaces) return RestoreStats()
-        var ws = workspaceRepository.workspaces.value.firstOrNull { it.name == wsName }
-        if (ws == null) {
-            ws = workspaceRepository.createWorkspace(wsName) ?: return RestoreStats()
+
+        val ws = restoreMapping[wsName] ?: run {
+            val reservedNames = restoreMapping.values.map { it.name }.toSet()
+            val existing = workspaceRepository.workspaces.value.firstOrNull {
+                it.name == wsName && it.type == WorkspaceType.INTERNAL && it.name !in reservedNames
+            }
+            val resolved = existing ?: run {
+                val occupied = workspaceRepository.workspaces.value.map { it.name }.toSet() + reservedNames
+                val targetName = WorkspaceRepository.uniqueName(wsName, occupied)
+                workspaceRepository.createWorkspace(targetName) ?: return RestoreStats()
+            }
+            restoreMapping[wsName] = resolved
+            resolved
         }
+
         val wsDir = File(ws.path)
         if (!isPathInsideWorkspace(wsDir, segments[2])) return RestoreStats()
         val target = File(wsDir, segments[2])

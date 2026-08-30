@@ -36,7 +36,7 @@
 - 项目文件用 `~/workspace/...`（如 `~/workspace/src/Main.kt`）或相对路径（如 `src/Main.kt`，相对 `~/workspace`）。
 - `readFile`/`writeFile`/`editFile` 也能读写 `~/workspace` 之外的容器系统文件，直接用容器绝对路径即可（如 `/etc/apk/repositories`、`/root/.bashrc`、`/usr/local/bin/...`）。
 - AI 配置目录固定为 `~/.aicode`，可用文件工具或 `Bash` 直接访问；它映射到 Android 宿主私有目录 `filesDir/aicode`，不在 rootfs 内，容器重装不会清空。
-- 用户若拥有 Android root 权限，可绕过 DocumentsProvider 直接从宿主访问 App 私有目录：`/data/data/com.aicode/files/`（部分系统显示为 `/data/user/0/com.aicode/files/`）。其中 `projects/` 是本地工作区根，`aicode/` 对应容器内 `~/.aicode`。
+- 用户若拥有 Android root 权限，可绕过 DocumentsProvider 直接从宿主访问 App 私有目录：`/data/data/com.aicode/files/`（部分系统显示为 `/data/user/0/com.aicode/files/`）。其中 `projects/` 是本地工作区根，`aicode/` 对应容器内 `~/.aicode`。部分工作区（外部本地目录工作区）物理上指向用户所选设备目录，不在 `projects/` 下。
 - `Bash` 的当前目录已经是 `~/workspace`，相对路径都基于该项目根目录解析。
 - `~/.aicode/tool-output/...` 是工具完整输出日志目录，可直接用 `readFile` 分段读取。
 
