@@ -1,5 +1,9 @@
 package com.aicode.feature.workspace.presentation.component
 
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -17,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -45,10 +50,12 @@ import androidx.compose.ui.unit.dp
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.feature.workspace.domain.model.Workspace
+import com.aicode.feature.workspace.domain.model.WorkspaceType
 import com.aicode.feature.workspace.presentation.WorkspaceViewModel
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Folder
 import compose.icons.feathericons.FolderPlus
+import compose.icons.feathericons.HardDrive
 import compose.icons.feathericons.MoreHorizontal
 import compose.icons.feathericons.Plus
 import compose.icons.feathericons.Trash2
@@ -165,7 +172,13 @@ private fun WorkspaceSelectionHost(
 ) {
     val workspaces by viewModel.workspaces.collectAsStateWithLifecycle()
     val current by viewModel.current.collectAsStateWithLifecycle()
+    val isLocalMode by viewModel.isLocalMode.collectAsStateWithLifecycle()
+    val addError by viewModel.addError.collectAsStateWithLifecycle()
+    val externalWarningDismissed by viewModel.externalWarningDismissed.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var pendingWorkspaceSelect by remember { mutableStateOf<Workspace?>(null) }
+    var showExternalWarning by remember { mutableStateOf(false) }
+    var dontShowExternalWarningAgain by remember { mutableStateOf(false) }
 
     fun select(ws: Workspace) {
         if (hasRunningSessions()) {
@@ -177,14 +190,98 @@ private fun WorkspaceSelectionHost(
         }
     }
 
+    // 添加外部本地工作区失败提示：消费后清除，避免重复弹 Toast
+    LaunchedEffect(addError) {
+        if (addError != null) {
+            Toast.makeText(context, addError, Toast.LENGTH_LONG).show()
+            viewModel.consumeAddError()
+        }
+    }
+
+    // 系统目录选择器：选设备上的目录注册为外部本地工作区
+    val folderLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }
+            viewModel.addExternalWorkspace(uri) { created ->
+                if (created != null) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.workspace_external_added, created.name),
+                        Toast.LENGTH_LONG
+                    ).show()
+                    onDismiss()
+                    select(created)
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(visible) {
+        if (visible) viewModel.refreshAvailability()
+    }
+
     if (visible) {
         WorkspaceSheet(
             workspaces = workspaces,
             current = current,
+            showExternalEntry = isLocalMode,
+            onAddExternal = {
+                if (externalWarningDismissed) folderLauncher.launch(null)
+                else showExternalWarning = true
+            },
             onSelect = ::select,
-            onCreate = { viewModel.createWorkspace(it) },
+            onCreate = { name ->
+                viewModel.createWorkspace(name) { created ->
+                    if (created != null) select(created)
+                }
+            },
             onDelete = { viewModel.deleteWorkspace(it.name) },
             onDismiss = onDismiss
+        )
+    }
+
+    if (showExternalWarning) {
+        AlertDialog(
+            onDismissRequest = { showExternalWarning = false },
+            title = { Text(stringResource(R.string.workspace_external_warning_title)) },
+            text = {
+                Column {
+                    Text(stringResource(R.string.workspace_external_warning_message))
+                    Spacer(Modifier.height(Spacing.sm))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { dontShowExternalWarningAgain = !dontShowExternalWarningAgain },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = dontShowExternalWarningAgain,
+                            onCheckedChange = { dontShowExternalWarningAgain = it }
+                        )
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text(stringResource(R.string.workspace_external_warning_dont_show_again))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (dontShowExternalWarningAgain) viewModel.setExternalWarningDismissed(true)
+                    showExternalWarning = false
+                    folderLauncher.launch(null)
+                }) { Text(stringResource(R.string.workspace_external_warning_continue)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExternalWarning = false }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            }
         )
     }
 
@@ -213,6 +310,8 @@ private fun WorkspaceSelectionHost(
 private fun WorkspaceSheet(
     workspaces: List<Workspace>,
     current: Workspace?,
+    showExternalEntry: Boolean,
+    onAddExternal: () -> Unit,
     onSelect: (Workspace) -> Unit,
     onCreate: (String) -> Unit,
     onDelete: (Workspace) -> Unit,
@@ -243,6 +342,13 @@ private fun WorkspaceSheet(
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f)
                 )
+                if (showExternalEntry) {
+                    TextButton(onClick = onAddExternal) {
+                        Icon(FeatherIcons.HardDrive, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(Spacing.xs))
+                        Text(stringResource(R.string.workspace_add_local_dir))
+                    }
+                }
                 TextButton(onClick = { showCreateDialog = true }) {
                     Icon(FeatherIcons.Plus, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(Spacing.xs))
@@ -291,7 +397,15 @@ private fun WorkspaceSheet(
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             title = { Text(stringResource(R.string.workspace_delete)) },
-            text = { Text(stringResource(R.string.workspace_delete_confirm, ws.name)) },
+            text = {
+                Text(
+                    if (ws.type == WorkspaceType.EXTERNAL_LOCAL) {
+                        stringResource(R.string.workspace_external_remove_confirm, ws.name)
+                    } else {
+                        stringResource(R.string.workspace_delete_confirm, ws.name)
+                    }
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     onDelete(ws)
@@ -313,30 +427,61 @@ private fun WorkspaceRow(
     onClick: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val external = workspace.type == WorkspaceType.EXTERNAL_LOCAL
+    val disabled = !workspace.available
+    val displayPath = when (workspace.type) {
+        WorkspaceType.INTERNAL -> "projects/${workspace.name}"
+        WorkspaceType.EXTERNAL_LOCAL, WorkspaceType.REMOTE -> workspace.path
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(Radius.sm))
-            .clickable(onClick = onClick)
+            .clickable(enabled = !disabled, onClick = onClick)
             .padding(horizontal = Spacing.md, vertical = Spacing.md),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            FeatherIcons.Folder,
+            if (external) FeatherIcons.HardDrive else FeatherIcons.Folder,
             contentDescription = null,
             tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(20.dp)
         )
         Spacer(Modifier.width(Spacing.md))
-        Text(
-            text = workspace.name,
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = workspace.name,
+                style = MaterialTheme.typography.bodyLarge,
+                color = when {
+                    disabled -> MaterialTheme.colorScheme.onSurfaceVariant
+                    selected -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurface
+                },
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = displayPath,
+                style = MaterialTheme.typography.bodySmall,
+                color = when {
+                    disabled -> MaterialTheme.colorScheme.onSurfaceVariant
+                    selected -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (external && disabled) {
+                Text(
+                    text = stringResource(R.string.workspace_external_unavailable_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
         if (canDelete) {
             Box(
                 modifier = Modifier
