@@ -81,6 +81,7 @@ AiCode 是一款在 Android 手机上运行的 AI 编程工具，将大语言模
 
 ## 反馈与贡献
 
+- **交流群**：加入 QQ 群 [AiCode 交流群](https://qm.qq.com/q/ByvqODJdIs)（群号：1107110698），与其他用户交流使用心得、反馈问题
 - **Bug 反馈**：遇到问题请到 [Issues](https://github.com/jieapi/aicode/issues) 提交，附上复现步骤、设备型号与系统版本，便于快速定位
 - **功能建议**：想加新功能或改进，欢迎先在 [Issues](https://github.com/jieapi/aicode/issues) 讨论
 - **贡献代码**：欢迎提交 [Pull Request](https://github.com/jieapi/aicode/pulls)，我们会及时 review

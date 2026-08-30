@@ -81,6 +81,7 @@ If AiCode is helpful to you, give it a [Star](https://github.com/jieapi/aicode) 
 
 ## Feedback & Contribution
 
+- **QQ group**: join the [AiCode QQ group](https://qm.qq.com/q/ByvqODJdIs) (group number: 1107110698) to chat with other users and share feedback
 - **Bug reports**: open an [Issue](https://github.com/jieapi/aicode/issues) with reproduction steps, device model and OS version
 - **Feature requests**: discuss your ideas in [Issues](https://github.com/jieapi/aicode/issues) first
 - **Contributing**: pull requests are welcome via [Pull Requests](https://github.com/jieapi/aicode/pulls)
