@@ -36,6 +36,9 @@ class GeminiAdapter @Inject constructor(
     /** 自定义请求头 User-Agent；留空使用默认。 */
     override var userAgent: String = ""
 
+    // Gemini 发 generationConfig.maxOutputTokens（模型元数据的输出上限）；为 null 时不发该参数，用服务端默认。
+    override var maxOutputTokens: Int? = null
+
     private fun extraHeaders(): Map<String, String> =
         if (userAgent.isNotBlank()) mapOf("User-Agent" to userAgent) else emptyMap()
 
@@ -45,28 +48,7 @@ class GeminiAdapter @Inject constructor(
         tools: List<AgentTool>,
         reasoningEffort: String?
     ): AIResponse {
-        val geminiContents = convertToGeminiContents(messages)
-        val toolDefs = tools.takeIf { it.isNotEmpty() }?.map { tool ->
-            mapOf(
-                "name" to tool.name,
-                "description" to tool.description,
-                "parameters" to tool.toJsonSchema()
-            )
-        }?.let { listOf(mapOf("functionDeclarations" to it)) }
-
-        val request = mutableMapOf<String, Any>(
-            "contents" to geminiContents
-        )
-        if (systemPrompt.isNotBlank()) {
-            request["systemInstruction"] = mapOf(
-                "role" to "system",
-                "parts" to listOf(mapOf("text" to systemPrompt))
-            )
-        }
-        if (toolDefs != null) {
-            request["tools"] = toolDefs
-        }
-        buildThinkingConfig(reasoningEffort)?.let { request["generationConfig"] = mapOf("thinkingConfig" to it) }
+        val request = buildRequestBody(systemPrompt, messages, tools, reasoningEffort)
 
         val url = if (useFullUrl) {
             baseUrl
@@ -97,12 +79,14 @@ class GeminiAdapter @Inject constructor(
         var thinkingText = ""
         val toolCalls = mutableListOf<ToolCall>()
         var finishReason: String? = null
+        var partsSnapshot: String? = null
 
         val candidates = response.getAsJsonArray("candidates")
         candidates?.firstOrNull()?.asJsonObject?.let { candidate ->
             finishReason = candidate.get("finishReason")?.asString
             val content = candidate.getAsJsonObject("content")
-            content?.getAsJsonArray("parts")?.forEach { partEl ->
+            val parts = content?.getAsJsonArray("parts")
+            parts?.forEach { partEl ->
                 val part = partEl.asJsonObject
                 val isThought = part.get("thought")?.asBoolean == true
                 if (part.has("text")) {
@@ -112,23 +96,24 @@ class GeminiAdapter @Inject constructor(
                 if (part.has("functionCall")) {
                     val fnCall = part.getAsJsonObject("functionCall")
                     val name = fnCall.get("name")?.asString ?: ""
+                    // 并行调用时服务端会给 id；缺失才退回用函数名（同名工具调两次会撞 id）。
+                    val callId = fnCall.get("id")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() } ?: name
                     val argsStr = fnCall.getAsJsonObject("args")?.toString() ?: "{}"
                     val argsJson = parseArgs(argsStr)
-                    toolCalls.add(ToolCall(id = name, name = name, arguments = argsJson))
+                    toolCalls.add(ToolCall(id = callId, name = name, arguments = argsJson))
                 }
             }
-            // 非流式时思考也可能以 candidate.thoughts 数组返回（thought 文本 + token 数）
-            candidate.getAsJsonArray("thoughts")?.forEach { t ->
-                t.asJsonObject?.get("text")?.takeIf { !it.isJsonNull }?.asString?.let { thinkingText += it }
-            }
+            partsSnapshot = snapshotOf(parts)
         }
 
         val usageMetadata = response.get("usageMetadata")?.takeIf { it.isJsonObject }?.asJsonObject
         val inputTokens = usageMetadata?.get("promptTokenCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0
-        val outputTokens = usageMetadata?.get("candidatesTokenCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+        // candidatesTokenCount 不含思考 token，而思考按输出价计费，故两者相加才是真实输出量。
+        val outputTokens = (usageMetadata?.get("candidatesTokenCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0) +
+            (usageMetadata?.get("thoughtsTokenCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0)
         val cachedInputTokens = usageMetadata?.get("cachedContentTokenCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0
 
-        return AIResponse(content = contentText, toolCalls = toolCalls, stopReason = finishReason, reasoning = thinkingText.ifEmpty { null }, inputTokens = inputTokens, outputTokens = outputTokens, cachedInputTokens = cachedInputTokens)
+        return AIResponse(content = contentText, toolCalls = toolCalls, stopReason = finishReason, reasoning = thinkingText.ifEmpty { null }, thinkingBlocksJson = partsSnapshot, inputTokens = inputTokens, outputTokens = outputTokens, cachedInputTokens = cachedInputTokens)
     }
 
     override fun completeStream(
@@ -137,28 +122,7 @@ class GeminiAdapter @Inject constructor(
         tools: List<AgentTool>,
         reasoningEffort: String?
     ): Flow<AIStreamChunk> = flow {
-        val geminiContents = convertToGeminiContents(messages)
-        val toolDefs = tools.takeIf { it.isNotEmpty() }?.map { tool ->
-            mapOf(
-                "name" to tool.name,
-                "description" to tool.description,
-                "parameters" to tool.toJsonSchema()
-            )
-        }?.let { listOf(mapOf("functionDeclarations" to it)) }
-
-        val request = mutableMapOf<String, Any>(
-            "contents" to geminiContents
-        )
-        if (systemPrompt.isNotBlank()) {
-            request["systemInstruction"] = mapOf(
-                "role" to "system",
-                "parts" to listOf(mapOf("text" to systemPrompt))
-            )
-        }
-        if (toolDefs != null) {
-            request["tools"] = toolDefs
-        }
-        buildThinkingConfig(reasoningEffort)?.let { request["generationConfig"] = mapOf("thinkingConfig" to it) }
+        val request = buildRequestBody(systemPrompt, messages, tools, reasoningEffort)
 
         val url = if (useFullUrl) {
             baseUrl
@@ -179,6 +143,8 @@ class GeminiAdapter @Inject constructor(
                 attemptOnce = { onContent ->
                 val textBuilder = StringBuilder()
                 val toolCalls = mutableListOf<ToolCall>()
+                // model 轮的 parts 原样快照：文本分片按段合并，functionCall 与 thoughtSignature 原样保留。
+                val snapshotParts = mutableListOf<JsonObject>()
                 var currentFinishReason: String? = null
                 var streamInputTokens = 0
                 var streamOutputTokens = 0
@@ -208,7 +174,12 @@ class GeminiAdapter @Inject constructor(
                             try {
                                 obj.get("usageMetadata")?.takeIf { it.isJsonObject }?.asJsonObject?.let { um ->
                                     streamInputTokens = um.get("promptTokenCount")?.takeIf { !it.isJsonNull }?.asInt ?: streamInputTokens
-                                    streamOutputTokens = um.get("candidatesTokenCount")?.takeIf { !it.isJsonNull }?.asInt ?: streamOutputTokens
+                                    // 思考 token 不在 candidatesTokenCount 里，但按输出价计费，两者相加才是真实输出量。
+                                    val candidateTokens = um.get("candidatesTokenCount")?.takeIf { !it.isJsonNull }?.asInt
+                                    val thoughtTokens = um.get("thoughtsTokenCount")?.takeIf { !it.isJsonNull }?.asInt
+                                    if (candidateTokens != null || thoughtTokens != null) {
+                                        streamOutputTokens = (candidateTokens ?: 0) + (thoughtTokens ?: 0)
+                                    }
                                     streamCachedInputTokens = um.get("cachedContentTokenCount")?.takeIf { !it.isJsonNull }?.asInt ?: streamCachedInputTokens
                                 }
                                 val chunkCandidates = obj.getAsJsonArray("candidates")
@@ -220,6 +191,7 @@ class GeminiAdapter @Inject constructor(
                                     content?.getAsJsonArray("parts")?.forEach { partEl ->
                                         val part = partEl.asJsonObject
                                         val isThought = part.get("thought")?.asBoolean == true
+                                        accumulateSnapshotPart(snapshotParts, part, isThought)
                                         if (part.has("text")) {
                                             val text = part.get("text")?.asString ?: ""
                                             if (text.isNotEmpty()) {
@@ -239,9 +211,10 @@ class GeminiAdapter @Inject constructor(
                                         if (part.has("functionCall")) {
                                             val fnCall = part.getAsJsonObject("functionCall")
                                             val name = fnCall.get("name")?.asString ?: ""
+                                            val callId = fnCall.get("id")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() } ?: name
                                             val argsStr = fnCall.getAsJsonObject("args")?.toString() ?: "{}"
                                             val argsJson = parseArgs(argsStr)
-                                            toolCalls.add(ToolCall(id = name, name = name, arguments = argsJson))
+                                            toolCalls.add(ToolCall(id = callId, name = name, arguments = argsJson))
                                         }
                                     }
                                 }
@@ -259,7 +232,7 @@ class GeminiAdapter @Inject constructor(
                     }
                 }
 
-                emit(AIStreamChunk.Final(AIResponse(content = textBuilder.toString(), toolCalls = toolCalls, stopReason = currentFinishReason, inputTokens = streamInputTokens, outputTokens = streamOutputTokens, cachedInputTokens = streamCachedInputTokens)))
+                emit(AIStreamChunk.Final(AIResponse(content = textBuilder.toString(), toolCalls = toolCalls, stopReason = currentFinishReason, thinkingBlocksJson = snapshotOf(snapshotParts), inputTokens = streamInputTokens, outputTokens = streamOutputTokens, cachedInputTokens = streamCachedInputTokens)))
                 },
                 onRetry = { attempt, max, error -> emit(AIStreamChunk.Retrying(attempt, max, error)) }
             )
@@ -274,6 +247,93 @@ class GeminiAdapter @Inject constructor(
             AILogger.logResponseStream(logSessionId, "Gemini", rawSse.toString())
         }
     }.flowOn(Dispatchers.IO)
+
+    /**
+     * generateContent / streamGenerateContent 共用的请求体。
+     * `generationConfig` 里 thinkingConfig 与 maxOutputTokens 必须合并写（分两次赋值会互相覆盖）。
+     */
+    private fun buildRequestBody(
+        systemPrompt: String,
+        messages: List<AgentMessage>,
+        tools: List<AgentTool>,
+        reasoningEffort: String?
+    ): MutableMap<String, Any> {
+        val request = mutableMapOf<String, Any>(
+            "contents" to convertToGeminiContents(messages)
+        )
+        if (systemPrompt.isNotBlank()) {
+            request["systemInstruction"] = mapOf(
+                "role" to "system",
+                "parts" to listOf(mapOf("text" to systemPrompt))
+            )
+        }
+        tools.takeIf { it.isNotEmpty() }?.map { tool ->
+            mapOf(
+                "name" to tool.name,
+                "description" to tool.description,
+                "parameters" to tool.toJsonSchema()
+            )
+        }?.let { request["tools"] = listOf(mapOf("functionDeclarations" to it)) }
+
+        val generationConfig = mutableMapOf<String, Any>()
+        buildThinkingConfig(reasoningEffort)?.let { generationConfig["thinkingConfig"] = it }
+        maxOutputTokens?.takeIf { it > 0 }?.let { generationConfig["maxOutputTokens"] = it }
+        if (generationConfig.isNotEmpty()) request["generationConfig"] = generationConfig
+        return request
+    }
+
+    /**
+     * model 轮 parts 的原样快照；仅当存在需要原样回传的内容（thoughtSignature 或 functionCall）时才生成，
+     * 纯文本轮返回 null，让历史走常规重建（避开正文双写）。
+     */
+    private fun snapshotOf(parts: com.google.gson.JsonArray?): String? {
+        if (parts == null || parts.size() == 0) return null
+        val needsSnapshot = parts.any { el ->
+            val o = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@any false
+            o.has("functionCall") || o.has("thoughtSignature")
+        }
+        return if (needsSnapshot) parts.toString() else null
+    }
+
+    private fun snapshotOf(parts: List<JsonObject>): String? {
+        if (parts.isEmpty()) return null
+        val array = com.google.gson.JsonArray().apply { parts.forEach { add(it) } }
+        return snapshotOf(array)
+    }
+
+    /**
+     * 把一个流式 part 并入快照：functionCall 单独成段原样保留；文本分片按“是否 thought”分段合并，
+     * 分片上的 thoughtSignature 写回所属段（签名是 part 级元数据，只会随某一片到达）。
+     */
+    private fun accumulateSnapshotPart(snapshot: MutableList<JsonObject>, part: JsonObject, isThought: Boolean) {
+        if (part.has("functionCall")) {
+            snapshot.add(part.deepCopy())
+            return
+        }
+        if (!part.has("text")) {
+            if (part.has("thoughtSignature")) snapshot.add(part.deepCopy())
+            return
+        }
+        val last = snapshot.lastOrNull()?.takeIf { prev ->
+            !prev.has("functionCall") &&
+                prev.has("text") &&
+                (prev.get("thought")?.asBoolean == true) == isThought
+        }
+        if (last != null) {
+            last.addProperty("text", last.get("text").asString + (part.get("text")?.asString ?: ""))
+            part.get("thoughtSignature")?.takeIf { !it.isJsonNull }?.let { last.add("thoughtSignature", it) }
+        } else {
+            snapshot.add(part.deepCopy())
+        }
+    }
+
+    /** 把快照还原成 parts 数组；为空或损坏时返回 null，由调用方回退重建逻辑。 */
+    private fun decodeSnapshotParts(json: String): com.google.gson.JsonArray? {
+        if (json.isBlank()) return null
+        return runCatching {
+            JsonParser.parseString(json).asJsonArray.takeIf { it.size() > 0 }
+        }.getOrNull()
+    }
 
     /** 思考强度 → Gemini thinkingConfig。模型名含 gemini-3 用 thinkingLevel，否则用 thinkingBudget（2.5 系）。 */
     private fun buildThinkingConfig(reasoningEffort: String?): Map<String, Any>? {
@@ -323,6 +383,14 @@ class GeminiAdapter @Inject constructor(
                     lastModelHadFunctionCall = false
                 }
                 is AgentMessage.AssistantMessage -> {
+                    lastModelHadFunctionCall = message.toolCalls.isNotEmpty()
+                    // 上轮 model 输出存有原样快照时直接原样回传：thoughtSignature 是 part 级元数据，
+                    // 重建 parts 会丢失签名，Gemini 3 系就接不上上一轮的推理上下文。
+                    val snapshot = decodeSnapshotParts(message.thinkingBlocksJson)
+                    if (snapshot != null) {
+                        result.add(mapOf("role" to "model", "parts" to snapshot))
+                        continue
+                    }
                     val parts = mutableListOf<Map<String, Any>>()
                     if (message.content.isNotEmpty()) {
                         parts.add(mapOf("text" to message.content))
@@ -337,7 +405,6 @@ class GeminiAdapter @Inject constructor(
                             )
                         )
                     }
-                    lastModelHadFunctionCall = message.toolCalls.isNotEmpty()
                     if (parts.isNotEmpty()) {
                         result.add(
                             mapOf(
@@ -351,16 +418,16 @@ class GeminiAdapter @Inject constructor(
                     // 防御性清理：跳过没有配对 functionCall 的孤立 functionResponse
                     if (!lastModelHadFunctionCall) continue
                     val parts = mutableListOf<Map<String, Any>>()
-                    parts.add(
-                        mapOf(
-                            "functionResponse" to mapOf(
-                                "name" to message.id, // For Gemini, we typically use the name as ID
-                                "response" to mapOf(
-                                    "result" to message.result
-                                )
-                            )
-                        )
+                    // name 发函数名，并行调用时额外带 id 回去配对（旧数据的 id 就是函数名，此时不发 id）。
+                    val functionName = message.toolName.ifBlank { message.id }
+                    val functionResponse = mutableMapOf<String, Any>(
+                        "name" to functionName,
+                        "response" to mapOf("result" to message.result)
                     )
+                    if (message.id.isNotBlank() && message.id != functionName) {
+                        functionResponse["id"] = message.id
+                    }
+                    parts.add(mapOf("functionResponse" to functionResponse))
                     message.images.forEach { image ->
                         parts.add(image.toGeminiInlineDataPart())
                     }
