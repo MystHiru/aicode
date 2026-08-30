@@ -144,7 +144,14 @@ class OpenAIAdapter @Inject constructor(
     ): Map<String, Any?> {
         val request = mutableMapOf<String, Any?>(
             "model" to model,
-            "input" to buildResponsesInput(systemPrompt, systemRoleForModel(), messages)
+            "input" to buildResponsesInput(
+                systemPrompt = systemPrompt,
+                systemRole = systemRoleForModel(),
+                messages = messages,
+                // DeepSeek 思考模式：带 tools 的请求必须把历史每轮的思考内容回传（同 Chat
+                // Completions 那边的 reasoning_content）；官方路径缺 id / encrypted_content，不发。
+                includeReasoningItems = model.contains("deepseek", ignoreCase = true)
+            )
         )
         buildResponsesTools(tools)?.let {
             request["tools"] = it

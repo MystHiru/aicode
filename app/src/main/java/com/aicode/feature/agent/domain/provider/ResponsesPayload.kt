@@ -36,15 +36,32 @@ internal fun buildResponsesTools(tools: List<AgentTool>): List<ResponsesToolDefi
  *
  * 配对约束与 Chat Completions 一致且同样必须在客户端保证：`function_call_output` 必须能
  * 找到同 `call_id` 的 `function_call`，声明过的 `function_call` 也必须有结果。这里按调用逐个
- * 吸附其结果并成对写出，顺带处理两类历史脏数据：
+ * 吸附其结果，顺带处理两类历史脏数据：
  * - 结果乱序落位（如 askUserQuestion 阻塞期间其他工具结果插队）→ 吸附回调用之后；
  * - 孤立结果（前驱调用已被上下文压缩裁掉）→ 丢弃；
  * - 调用无结果（如用户拒绝执行）→ 连调用一起裁掉。
+ *
+ * **同一轮的多个 `function_call` 必须连续写完，再集中写 `function_call_output`**，不能
+ * 调用/结果交替：服务端把 `function_call` 归并到相邻的 assistant 消息，中间一旦隔了
+ * `function_call_output`（等价于 tool 消息），后续调用就会被当成新的 assistant 轮。对 DeepSeek
+ * 思考模式而言，那些凭空多出来的轮没有 reasoning item，于是报
+ * 400 The `reasoning_text` in the thinking mode must be passed back to the API。
+ * 集中写也与 Chat Completions 的「一条 assistant 带 N 个 tool_calls + N 条 tool 消息」等价。
+ *
+ * 思考内容只在 [includeReasoningItems] 为真时以独立的 `reasoning` item 回传，紧贴在所属 assistant
+ * 内容之前（与模型输出的 item 顺序一致，服务端会归并到相邻的 assistant 消息），思考为空时
+ * 发空文本占位。开关存在是因为两家要求相反：
+ * - DeepSeek 思考模式下只要请求带了 `tools`，历史每轮 assistant 都必须完整回传思考内容
+ *   （即使该轮未实际调用工具），否则 400；它只收明文 `content`，不支持 summary / encrypted_content。
+ * - OpenAI 官方的 reasoning item 必须带 `id` 与 `summary`，无状态回传还需 `encrypted_content`
+ *   （靠 `include: ["reasoning.encrypted_content"]` 取回）。这些我们目前都未保存，发一个只有明文的
+ *   item 反而会被官方拒，所以官方路径宁可不发。
  */
 internal fun buildResponsesInput(
     systemPrompt: String,
     systemRole: String,
-    messages: List<AgentMessage>
+    messages: List<AgentMessage>,
+    includeReasoningItems: Boolean = false
 ): List<Map<String, Any?>> {
     val items = mutableListOf<Map<String, Any?>>()
     if (systemPrompt.isNotBlank()) {
@@ -60,6 +77,31 @@ internal fun buildResponsesInput(
             )
 
             is AgentMessage.AssistantMessage -> {
+                // 先把有结果的调用配好对：无结果的调用会被裁掉（如用户拒绝执行），若整轮
+                // 都被裁掉且没有正文，这轮不写任何 item，reasoning 也就无处可挂。
+                val paired = message.toolCalls.mapNotNull { call ->
+                    val resultIndex = (i + 1 until messages.size).firstOrNull { j ->
+                        !consumed[j] && (messages[j] as? AgentMessage.ToolResultMessage)?.id == call.id
+                    } ?: return@mapNotNull null
+                    consumed[resultIndex] = true
+                    call to (messages[resultIndex] as AgentMessage.ToolResultMessage)
+                }
+                // 思考模式的服务要求上一轮的思考内容原样回传，缺了报 400：
+                // The `reasoning_text` in the thinking mode must be passed back to the API。
+                val hasBody = message.content.isNotBlank() || paired.isNotEmpty()
+                if (hasBody && includeReasoningItems) {
+                    items.add(
+                        mapOf(
+                            "type" to ResponsesItem.REASONING,
+                            "content" to listOf(
+                                mapOf(
+                                    "type" to ResponsesPart.REASONING_TEXT,
+                                    "text" to message.reasoning
+                                )
+                            )
+                        )
+                    )
+                }
                 if (message.content.isNotBlank()) {
                     items.add(
                         mapOf(
@@ -70,12 +112,7 @@ internal fun buildResponsesInput(
                         )
                     )
                 }
-                for (call in message.toolCalls) {
-                    val resultIndex = (i + 1 until messages.size).firstOrNull { j ->
-                        !consumed[j] && (messages[j] as? AgentMessage.ToolResultMessage)?.id == call.id
-                    } ?: continue
-                    val result = messages[resultIndex] as AgentMessage.ToolResultMessage
-                    consumed[resultIndex] = true
+                for ((call, _) in paired) {
                     items.add(
                         mapOf(
                             "type" to ResponsesItem.FUNCTION_CALL,
@@ -84,6 +121,8 @@ internal fun buildResponsesInput(
                             "arguments" to JsonObject(call.arguments).toString()
                         )
                     )
+                }
+                for ((call, result) in paired) {
                     items.add(
                         mapOf(
                             "type" to ResponsesItem.FUNCTION_CALL_OUTPUT,

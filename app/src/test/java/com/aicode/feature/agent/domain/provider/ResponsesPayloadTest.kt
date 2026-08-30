@@ -168,9 +168,41 @@ class ResponsesPayloadTest {
             )
         )
         assertEquals(4, items.size)
-        assertEquals(listOf("c1", "c1", "c2", "c2"), items.map { it["call_id"] })
-        assertEquals("body a", items[1]["output"])
+        assertEquals(listOf("c1", "c2", "c1", "c2"), items.map { it["call_id"] })
+        assertEquals("body a", items[2]["output"])
         assertEquals("body b", items[3]["output"])
+    }
+
+    @Test
+    fun multiple_calls_in_one_turn_are_written_before_their_outputs() {
+        // 调用/结果交替会让服务端把第二个起的调用归到新的 assistant 轮（中间隔了
+        // function_call_output），DeepSeek 思考模式下那些轮没有 reasoning 会直接 400
+        val items = buildResponsesInput(
+            systemPrompt = "",
+            systemRole = "system",
+            messages = listOf(
+                AgentMessage.AssistantMessage(
+                    id = "a1",
+                    content = "并行读三个文件",
+                    toolCalls = listOf(
+                        call("c1", "readFile", "a.txt"),
+                        call("c2", "readFile", "b.txt"),
+                        call("c3", "readFile", "c.txt")
+                    )
+                ),
+                AgentMessage.ToolResultMessage(id = "c1", toolName = "readFile", result = "a"),
+                AgentMessage.ToolResultMessage(id = "c2", toolName = "readFile", result = "b"),
+                AgentMessage.ToolResultMessage(id = "c3", toolName = "readFile", result = "c")
+            )
+        )
+        assertEquals(
+            listOf(
+                "assistant", ResponsesItem.FUNCTION_CALL, ResponsesItem.FUNCTION_CALL, ResponsesItem.FUNCTION_CALL,
+                ResponsesItem.FUNCTION_CALL_OUTPUT, ResponsesItem.FUNCTION_CALL_OUTPUT, ResponsesItem.FUNCTION_CALL_OUTPUT
+            ),
+            items.map { it["type"] ?: it["role"] }
+        )
+        assertEquals(listOf("c1", "c2", "c3"), items.drop(4).map { it["call_id"] })
     }
 
     @Test
@@ -217,5 +249,79 @@ class ResponsesPayloadTest {
     fun developer_role_is_used_for_reasoning_models() {
         val items = buildResponsesInput("prompt", "developer", emptyList())
         assertEquals("developer", items[0]["role"])
+    }
+
+    @Test
+    fun reasoning_is_sent_back_as_item_before_assistant_content() {
+        val items = buildResponsesInput(
+            systemPrompt = "",
+            systemRole = "system",
+            messages = listOf(
+                AgentMessage.AssistantMessage(
+                    id = "a1",
+                    content = "先读文件",
+                    reasoning = "得先看看文件内容",
+                    toolCalls = listOf(call("c1", "readFile", "a.txt"))
+                ),
+                AgentMessage.ToolResultMessage(id = "c1", toolName = "readFile", result = "body")
+            ),
+            includeReasoningItems = true
+        )
+        // 思考 item 必须紧贴在所属 assistant 内容之前，服务端才能归并到同一轮
+        assertEquals(4, items.size)
+        assertEquals(ResponsesItem.REASONING, items[0]["type"])
+        val reasoningParts = parts(items[0]["content"])
+        assertEquals(ResponsesPart.REASONING_TEXT, reasoningParts[0]["type"])
+        assertEquals("得先看看文件内容", reasoningParts[0]["text"])
+        assertEquals("assistant", items[1]["role"])
+        assertEquals(ResponsesItem.FUNCTION_CALL, items[2]["type"])
+    }
+
+    @Test
+    fun reasoning_is_not_sent_back_by_default() {
+        // 官方路径：reasoning item 需 id / summary / encrypted_content，只有明文反而会被拒，因此不发
+        val items = buildResponsesInput(
+            systemPrompt = "",
+            systemRole = "system",
+            messages = listOf(
+                AgentMessage.AssistantMessage(id = "a1", content = "好的", reasoning = "先想一下")
+            )
+        )
+        assertEquals(1, items.size)
+        assertFalse(items.any { it["type"] == ResponsesItem.REASONING })
+    }
+
+    @Test
+    fun empty_reasoning_gets_placeholder_item_when_included() {
+        // DeepSeek 思考模式：请求带 tools 时每轮 assistant 都要有 reasoning，未存思考则发空文本
+        val items = buildResponsesInput(
+            systemPrompt = "",
+            systemRole = "system",
+            messages = listOf(AgentMessage.AssistantMessage(id = "a1", content = "好的")),
+            includeReasoningItems = true
+        )
+        assertEquals(2, items.size)
+        assertEquals(ResponsesItem.REASONING, items[0]["type"])
+        assertEquals("", parts(items[0]["content"])[0]["text"])
+    }
+
+    @Test
+    fun assistant_with_nothing_to_send_gets_no_reasoning_item() {
+        // 无正文、且唯一调用因缺结果被裁掉（用户拒绝执行）：整轮不写 item，
+        // 否则 reasoning 会成为无相邻 assistant 消息可归并的孤立 item
+        val items = buildResponsesInput(
+            systemPrompt = "",
+            systemRole = "system",
+            messages = listOf(
+                AgentMessage.AssistantMessage(
+                    id = "a1",
+                    content = "",
+                    reasoning = "打算调个工具",
+                    toolCalls = listOf(call("c1", "readFile", "a.txt"))
+                )
+            ),
+            includeReasoningItems = true
+        )
+        assertTrue(items.isEmpty())
     }
 }
