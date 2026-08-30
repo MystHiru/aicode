@@ -149,6 +149,21 @@ class AIAgentViewModel @Inject constructor(
         _agentStates.value = _agentStates.value + (sessionId to state)
     }
 
+    /**
+     * 失败文案：服务端给了类型码（如拒答/上下文超限）时用本地化说明，
+     * 并附上服务端的具体理由（如果有）；无类型码时直接展示原错误文本。
+     */
+    private fun describeFailure(event: AgentEvent.Failed): String {
+        val localized = when (event.reasonCode) {
+            // Gemini 的 finishReason 全大写，这几种与 Anthropic 的 refusal 同义（内容策略拦截）。
+            "refusal", "SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII" ->
+                context.getString(R.string.agent_stop_refusal)
+            "model_context_window_exceeded" -> context.getString(R.string.agent_stop_context_exceeded)
+            else -> null
+        } ?: return event.error
+        return if (event.error.isBlank()) localized else "$localized\n${event.error}"
+    }
+
     private val _messageLimit = MutableStateFlow<Map<String, Int>>(emptyMap())
     private val defaultLimit = 30
 
@@ -963,6 +978,7 @@ class AIAgentViewModel @Inject constructor(
                             toolCalls = event.toolCalls,
                             reasoning = reasoning,
                             signature = event.signature.ifEmpty { null },
+                            thinkingBlocksJson = event.thinkingBlocksJson.ifEmpty { null },
                             inputTokens = event.inputTokens,
                             outputTokens = event.outputTokens
                         )
@@ -1024,7 +1040,7 @@ class AIAgentViewModel @Inject constructor(
                     is AgentEvent.Failed -> {
                         failed = true
                         setCompacting(sessionId, false)
-                        setAgentState(sessionId, AgentUIState.Error(event.error))
+                        setAgentState(sessionId, AgentUIState.Error(describeFailure(event)))
                         // 子代理会话失败时通知父会话
                         if (isSub) {
                             sessionUseCase.getSessionById(sessionId)?.parentId?.let { parentId ->

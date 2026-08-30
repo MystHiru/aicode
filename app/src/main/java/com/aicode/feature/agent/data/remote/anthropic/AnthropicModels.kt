@@ -39,7 +39,7 @@ data class AnthropicMessage(
 )
 
 data class AnthropicContentBlock(
-    val type: String, // "text", "tool_use", "tool_result", "thinking"
+    val type: String, // "text", "tool_use", "tool_result", "thinking", "redacted_thinking"
     val text: String? = null,
     val source: Map<String, Any>? = null,
     val id: String? = null, // for tool_use
@@ -50,6 +50,7 @@ data class AnthropicContentBlock(
     val is_error: Boolean? = null, // for tool_result
     val thinking: String? = null, // for thinking block：思考摘要文本
     val signature: String? = null, // for thinking block：加密签名，多轮/工具循环须原样回传
+    val data: String? = null, // for redacted_thinking：不透明加密串，同样必须原样回传
     val cache_control: Map<String, String>? = null // 显式缓存断点，仅 {type: ephemeral}
 )
 
@@ -68,7 +69,17 @@ data class AnthropicMessageResponse(
     val model: String,
     val stop_reason: String?,
     val stop_sequence: String?,
+    /** 拒答等非正常结束时的结构化说明（stop_reason=refusal 时正文可能为空，理由只在这里）。 */
+    val stop_details: AnthropicStopDetails? = null,
     val usage: AnthropicUsage
+)
+
+/** `stop_details`：拒答/降级等场景的补充说明。 */
+data class AnthropicStopDetails(
+    val type: String? = null,
+    val category: String? = null,
+    val explanation: String? = null,
+    val recommended_model: String? = null
 )
 
 data class AnthropicUsage(

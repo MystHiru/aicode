@@ -151,6 +151,7 @@ class ContextCompactor @Inject constructor(
                     inputTokens = callUsage?.inputTokens ?: 0,
                     outputTokens = callUsage?.outputTokens ?: 0,
                     cachedInputTokens = callUsage?.cachedInputTokens ?: 0,
+                    cacheCreationTokens = callUsage?.cacheCreationTokens ?: 0,
                     ttfbMillis = null,
                     durationMillis = durationMillis,
                     status = if (callCompleted) "success" else "error",

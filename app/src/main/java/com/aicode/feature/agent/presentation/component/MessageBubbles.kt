@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -118,7 +119,9 @@ internal fun AgentMessageItem(
 
     // 工具调用卡片入场动画：仅流式期间新插入时淡入展开；历史/落库后直接显示不重播。
     // item 滚出视口重新组合时若消息已过新消息窗口，entryDelayMs 为 null，同样直接显示。
-    var entered by remember(message.id) { mutableStateOf(entryDelayMs == null) }
+    // 播完即进 saveable：仍在新消息窗口内（entryDelayMs 非 null）时切页返回或 item 回收
+    // 重挂载，不会再播一遍入场。
+    var entered by rememberSaveable(message.id) { mutableStateOf(entryDelayMs == null) }
     LaunchedEffect(entryDelayMs) {
         val delayMs = entryDelayMs
         if (delayMs != null) {

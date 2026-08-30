@@ -193,11 +193,10 @@ class ModelApiService @Inject constructor(
                     u to """{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}"""
                 }
                 else -> {
-                    val u = if (useFullUrl) {
-                        baseUrl
-                    } else {
-                        joinUrl(baseUrl, "v1/chat/completions")
-                    }
+                    // Responses API 的请求体是 `input` 格式，必须同时切到 v1/responses 端点；
+                    // 仍打到 chat/completions 会被服务端以「missing field `messages`」拒绝。
+                    val path = if (useResponseApi) "v1/responses" else "v1/chat/completions"
+                    val u = if (useFullUrl) baseUrl else joinUrl(baseUrl, path)
                     if (useResponseApi) {
                         u to """{"model":${model.jsonStr()},"input":[{"role":"user","content":"hi"}]}"""
                     } else {

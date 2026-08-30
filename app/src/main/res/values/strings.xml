@@ -262,7 +262,9 @@
 
     <!-- Agent Status -->
     <string name="agent_stopped_by_user">已被用户停止</string>
-    <string name="agent_tool_executing">%1$s 执行中…</string>    <string name="agent_context_no_compaction">当前上下文无需压缩（消息过少）</string>
+    <string name="agent_tool_executing">%1$s 执行中…</string>
+    <string name="agent_stop_refusal">模型基于内容安全策略拒绝了本次回答。</string>
+    <string name="agent_stop_context_exceeded">本次输入超出模型上下文窗口，请先压缩上下文或新建会话。</string>    <string name="agent_context_no_compaction">当前上下文无需压缩（消息过少）</string>
     <string name="agent_compaction_failed">压缩失败: %1$s</string>
     <string name="agent_model_not_selected">未选择</string>
     <!-- About -->

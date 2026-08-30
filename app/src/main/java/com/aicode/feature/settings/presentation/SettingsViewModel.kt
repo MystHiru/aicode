@@ -246,6 +246,8 @@ class SettingsViewModel @Inject constructor(
         const val CALLS_PAGE_SIZE = 10
         /** 缓存读价缺失时按输入价的折扣估算。 */
         const val CACHE_READ_DISCOUNT = 0.1
+        /** 缓存写入单价缺失时相对输入价的倍率（Anthropic 官方为 1.25×）。 */
+        const val CACHE_WRITE_MARKUP = 1.25
     }
 
     /** 终端个性化配置。 */
@@ -664,10 +666,10 @@ class SettingsViewModel @Inject constructor(
                         val trend = padTrend(period, rawTrend, tz)
                         val costs = withContext(Dispatchers.IO) {
                             val perCall = calls.associate {
-                                it.record.id to callCostUsd(it.record.providerId, it.record.model, it.record.inputTokens.toLong(), it.record.cachedInputTokens.toLong(), it.record.outputTokens.toLong())
+                                it.record.id to callCostUsd(it.record.providerId, it.record.model, it.record.inputTokens.toLong(), it.record.cachedInputTokens.toLong(), it.record.outputTokens.toLong(), it.record.cacheCreationTokens.toLong())
                             }
                             val periodTotal = models.sumOf { m ->
-                                callCostUsd(null, m.model, m.inputTokens, m.cachedInputTokens, m.outputTokens) ?: 0.0
+                                callCostUsd(null, m.model, m.inputTokens, m.cachedInputTokens, m.outputTokens, m.cacheCreationTokens) ?: 0.0
                             }
                             perCall to periodTotal
                         }
@@ -1248,8 +1250,18 @@ class SettingsViewModel @Inject constructor(
         _tokenStatsPage.value = 0
     }
 
-    /** 单次调用的预估费用（USD）；模型无单价返回 null。缓存读价缺失时按输入价 10% 估算。 */
-    private suspend fun callCostUsd(providerId: String?, model: String?, inputTokens: Long, cachedInputTokens: Long, outputTokens: Long): Double? {
+    /**
+     * 单次调用的预估费用（USD）；模型无单价返回 null。
+     * 缓存读价缺失时按输入价 10% 估算，缓存写价缺失时按输入价 [CACHE_WRITE_MARKUP] 倍估算。
+     */
+    private suspend fun callCostUsd(
+        providerId: String?,
+        model: String?,
+        inputTokens: Long,
+        cachedInputTokens: Long,
+        outputTokens: Long,
+        cacheCreationTokens: Long = 0
+    ): Double? {
         val modelId = model ?: return null
         // 统一走元数据解析入口（自动拉取/内置 → 自定义 三级回退），与编辑页回显价格一致。
         val provider = _providers.value.firstOrNull { it.id == providerId }
@@ -1257,8 +1269,10 @@ class SettingsViewModel @Inject constructor(
         val inputPrice = meta.inputCostUsdPerM ?: return null
         val outputPrice = meta.outputCostUsdPerM ?: 0.0
         val cachePrice = meta.cacheReadCostUsdPerM ?: inputPrice * CACHE_READ_DISCOUNT
+        val cacheWritePrice = meta.cacheWriteCostUsdPerM ?: inputPrice * CACHE_WRITE_MARKUP
         val uncached = (inputTokens - cachedInputTokens).coerceAtLeast(0)
-        return (uncached * inputPrice + cachedInputTokens * cachePrice + outputTokens * outputPrice) / 1_000_000.0
+        return (uncached * inputPrice + cachedInputTokens * cachePrice +
+            cacheCreationTokens * cacheWritePrice + outputTokens * outputPrice) / 1_000_000.0
     }
 
     /** 调用明细翻页；越界时钳制到合法范围。 */
@@ -1284,9 +1298,42 @@ class SettingsViewModel @Inject constructor(
 
     fun saveProvider(provider: AIProviderConfig) {
         viewModelScope.launch {
+            val removedModels = (repository.getProviderById(provider.id)?.models ?: emptyList())
+                .toSet() - provider.models.toSet()
             repository.saveProvider(provider)
+            if (removedModels.isNotEmpty()) cleanupRemovedModels(provider, removedModels)
             // 保存后重置该提供商在内存中的面板状态，以便主页即时以最新脚本与配置重新加载
             _providerBalances.update { it - provider.id }
+        }
+    }
+
+    /**
+     * 模型被移出列表后，清掉仍指向它的各处选中态，否则主页与各专用模型仍会拿已删除的模型发请求。
+     * 会话绑定模型不在此清理，由 resolveProviderConfig / AIChatPanel 读取时校验回退，避免遍历全部历史会话。
+     */
+    private suspend fun cleanupRemovedModels(provider: AIProviderConfig, removed: Set<String>) {
+        if (provider.selectedModel in removed) {
+            repository.setSelectedModel(provider.id, provider.models.firstOrNull() ?: "")
+        }
+        if (defaultModelSettingsRepository.getDefaultProviderId() == provider.id &&
+            defaultModelSettingsRepository.getDefaultModel() in removed
+        ) {
+            defaultModelSettingsRepository.clear()
+        }
+        if (visionModelSettingsRepository.getVisionProviderId() == provider.id &&
+            visionModelSettingsRepository.getVisionModel() in removed
+        ) {
+            visionModelSettingsRepository.clear()
+        }
+        if (compactionModelSettingsRepository.getCompactionProviderId() == provider.id &&
+            compactionModelSettingsRepository.getCompactionModel() in removed
+        ) {
+            compactionModelSettingsRepository.clear()
+        }
+        if (titleModelSettingsRepository.getTitleProviderId() == provider.id &&
+            titleModelSettingsRepository.getTitleModel() in removed
+        ) {
+            titleModelSettingsRepository.clear()
         }
     }
 

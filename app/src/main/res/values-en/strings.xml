@@ -262,7 +262,9 @@
 
     <!-- Agent Status -->
     <string name="agent_stopped_by_user">Stopped by user</string>
-    <string name="agent_tool_executing">%1$s running…</string>    <string name="agent_context_no_compaction">No compaction needed (too few messages)</string>
+    <string name="agent_tool_executing">%1$s running…</string>
+    <string name="agent_stop_refusal">The model declined to answer under its content safety policy.</string>
+    <string name="agent_stop_context_exceeded">This request exceeds the model\'s context window. Compact the context or start a new session.</string>    <string name="agent_context_no_compaction">No compaction needed (too few messages)</string>
     <string name="agent_compaction_failed">Compaction failed: %1$s</string>
     <string name="agent_model_not_selected">Not selected</string>
     <!-- About -->

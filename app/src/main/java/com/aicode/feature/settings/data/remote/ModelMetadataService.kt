@@ -298,6 +298,7 @@ class ModelMetadataService @Inject constructor(
                     inputCostUsdPerM = cost?.get("input")?.jsonPrimitive?.doubleOrNull,
                     outputCostUsdPerM = cost?.get("output")?.jsonPrimitive?.doubleOrNull,
                     cacheReadCostUsdPerM = cost?.get("cache_read")?.jsonPrimitive?.doubleOrNull,
+                    cacheWriteCostUsdPerM = cost?.get("cache_write")?.jsonPrimitive?.doubleOrNull,
                     source = ModelMetadata.Source.MODELS_DEV
                 )
             }

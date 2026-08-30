@@ -212,7 +212,9 @@ class SyncEngine(
             val key = dir.absolutePath
             if (!dir.exists() || !dir.isDirectory || isIgnored(dir.absolutePath) || key in watchedDirs) return
             watchedDirs.add(key)
-            val observer = object : FileObserver(dir, mask) {
+            // 用 String 构造：File 版本要 API 29，本项目 minSdk 26，低版本设备会 NoSuchMethodError。
+            @Suppress("DEPRECATION")
+            val observer = object : FileObserver(dir.absolutePath, mask) {
                 override fun onEvent(event: Int, path: String?) {
                     if (path == null) return
                     val fullLocalPath = File(dir, path).absolutePath

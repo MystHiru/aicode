@@ -84,7 +84,9 @@ class CredentialRequestBridge @Inject constructor(
         val dir = File(context.filesDir, "aicode").apply { mkdirs() }
         aicodeDir = dir
         if (observer == null) {
-            val obs = object : FileObserver(dir, FileObserver.CREATE or FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO) {
+            // 用 String 构造：File 版本要 API 29，本项目 minSdk 26，低版本设备会 NoSuchMethodError。
+            @Suppress("DEPRECATION")
+            val obs = object : FileObserver(dir.absolutePath, FileObserver.CREATE or FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO) {
                 override fun onEvent(event: Int, path: String?) {
                     val name = path ?: return
                     if (!name.startsWith(REQ_PREFIX) || name.endsWith(".tmp")) return

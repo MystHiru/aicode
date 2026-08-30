@@ -91,6 +91,7 @@ class MessagePersistenceUseCase @Inject constructor(
         isError: Boolean = false,
         reasoning: String? = null,
         signature: String? = null,
+        thinkingBlocksJson: String? = null,
         attachments: List<AgentAttachment> = emptyList(),
         inputTokens: Int = 0,
         outputTokens: Int = 0,
@@ -110,6 +111,7 @@ class MessagePersistenceUseCase @Inject constructor(
                 isError = isError,
                 reasoning = reasoning?.let { sanitizeContent(it) },
                 signature = signature,
+                thinkingBlocksJson = thinkingBlocksJson,
                 attachmentsJson = if (attachments.isNotEmpty()) json.encodeToString(attachments) else null,
                 inputTokens = inputTokens,
                 outputTokens = outputTokens,
@@ -263,7 +265,8 @@ class MessagePersistenceUseCase @Inject constructor(
                                 content = e.content.removePrefix(CONTEXT_SUMMARY_LEGACY_PREFIX).trimStart(),
                                 toolCalls = toolCalls,
                                 reasoning = e.reasoning ?: "",
-                                signature = e.signature ?: ""
+                                signature = e.signature ?: "",
+                                thinkingBlocksJson = e.thinkingBlocksJson ?: ""
                             )
                         )
                     }

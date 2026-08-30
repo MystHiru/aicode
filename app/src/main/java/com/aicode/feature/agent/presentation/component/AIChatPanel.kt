@@ -173,14 +173,18 @@ fun AIChatPanel(
     val defaultFallbackProvider = providers
         .find { it.id == defaultProviderId }
         ?.takeIf { it.apiKey.isNotBlank() }
-        ?.let { if (defaultModelName.isNotBlank()) it.copy(selectedModel = defaultModelName) else it }
+        ?.let { if (defaultModelName.isNotBlank() && defaultModelName in it.models) it.copy(selectedModel = defaultModelName) else it }
     val activeProvider = run {
         val (boundProviderId, boundModel) = sessionProviderModel
         if (!boundProviderId.isNullOrBlank()) {
             // 与 workflow.resolveProviderConfig 保持一致：绑定 provider 须启用且已填 apiKey，否则回退默认模型
-            providers.find { it.id == boundProviderId }?.takeIf { it.apiKey.isNotBlank() }?.let {
-                if (!boundModel.isNullOrBlank()) it.copy(selectedModel = boundModel) else it
-            } ?: defaultFallbackProvider
+            providers.find { it.id == boundProviderId }
+                ?.takeIf { it.apiKey.isNotBlank() }
+                // 绑定模型已被移出列表时绑定失效，回退默认模型（与 workflow.resolveProviderConfig 一致）
+                ?.takeIf { boundModel.isNullOrBlank() || boundModel in it.models }
+                ?.let {
+                    if (!boundModel.isNullOrBlank()) it.copy(selectedModel = boundModel) else it
+                } ?: defaultFallbackProvider
         } else {
             defaultFallbackProvider
         }
@@ -430,8 +434,10 @@ fun AIChatPanel(
     // 打字机渲染进度：持有在 LazyColumn 之外，尾巴 item 滚出视口被 dispose 后进度不丢。
     // active = 上游仍在吐字；streamingText 清空后（active=false）打字机立即补全为完整
     // 文本，与上面保留期内尾巴无缝交接给落库消息。
+    // 文本优先取 streamingText（组合外的 ViewModel 状态）：切页返回的首帧 tailStreamingText
+    // 还没被上面的 LaunchedEffect 回填，此刻若传空文本，打字机会把恢复出的进度判成换轮从头重打。
     val typewriterRenderText = rememberTypewriterStreamingText(
-        text = tailStreamingText ?: "",
+        text = streamingText ?: tailStreamingText ?: "",
         active = streamingText != null
     )
     // 思考过程同样走打字机：与回复文本共用同一速率自适应逻辑。

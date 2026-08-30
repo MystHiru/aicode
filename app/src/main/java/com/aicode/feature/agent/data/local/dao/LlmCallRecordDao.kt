@@ -38,6 +38,8 @@ data class ModelCallStats(
     val inputTokens: Long,
     val outputTokens: Long,
     val cachedInputTokens: Long,
+    /** 写入缓存的 token 数之和（Anthropic cache_creation），按单独单价计入费用估算。 */
+    val cacheCreationTokens: Long,
     val avgTtfbMillis: Double?,
     val avgDurationMillis: Double?,
     val errors: Int
@@ -137,6 +139,7 @@ interface LlmCallRecordDao {
                SUM(inputTokens) AS inputTokens,
                SUM(outputTokens) AS outputTokens,
                SUM(cachedInputTokens) AS cachedInputTokens,
+               SUM(cacheCreationTokens) AS cacheCreationTokens,
                AVG(ttfbMillis) AS avgTtfbMillis,
                AVG(durationMillis) AS avgDurationMillis,
                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors

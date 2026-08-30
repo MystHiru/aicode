@@ -105,6 +105,8 @@ class StatefulAgentWorkflow @Inject constructor(
         val iterations: Int = 0,
         val isFinished: Boolean = false,
         val error: String? = null,
+        /** 错误类型码（如服务端 stop_reason），供 UI 换成本地化文案；null 表示直接展示 [error]。 */
+        val errorCode: String? = null,
         /** 本批模型返回的 toolCalls（原始顺序，用于最后按序组装 tool 响应） */
         val batchToolCalls: List<ToolCall> = emptyList(),
         /** 待请求权限的 toolCall（逐个弹窗收集） */
@@ -187,7 +189,9 @@ class StatefulAgentWorkflow @Inject constructor(
             if (!boundProviderId.isNullOrBlank()) {
                 val config = aiProviderRepository.getProviderById(boundProviderId)
                 if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
-                    return if (!boundModel.isNullOrBlank()) config.copy(selectedModel = boundModel) else config
+                    // 绑定的模型可能已被移出该 provider 的模型列表，此时绑定失效、继续往下回退默认模型
+                    if (boundModel.isNullOrBlank()) return config
+                    if (boundModel in config.models) return config.copy(selectedModel = boundModel)
                 }
             }
         }
@@ -196,7 +200,7 @@ class StatefulAgentWorkflow @Inject constructor(
         val defaultModel = defaultModelSettingsRepository.getDefaultModel()
         if (defaultProviderId.isNotBlank() && defaultModel.isNotBlank()) {
             val config = aiProviderRepository.getProviderById(defaultProviderId)
-            if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
+            if (config != null && config.isEnabled && config.apiKey.isNotBlank() && defaultModel in config.models) {
                 return config.copy(selectedModel = defaultModel)
             }
         }
@@ -221,7 +225,7 @@ class StatefulAgentWorkflow @Inject constructor(
      * 用于上下文压缩等独立请求场景，完全不占用或修改主对话所用的 Provider 单例。
      * 同时把提供商级 LLM 缓存开关（Anthropic 断点 / OpenAI cache key）应用到实例。
      */
-    private fun createStandaloneProvider(config: AIProviderConfig, sessionId: String?): AIProvider {
+    private suspend fun createStandaloneProvider(config: AIProviderConfig, sessionId: String?): AIProvider {
         val provider: AIProvider = when (config.type) {
             ProviderType.ANTHROPIC -> AnthropicAdapter(anthropicApi).also {
                 it.cacheBreakpointsEnabled = config.anthropicCacheBreakpoints
@@ -239,6 +243,10 @@ class StatefulAgentWorkflow @Inject constructor(
         provider.providerId = config.id
         provider.logSessionId = sessionId
         provider.userAgent = config.userAgent
+        // 模型元数据的输出上限（models.dev limit.output）：不传时 Anthropic 会把输出卡在 adapter 兜底值上。
+        provider.maxOutputTokens = modelMetadataService
+            .resolve(config.id, config.type, config.effectiveModel)
+            .outputTokens
         return provider
     }
 
@@ -260,7 +268,8 @@ class StatefulAgentWorkflow @Inject constructor(
                     content = action.response.content,
                     toolCalls = action.response.toolCalls,
                     reasoning = action.response.reasoning ?: "",
-                    signature = action.response.signature ?: ""
+                    signature = action.response.signature ?: "",
+                    thinkingBlocksJson = action.response.thinkingBlocksJson ?: ""
                 )
                 newState = state.copy(
                     messages = state.messages + assistantMsg,
@@ -268,7 +277,14 @@ class StatefulAgentWorkflow @Inject constructor(
                 )
                 
                 if (action.response.toolCalls.isEmpty()) {
-                    if (action.response.isTruncated) {
+                    if (action.response.isAborted) {
+                        // 拒答/上下文超限：正文可能为空，静默结束会让用户看到空白气泡以为卡死。
+                        newState = newState.copy(
+                            isFinished = true,
+                            error = action.response.stopDetail ?: "",
+                            errorCode = action.response.stopReason
+                        )
+                    } else if (action.response.isTruncated) {
                         newState = newState.copy(
                             messages = newState.messages + AgentMessage.UserMessage(content = "你的回复因长度限制被截断了，请从截断处继续。")
                         )
@@ -521,7 +537,7 @@ class StatefulAgentWorkflow @Inject constructor(
                             } else aiResponse
 
                             if (aiResponse.content.isNotBlank() || aiResponse.toolCalls.isNotEmpty()) {
-                                send(AgentEvent.AssistantText(aiResponse.content, aiResponse.toolCalls, reasoningAcc.toString(), aiResponse.signature ?: "", aiResponse.inputTokens, aiResponse.outputTokens, aiResponse.cachedInputTokens))
+                                send(AgentEvent.AssistantText(aiResponse.content, aiResponse.toolCalls, reasoningAcc.toString(), aiResponse.signature ?: "", aiResponse.inputTokens, aiResponse.outputTokens, aiResponse.cachedInputTokens, aiResponse.thinkingBlocksJson ?: ""))
                             }
                             actionQueue.addLast(AgentAction.LlmResponse(responseWithReasoning))
                         } catch (e: CancellationException) {
@@ -551,6 +567,7 @@ class StatefulAgentWorkflow @Inject constructor(
                                         inputTokens = usage?.inputTokens ?: 0,
                                         outputTokens = usage?.outputTokens ?: 0,
                                         cachedInputTokens = usage?.cachedInputTokens ?: 0,
+                                        cacheCreationTokens = usage?.cacheCreationTokens ?: 0,
                                         ttfbMillis = ttfbElapsed?.toInt(),
                                         durationMillis = durationMillis,
                                         status = when {
@@ -673,7 +690,7 @@ class StatefulAgentWorkflow @Inject constructor(
             }
         }
         
-        state.error?.let { send(AgentEvent.Failed(it)) }
+        state.error?.let { send(AgentEvent.Failed(it, state.errorCode)) }
         send(AgentEvent.Completed)
     }
 

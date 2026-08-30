@@ -32,6 +32,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -223,6 +225,25 @@ private fun truncateToCodePoints(text: String, codePoints: Int): String {
     return text.substring(0, index)
 }
 
+/** 延续判据的前缀采样上限（字符）：只存指纹不存全文，避免大段流式文本进 saveable。 */
+private const val CONTINUITY_HEAD_CHARS = 64
+
+/** 已见文本的前缀指纹，与其长度一起构成「同一轮延续」的判据。 */
+internal fun streamHeadFingerprint(text: String): Int =
+    text.take(CONTINUITY_HEAD_CHARS).hashCode()
+
+/**
+ * [text] 是否是「长度 [seenChars]、前缀指纹 [seenHead]」那段已见文本的延续。
+ *
+ * 流式文本逐 delta 前缀增长，同一轮内当前文本必然以已见文本为前缀。切页或 item 回收后
+ * 重挂载时用它校验恢复出的打字进度 / 计时起点是否仍属于同一轮：期间若已换轮，新文本更短
+ * 或开头不同，判为不延续，进度与计时从头开始。
+ */
+internal fun isStreamContinuation(text: String, seenChars: Int, seenHead: Int): Boolean {
+    if (seenChars <= 0 || text.length < seenChars) return false
+    return text.take(minOf(seenChars, CONTINUITY_HEAD_CHARS)).hashCode() == seenHead
+}
+
 /**
  * 速率自适应打字机：显示文本滞后于上游累积文本，打字速度跟随模型吐字速度。
  *
@@ -237,22 +258,38 @@ private fun truncateToCodePoints(text: String, codePoints: Int): String {
  * 显示完整文本，与落库消息无缝交接。
  *
  * 调用方应在 LazyColumn 之外持有本状态，避免尾巴 item 滚出视口被 dispose 后
- * 重新组合导致打字进度丢失。
+ * 重新组合导致打字进度丢失。切页（chat 整棵子树离开 NavHost 组合）无法靠持有位置规避，
+ * 由内部 saveable 进度承接。
  */
 @Composable
 internal fun rememberTypewriterStreamingText(text: String, active: Boolean): String {
-    var shownCodePoints by remember { mutableStateOf(0f) }
-    var renderText by remember { mutableStateOf("") }
+    // 已渲染文本的长度与前缀指纹进 saveable：切页返回后据此延续打字进度，避免已输出的
+    // 正文从头重打；期间若已换轮，指纹校验不通过则照常从头打字。
+    var shownChars by rememberSaveable { mutableStateOf(0) }
+    var shownHead by rememberSaveable { mutableStateOf(0) }
+    val restored = remember {
+        if (isStreamContinuation(text, shownChars, shownHead)) text.substring(0, shownChars) else ""
+    }
+    var shownCodePoints by remember {
+        mutableStateOf(restored.codePointCount(0, restored.length).toFloat())
+    }
+    var renderText by remember { mutableStateOf(restored) }
     // 上游到达事件窗口：(帧时间戳, 累计码点数)，用于估算吐字速率
     val arrivals = remember { ArrayDeque<Pair<Long, Int>>() }
     var lastArrivalNanos by remember { mutableStateOf(0L) }
     var lastText by remember { mutableStateOf("") }
+    // 渲染文本与其 saveable 指纹必须同步更新，否则恢复时会拿指纹去校验另一段文本
+    val commitRender: (String) -> Unit = { snapshot ->
+        renderText = snapshot
+        shownChars = snapshot.length
+        shownHead = streamHeadFingerprint(snapshot)
+    }
 
     LaunchedEffect(text, active) {
         // 文本不是简单前缀增长（新一轮/重试/切换会话）：显示进度归零重新打字
         if (lastText.isNotEmpty() && !text.startsWith(lastText)) {
             shownCodePoints = 0f
-            renderText = ""
+            commitRender("")
             arrivals.clear()
             lastArrivalNanos = 0L
         }
@@ -261,7 +298,7 @@ internal fun rememberTypewriterStreamingText(text: String, active: Boolean): Str
         if (!active) {
             // 上游已结束：直接显示完整文本，交给落库消息无缝接管
             shownCodePoints = text.codePointCount(0, text.length).toFloat()
-            renderText = text
+            commitRender(text)
             return@LaunchedEffect
         }
 
@@ -308,13 +345,13 @@ internal fun rememberTypewriterStreamingText(text: String, active: Boolean): Str
                     val snapshot = truncateToCodePoints(text, shownCodePoints.toInt())
                     if (snapshot != renderText) {
                         lastRenderNanos = frameNanos
-                        renderText = snapshot
+                        commitRender(snapshot)
                     }
                 }
             }
         }
         // 追平后确保渲染完整文本（while 退出时 shownCodePoints 已到 available）
-        if (renderText != text) renderText = text
+        if (renderText != text) commitRender(text)
     }
     return renderText
 }
@@ -385,13 +422,23 @@ internal fun ReasoningBubble(
 ) {
     var userToggled by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(initiallyExpanded) }
-    // 思考计时：仅流式思考场景开启，组件挂载即开始、每秒累加，思考结束组件卸载自然停止
+    // 思考计时：仅流式思考场景开启，思考结束组件卸载自然停止。存绝对起始时间戳而非累加
+    // 秒数，切页返回或气泡滚出视口重挂载后显示的仍是真实时长；起始戳连同已见文本的长度与
+    // 指纹一起进 saveable，恢复时文本若不是同一轮的延续（期间已换轮）则重新计时。
+    var timerStartMillis by rememberSaveable { mutableStateOf(0L) }
+    var timerSeenChars by rememberSaveable { mutableStateOf(0) }
+    var timerSeenHead by rememberSaveable { mutableStateOf(0) }
     var elapsedSeconds by remember { mutableStateOf(0) }
+    val latestText by rememberUpdatedState(text)
     LaunchedEffect(showTimer) {
         if (!showTimer) return@LaunchedEffect
-        val start = System.currentTimeMillis()
+        if (!isStreamContinuation(latestText, timerSeenChars, timerSeenHead)) {
+            timerStartMillis = System.currentTimeMillis()
+        }
         while (true) {
-            elapsedSeconds = ((System.currentTimeMillis() - start) / 1000).toInt()
+            elapsedSeconds = ((System.currentTimeMillis() - timerStartMillis) / 1000).toInt()
+            timerSeenChars = latestText.length
+            timerSeenHead = streamHeadFingerprint(latestText)
             delay(1000)
         }
     }

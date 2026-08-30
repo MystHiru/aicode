@@ -40,7 +40,11 @@ data class AgentMessageEntity(
     /** 上下文压缩生成的内部用户锚点：参与模型回放，UI 渲染为压缩分隔线。 */
     val isCompactionMarker: Boolean = false,
     val inputTokens: Int = 0,
-    val outputTokens: Int = 0
+    val outputTokens: Int = 0,
+    // 仅 ASSISTANT 行：Anthropic thinking / redacted_thinking 内容块的原样快照（JSON 数组文本）。
+    // 文档要求这些块回传时不得修改且保持原序，故存原块而不拆字段（redacted 的 data 不可重建）。
+    // 位置在末尾：备份 DTO 映射按位置参数，插到中间会错位。
+    val thinkingBlocksJson: String? = null
 ) {
     fun toUIMessage(): AgentUIMessage {
         val roleEnum = MessageRole.valueOf(role)

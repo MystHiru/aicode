@@ -49,6 +49,8 @@ class AnthropicAdapter @Inject constructor(
     /** 自定义请求头 User-Agent；留空使用默认。 */
     override var userAgent: String = ""
 
+    override var maxOutputTokens: Int? = null
+
     private fun extraHeaders(): Map<String, String> =
         if (userAgent.isNotBlank()) mapOf("User-Agent" to userAgent) else emptyMap()
 
@@ -76,6 +78,7 @@ class AnthropicAdapter @Inject constructor(
             model = model,
             messages = anthropicMessages,
             system = buildSystemPayload(systemPrompt),
+            max_tokens = resolveMaxTokens(thinking),
             temperature = if (thinking != null) null else 0.7f,
             thinking = thinking,
             output_config = outputConfig,
@@ -101,6 +104,8 @@ class AnthropicAdapter @Inject constructor(
         var thinkingText = ""
         var signature: String? = null
         val toolCalls = mutableListOf<ToolCall>()
+        // thinking / redacted_thinking 块按返回原序原样留存，回传时不得修改也不得重排。
+        val thinkingBlocks = mutableListOf<AnthropicContentBlock>()
 
         for (block in response.content) {
             when (block.type) {
@@ -108,7 +113,9 @@ class AnthropicAdapter @Inject constructor(
                 "thinking" -> {
                     thinkingText += block.thinking ?: ""
                     signature = block.signature ?: signature
+                    thinkingBlocks.add(block)
                 }
+                "redacted_thinking" -> thinkingBlocks.add(block)
                 "tool_use" -> {
                     val arguments = block.input?.let { mapToJson(it) } ?: JsonObject(emptyMap())
                     toolCalls.add(
@@ -122,7 +129,7 @@ class AnthropicAdapter @Inject constructor(
             }
         }
 
-        return AIResponse(content = contentText, toolCalls = toolCalls, stopReason = response.stop_reason, reasoning = thinkingText.ifEmpty { null }, signature = signature, inputTokens = response.usage.input_tokens, outputTokens = response.usage.output_tokens, cachedInputTokens = response.usage.cache_read_input_tokens ?: 0)
+        return AIResponse(content = contentText, toolCalls = toolCalls, stopReason = response.stop_reason, stopDetail = response.stop_details?.explanation, reasoning = thinkingText.ifEmpty { null }, signature = signature, thinkingBlocksJson = encodeThinkingBlocks(thinkingBlocks), inputTokens = response.usage.input_tokens, outputTokens = response.usage.output_tokens, cachedInputTokens = response.usage.cache_read_input_tokens ?: 0, cacheCreationTokens = response.usage.cache_creation_input_tokens ?: 0)
     }
 
     override fun completeStream(
@@ -147,6 +154,7 @@ class AnthropicAdapter @Inject constructor(
             model = model,
             messages = anthropicMessages,
             system = buildSystemPayload(systemPrompt),
+            max_tokens = resolveMaxTokens(thinking),
             temperature = if (thinking != null) null else 0.7f,
             thinking = thinking,
             output_config = outputConfig,
@@ -165,11 +173,15 @@ class AnthropicAdapter @Inject constructor(
             // content block index -> 累积中的 tool_use（仅 tool_use 块建条目，保序）。
             val toolBlocks = LinkedHashMap<Int, ToolBlockAcc>()
             var stopReason: String? = null
+            var stopDetail: String? = null
             var streamInputTokens = 0
             var streamOutputTokens = 0
             var streamCachedInputTokens = 0
+            var streamCacheCreationTokens = 0
             // thinking block 的加密签名（signature_delta 事件携带），随 Final 上抛供工具循环回传。
             var signature: String? = null
+            // content block index -> thinking / redacted_thinking 累积；按 index 分槽，避免一轮多个思考块被合并。
+            val thinkingBlocks = LinkedHashMap<Int, ThinkingBlockAcc>()
 
             val body = api.streamMessage(url = url, apiKey = apiKey, extraHeaders = extraHeaders(), request = request)
 
@@ -212,15 +224,24 @@ class AnthropicAdapter @Inject constructor(
                                     streamInputTokens = usage?.get("input_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: 0
                                     // 缓存命中数在 message_start 的 usage 里返回（message_delta 的 usage 只有 output_tokens）
                                     streamCachedInputTokens = usage?.get("cache_read_input_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                                    streamCacheCreationTokens = usage?.get("cache_creation_input_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: 0
                                 }
                                 "content_block_start" -> {
                                     val index = obj.get("index")?.asInt ?: continue
                                     val block = obj.getAsJsonObject("content_block")
-                                    if (block?.get("type")?.asString == "tool_use") {
-                                        toolBlocks[index] = ToolBlockAcc(
+                                    when (block?.get("type")?.asString) {
+                                        "tool_use" -> toolBlocks[index] = ToolBlockAcc(
                                             id = block.get("id")?.asString ?: "",
                                             name = block.get("name")?.asString ?: ""
                                         )
+                                        "thinking" -> thinkingBlocks[index] = ThinkingBlockAcc(type = "thinking").also { acc ->
+                                            acc.thinking.append(block.get("thinking")?.takeIf { !it.isJsonNull }?.asString ?: "")
+                                            acc.signature = block.get("signature")?.takeIf { !it.isJsonNull }?.asString
+                                        }
+                                        // redacted_thinking 的 data 在 start 事件一次性给全，没有对应 delta。
+                                        "redacted_thinking" -> thinkingBlocks[index] = ThinkingBlockAcc(type = "redacted_thinking").also { acc ->
+                                            acc.data = block.get("data")?.takeIf { !it.isJsonNull }?.asString
+                                        }
                                     }
                                 }
                                 "content_block_delta" -> {
@@ -238,6 +259,10 @@ class AnthropicAdapter @Inject constructor(
                                         "thinking_delta" -> {
                                             val t = delta.get("thinking")?.asString ?: ""
                                             if (t.isNotEmpty()) {
+                                                obj.get("index")?.asInt?.let { idx ->
+                                                    thinkingBlocks.getOrPut(idx) { ThinkingBlockAcc(type = "thinking") }
+                                                        .thinking.append(t)
+                                                }
                                                 // 思考内容不落库、可重试重流出，但收到即说明连接已活，取消首字节超时。
                                                 if (firstByteReceived.compareAndSet(false, true)) watchdog.cancel()
                                                 onContent()
@@ -246,7 +271,13 @@ class AnthropicAdapter @Inject constructor(
                                         }
                                         "signature_delta" -> {
                                             val sig = delta.get("signature")?.asString ?: ""
-                                            if (sig.isNotEmpty()) signature = sig
+                                            if (sig.isNotEmpty()) {
+                                                signature = sig
+                                                obj.get("index")?.asInt?.let { idx ->
+                                                    thinkingBlocks.getOrPut(idx) { ThinkingBlockAcc(type = "thinking") }
+                                                        .signature = sig
+                                                }
+                                            }
                                         }
                                         "input_json_delta" -> {
                                             val index = obj.get("index")?.asInt
@@ -261,12 +292,19 @@ class AnthropicAdapter @Inject constructor(
                                     delta?.get("stop_reason")?.takeIf { !it.isJsonNull }?.asString?.let {
                                         stopReason = it
                                     }
+                                    delta?.get("stop_details")?.takeIf { it.isJsonObject }?.asJsonObject
+                                        ?.get("explanation")?.takeIf { !it.isJsonNull }?.asString?.let {
+                                            stopDetail = it
+                                        }
                                     val usage = obj.get("usage")?.takeIf { it.isJsonObject }?.asJsonObject
                                     usage?.get("output_tokens")?.takeIf { !it.isJsonNull }?.asInt?.let {
                                         streamOutputTokens = it
                                     }
                                     usage?.get("cache_read_input_tokens")?.takeIf { !it.isJsonNull }?.asInt?.let {
                                         streamCachedInputTokens = it
+                                    }
+                                    usage?.get("cache_creation_input_tokens")?.takeIf { !it.isJsonNull }?.asInt?.let {
+                                        streamCacheCreationTokens = it
                                     }
                                 }
                             }
@@ -286,7 +324,7 @@ class AnthropicAdapter @Inject constructor(
             val toolCalls = toolBlocks.values.map { acc ->
                 ToolCall(id = acc.id, name = acc.name, arguments = parseArgs(acc.args.toString()))
             }
-            emit(AIStreamChunk.Final(AIResponse(content = textBuilder.toString(), toolCalls = toolCalls, stopReason = stopReason, signature = signature, inputTokens = streamInputTokens, outputTokens = streamOutputTokens, cachedInputTokens = streamCachedInputTokens)))
+            emit(AIStreamChunk.Final(AIResponse(content = textBuilder.toString(), toolCalls = toolCalls, stopReason = stopReason, stopDetail = stopDetail, signature = signature, thinkingBlocksJson = encodeThinkingBlocks(thinkingBlocks.values.map { it.toBlock() }), inputTokens = streamInputTokens, outputTokens = streamOutputTokens, cachedInputTokens = streamCachedInputTokens, cacheCreationTokens = streamCacheCreationTokens)))
                 },
                 onRetry = { attempt, max, error -> emit(AIStreamChunk.Retrying(attempt, max, error)) }
             )
@@ -306,6 +344,42 @@ class AnthropicAdapter @Inject constructor(
     /** 流式过程中按 content block index 累积的 tool_use 状态。 */
     private class ToolBlockAcc(val id: String, val name: String) {
         val args = StringBuilder()
+    }
+
+    /** 流式过程中按 content block index 累积的 thinking / redacted_thinking 状态。 */
+    private class ThinkingBlockAcc(val type: String) {
+        val thinking = StringBuilder()
+        var signature: String? = null
+        var data: String? = null
+
+        fun toBlock(): AnthropicContentBlock = AnthropicContentBlock(
+            type = type,
+            thinking = if (type == "thinking") thinking.toString() else null,
+            signature = signature,
+            data = data
+        )
+    }
+
+    /**
+     * 最大输出 token：优先用模型元数据的输出上限，缺失时回退 [DEFAULT_MAX_TOKENS]。
+     * 开启 thinking 时思考预算计入 max_tokens，须留出正文空间，故不得低于预算 + [MIN_CONTENT_TOKENS]。
+     */
+    private fun resolveMaxTokens(thinking: AnthropicThinkingConfig?): Int {
+        val limit = maxOutputTokens?.takeIf { it > 0 } ?: DEFAULT_MAX_TOKENS
+        val budget = thinking?.budget_tokens ?: return limit
+        return maxOf(limit, budget + MIN_CONTENT_TOKENS)
+    }
+
+    /** thinking / redacted_thinking 块原样序列化为快照；无块时 null。 */
+    private fun encodeThinkingBlocks(blocks: List<AnthropicContentBlock>): String? =
+        blocks.takeIf { it.isNotEmpty() }?.let { gson.toJson(it) }
+
+    /** 反序列化 [encodeThinkingBlocks] 的快照；损坏或为空时返回空列表，由调用方回退旧逻辑。 */
+    private fun decodeThinkingBlocks(json: String): List<AnthropicContentBlock> {
+        if (json.isBlank()) return emptyList()
+        return runCatching {
+            gson.fromJson(json, Array<AnthropicContentBlock>::class.java)?.toList().orEmpty()
+        }.getOrDefault(emptyList())
     }
 
     /**
@@ -362,9 +436,12 @@ class AnthropicAdapter @Inject constructor(
                 }
                 is AgentMessage.AssistantMessage -> {
                     val contentBlocks = mutableListOf<AnthropicContentBlock>()
-                    // 工具循环/多轮时须把上轮 thinking block（含 signature）原样回传，否则 400。
-                    // 仅当 signature 存在时回传：旧数据/备份恢复没有 signature，不回传也不会报错。
-                    if (message.signature.isNotEmpty()) {
+                    // 工具循环/多轮时须把上轮 thinking / redacted_thinking 块原样、原序回传，否则 400。
+                    // 优先用原生快照（唯一能满足「不得修改」的形式）；旧数据/备份恢复只有 signature 时退回单块。
+                    val snapshot = decodeThinkingBlocks(message.thinkingBlocksJson)
+                    if (snapshot.isNotEmpty()) {
+                        contentBlocks.addAll(snapshot)
+                    } else if (message.signature.isNotEmpty()) {
                         contentBlocks.add(
                             AnthropicContentBlock(
                                 type = "thinking",
@@ -412,18 +489,25 @@ class AnthropicAdapter @Inject constructor(
                     } else {
                         message.result
                     }
-                    result.add(
-                        AnthropicMessage(
-                            role = "user",
-                            content = listOf(
-                                AnthropicContentBlock(
-                                    type = "tool_result",
-                                    tool_use_id = message.id,
-                                    content = content
-                                )
-                            )
-                        )
+                    val resultBlock = AnthropicContentBlock(
+                        type = "tool_result",
+                        tool_use_id = message.id,
+                        content = content
                     )
+                    // 同一条 assistant 里的多个 tool_use，其 tool_result 必须全部放进紧随的那一条 user 消息：
+                    // 官方端会把连续的 user 消息合并成一轮，但部分兼容网关不合并，会直接报
+                    // "`tool_use` ids were found without `tool_result` blocks immediately after"。
+                    val previous = result.lastOrNull()
+                    val previousBlocks = (previous?.content as? List<*>)?.filterIsInstance<AnthropicContentBlock>()
+                    if (
+                        previous?.role == "user" &&
+                        !previousBlocks.isNullOrEmpty() &&
+                        previousBlocks.all { it.type == "tool_result" }
+                    ) {
+                        result[result.lastIndex] = previous.copy(content = previousBlocks + resultBlock)
+                    } else {
+                        result.add(AnthropicMessage(role = "user", content = listOf(resultBlock)))
+                    }
                 }
             }
         }
@@ -525,5 +609,13 @@ class AnthropicAdapter @Inject constructor(
     private companion object {
         /** 显式缓存断点：Anthropic ephemeral prompt caching。 */
         val CACHE_BREAKPOINT = mapOf("type" to "ephemeral")
+
+        /** 模型元数据缺输出上限时的兜底最大输出 token。 */
+        const val DEFAULT_MAX_TOKENS = 16384
+
+        /** 开启 thinking 时为正文预留的最小 token 数（max_tokens 必须大于思考预算）。 */
+        const val MIN_CONTENT_TOKENS = 4096
+
+        val gson = com.google.gson.Gson()
     }
 }

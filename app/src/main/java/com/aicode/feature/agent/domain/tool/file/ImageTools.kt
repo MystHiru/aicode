@@ -264,7 +264,7 @@ class ViewImageTool @Inject constructor(
         return null
     }
 
-    private fun createStandaloneProvider(config: AIProviderConfig, sessionId: String?): AIProvider {
+    private suspend fun createStandaloneProvider(config: AIProviderConfig, sessionId: String?): AIProvider {
         val provider: AIProvider = when (config.type) {
             ProviderType.ANTHROPIC -> AnthropicAdapter(anthropicApi).also {
                 it.cacheBreakpointsEnabled = config.anthropicCacheBreakpoints
@@ -282,6 +282,9 @@ class ViewImageTool @Inject constructor(
         provider.providerId = config.id
         provider.logSessionId = sessionId
         provider.userAgent = config.userAgent
+        provider.maxOutputTokens = modelMetadataService
+            .resolve(config.id, config.type, config.effectiveModel)
+            .outputTokens
         return provider
     }
 
