@@ -96,6 +96,14 @@
 -keep class com.termux.terminal.** { *; }
 -keep class com.termux.view.** { *; }
 
+# ---- Apache FtpServer / MINA（内置 FTP 服务端）----
+# MINA 的 SimpleIoProcessorPool 用反射找 IoProcessor 实现的 (ExecutorService)/(Executor) 构造器
+# （NioProcessor 只有 public NioProcessor(Executor)）。这些构造器无直接调用方，R8 优化掉后
+# release 包开启内置 FTP 即报 "must have a public constructor with one ExecutorService parameter"。
+-keepclassmembers class * implements org.apache.mina.core.service.IoProcessor {
+    public <init>(...);
+}
+
 # ---- DataStore / security-crypto（内部反射）----
 -dontwarn androidx.security.**
 
