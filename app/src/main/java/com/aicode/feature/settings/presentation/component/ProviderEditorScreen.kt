@@ -106,6 +106,7 @@ import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.domain.model.ProviderType
 import com.aicode.feature.settings.domain.model.mergeModelMetadata
+import com.aicode.feature.settings.domain.model.sanitized
 import com.aicode.feature.settings.presentation.FetchState
 import com.aicode.feature.settings.presentation.SettingsViewModel
 import compose.icons.FeatherIcons
@@ -218,7 +219,7 @@ fun ProviderEditorScreen(
         balanceScriptPath = balanceScriptPath,
         balanceRefreshInterval = balanceRefreshInterval,
         userAgent = userAgent
-    )
+    ).sanitized()
 
     // 新建场景下判断用户是否填写了实质内容：名称、API Key、Base URL 任一非空白，或已添加模型。
     // 全空白时退出不应落库，否则会存入一条名为“新提供商”的空记录。

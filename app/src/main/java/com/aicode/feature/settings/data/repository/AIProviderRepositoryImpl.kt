@@ -5,6 +5,7 @@ import com.aicode.feature.settings.data.local.dao.AIProviderDao
 import com.aicode.feature.settings.data.local.entity.AIProviderEntity
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.ProviderType
+import com.aicode.feature.settings.domain.model.sanitized
 import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -32,7 +33,7 @@ class AIProviderRepositoryImpl @Inject constructor(
 
     override suspend fun saveProvider(provider: AIProviderConfig) {
         FileLogger.i(TAG, "保存提供商 id=${provider.id} name=${provider.name}")
-        aiProviderDao.insertProvider(provider.toEntity())
+        aiProviderDao.insertProvider(provider.sanitized().toEntity())
     }
 
     override suspend fun deleteProvider(id: String) {
@@ -74,7 +75,7 @@ class AIProviderRepositoryImpl @Inject constructor(
             balanceScriptPath = balanceScriptPath,
             balanceRefreshInterval = balanceRefreshInterval,
             userAgent = userAgent
-        )
+        ).sanitized()
     }
 
     private fun AIProviderConfig.toEntity(): AIProviderEntity {
