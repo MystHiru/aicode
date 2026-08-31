@@ -79,6 +79,7 @@ import io.github.rosemoe.sora.event.SelectionChangeEvent
 import io.github.rosemoe.sora.langs.textmate.TextMateColorScheme
 import io.github.rosemoe.sora.langs.textmate.TextMateLanguage
 import io.github.rosemoe.sora.langs.textmate.registry.ThemeRegistry
+import io.github.rosemoe.sora.text.UndoManager
 import io.github.rosemoe.sora.widget.CodeEditor
 import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
 
@@ -101,6 +102,9 @@ fun CodeEditorScreen(
     var canUndo by remember { mutableStateOf(false) }
     var canRedo by remember { mutableStateOf(false) }
     var dirty by remember { mutableStateOf(false) }
+    // 已保存（或刚加载）的内容。脏标记按与它的差异判定，撤销回原样时才能自行复位。
+    val baselineText = remember { mutableStateOf("") }
+    var pendingSaveText by remember { mutableStateOf("") }
     var pendingExit by remember { mutableStateOf(false) }
     var showUnsavedDialog by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
@@ -131,6 +135,7 @@ fun CodeEditorScreen(
         viewModel.saveEvents.collect { result ->
             when (result) {
                 is SaveResult.Success -> {
+                    baselineText.value = pendingSaveText
                     dirty = false
                     Toast.makeText(context, savedText, Toast.LENGTH_SHORT).show()
                     if (pendingExit) {
@@ -151,7 +156,9 @@ fun CodeEditorScreen(
     }
 
     fun requestSave() {
-        editorRef.value?.let { viewModel.save(it.text.toString()) }
+        val editor = editorRef.value ?: return
+        pendingSaveText = editor.text.toString()
+        viewModel.save(pendingSaveText)
     }
 
     fun handleBack() {
@@ -264,16 +271,17 @@ fun CodeEditorScreen(
                     modifier = Modifier.fillMaxSize(),
                     editorRef = editorRef,
                     settings = settings,
+                    baselineText = baselineText,
                     initialLine = initialLine,
                     onBackgroundResolved = { editorBackground = it },
                     onCursorChanged = { l, c ->
                         cursorLine = l
                         cursorColumn = c
                     },
-                    onContentChanged = { undo, redo ->
+                    onContentChanged = { undo, redo, changed ->
                         canUndo = undo
                         canRedo = redo
-                        dirty = true
+                        dirty = changed
                     }
                 )
                 if (previewMode) {
@@ -386,10 +394,11 @@ private fun EditorSurface(
     modifier: Modifier,
     editorRef: MutableState<CodeEditor?>,
     settings: EditorSettings,
+    baselineText: MutableState<String>,
     initialLine: Int = 0,
     onBackgroundResolved: (Color) -> Unit,
     onCursorChanged: (line: Int, column: Int) -> Unit,
-    onContentChanged: (canUndo: Boolean, canRedo: Boolean) -> Unit
+    onContentChanged: (canUndo: Boolean, canRedo: Boolean, dirty: Boolean) -> Unit
 ) {
     // 与实际渲染出的 Compose 主题保持一致，而非跟随系统设置——应用内可单独切换主题。
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
@@ -407,6 +416,8 @@ private fun EditorSurface(
         modifier = modifier.graphicsLayer { alpha = contentAlpha },
         factory = { ctx ->
             TextMateSetup.applyTheme(dark)
+            // sora 默认把 8 秒内的连续输入并成一条撤销记录，一次撤销会吞掉整段输入。
+            UndoManager.setMergeTimeLimit(UNDO_MERGE_WINDOW_MS)
             CodeEditor(ctx).apply {
                 isEditable = true
                 typefaceText = Typeface.MONOSPACE
@@ -428,8 +439,19 @@ private fun EditorSurface(
                 }
                 // 先 setText 再订阅：初始设置不计入脏标记，只有用户后续编辑才触发。
                 setText(state.content)
+                val editorView = this
                 subscribeAlways(ContentChangeEvent::class.java) {
-                    onContentChanged(canUndo(), canRedo())
+                    // UndoManager 先改文本、后移动栈指针，事件回调里同帧读 canUndo/canRedo 拿到的
+                    // 是移动前的旧值（撤销后重做键不亮、撤销到底后撤销键仍亮），延后一帧才准。
+                    editorView.post {
+                        val baseline = baselineText.value
+                        val text = editorView.text
+                        onContentChanged(
+                            editorView.canUndo(),
+                            editorView.canRedo(),
+                            text.length != baseline.length || text.toString() != baseline
+                        )
+                    }
                 }
                 subscribeAlways(SelectionChangeEvent::class.java) {
                     onCursorChanged(cursor.leftLine + 1, cursor.leftColumn + 1)
@@ -442,6 +464,8 @@ private fun EditorSurface(
             it.release()
         }
     )
+
+    LaunchedEffect(state.content) { baselineText.value = state.content }
 
     // 深浅主题切换时重设配色，而非重建编辑器——保住未保存内容与撤销栈。
     val editor = editorRef.value
@@ -614,6 +638,9 @@ private val EDITOR_SYMBOLS = listOf(
 
 /** 内容渐显时长：给后台语法分析留出窗口，同时不致于让用户觉得打开变慢。 */
 private const val HIGHLIGHT_REVEAL_MS = 200
+
+/** 撤销合并窗口：间隔超过它的输入不再并入上一条撤销记录，撤销才是分步的。sora 默认 8000ms。 */
+private const val UNDO_MERGE_WINDOW_MS = 500L
 
 /** 行号左侧预留间距（sp）。 */
 private const val LINE_NUMBER_MARGIN_SP = 2f
