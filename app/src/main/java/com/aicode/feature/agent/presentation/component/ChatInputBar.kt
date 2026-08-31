@@ -352,20 +352,20 @@ internal fun ChatInputBar(
                             )
                         }
 
+                        // 元数据未命中时（如中转站改了模型名）退回全部档位由用户自选：
+                        // 这类模型可能强制开启推理，隐藏按钮会导致无法调档。
                         val availableEfforts = remember(activeProvider, modelMetadata) {
                             activeProvider?.let { provider ->
                                 modelMetadata[provider.effectiveModel]?.reasoningEffortOptions
                                     ?.let { ReasoningEffort.fromValues(it) }
-                            }.orEmpty()
+                            }.orEmpty().ifEmpty { ReasoningEffort.entries }
                         }
-                        if (availableEfforts.isNotEmpty()) {
-                            ReasoningEffortSelector(
-                                effort = reasoningEffort,
-                                availableEfforts = availableEfforts,
-                                onChange = onReasoningEffortChange,
-                                enabled = !isBusy
-                            )
-                        }
+                        ReasoningEffortSelector(
+                            effort = reasoningEffort,
+                            availableEfforts = availableEfforts,
+                            onChange = onReasoningEffortChange,
+                            enabled = !isBusy
+                        )
                     }
                     UploadIconButton(
                         enabled = !isBusy,

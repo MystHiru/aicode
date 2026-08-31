@@ -73,8 +73,8 @@ internal fun ModelIconButton(
 }
 
 /**
- * 思考强度选择器：独立图标按钮，点击弹出底部档位选择（按当前模型元数据动态生成）。
- * [availableEfforts] 为空时调用方应隐藏本按钮。
+ * 思考强度选择器：独立图标按钮，点击弹出底部档位选择。
+ * [availableEfforts] 由调用方按当前模型元数据生成，元数据未命中时给出全部档位。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
