@@ -1,6 +1,7 @@
 package com.aicode.feature.editor.domain
 
 import android.content.Context
+import io.github.rosemoe.sora.lang.analysis.AsyncIncrementalAnalyzeManager
 import io.github.rosemoe.sora.langs.textmate.registry.FileProviderRegistry
 import io.github.rosemoe.sora.langs.textmate.registry.GrammarRegistry
 import io.github.rosemoe.sora.langs.textmate.registry.ThemeRegistry
@@ -27,6 +28,9 @@ object TextMateSetup {
         if (initialized) return
         synchronized(this) {
             if (initialized) return
+            // TextMate 分析是从第一行顺序跑到最后一行的（每行状态依赖上一行），大文件全量跑完要数秒。
+            // 打开该开关后每分析 1000 行就把已得到的着色推给编辑器，首屏不必等全文分析结束。
+            AsyncIncrementalAnalyzeManager.setUpdateStylesDuringAnalysis(true)
             FileProviderRegistry.getInstance()
                 .addFileProvider(AssetsFileResolver(context.applicationContext.assets))
             loadThemes()
