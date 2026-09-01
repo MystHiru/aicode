@@ -288,14 +288,13 @@ fun AppNavigation() {
         // 远程模式连接未就绪时 currentWorkspace 为 null，不触发 setWorkspace，避免空路径点燃 session 加载
         val path = currentWorkspace?.path ?: return@LaunchedEffect
         agentViewModel.setWorkspace(path)
-        agentViewModel.resetBrowseToRoot()
     }
 
     val sessions by agentViewModel.sessions.collectAsStateWithLifecycle()
     val currentSessionId by agentViewModel.currentSessionId.collectAsStateWithLifecycle()
     val agentStates by agentViewModel.agentStates.collectAsStateWithLifecycle()
     val subSessionsByParent by agentViewModel.subSessionsByParent.collectAsStateWithLifecycle()
-    val browsePath by agentViewModel.browsePath.collectAsStateWithLifecycle()
+    val expandedPaths by agentViewModel.expandedPaths.collectAsStateWithLifecycle()
     val browseState by agentViewModel.browseState.collectAsStateWithLifecycle()
 
     // ── 导出会话：SAF 保存文件 ──
@@ -342,22 +341,21 @@ fun AppNavigation() {
                     currentSessionId = currentSessionId,
                     agentStates = agentStates,
                     subSessionsByParent = subSessionsByParent,
-                    browsePath = browsePath,
                     browseState = browseState,
-                    onOpenDir = { agentViewModel.openDir(it) },
-                    onBrowseUp = { agentViewModel.browseUp() },
+                    expandedPaths = expandedPaths,
+                    onToggleExpand = { agentViewModel.toggleExpand(it) },
                     onOpenFile = { filePath ->
                         scope.launch { drawerState.close() }
                         navController.navigate("editor?path=${android.net.Uri.encode(filePath)}&drawer=true")
                     },
                     onRefreshBrowse = { agentViewModel.refreshBrowse() },
-                    onCreateFile = { name ->
-                        agentViewModel.createBrowseFile(name) { ok ->
+                    onCreateFile = { parent, name ->
+                        agentViewModel.createBrowseFile(parent, name) { ok ->
                             if (!ok) toastFileOpFailed(context, R.string.file_browser_create_failed)
                         }
                     },
-                    onCreateFolder = { name ->
-                        agentViewModel.createBrowseFolder(name) { ok ->
+                    onCreateFolder = { parent, name ->
+                        agentViewModel.createBrowseFolder(parent, name) { ok ->
                             if (!ok) toastFileOpFailed(context, R.string.file_browser_create_failed)
                         }
                     },

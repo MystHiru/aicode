@@ -372,6 +372,8 @@
     <string name="file_browser_empty">空目录</string>
     <string name="file_browser_error">读取目录失败</string>
     <string name="file_browser_refresh">刷新</string>
+    <string name="file_browser_expand">展开</string>
+    <string name="file_browser_collapse">折叠</string>
     <string name="file_browser_new_file">新建文件</string>
     <string name="file_browser_new_folder">新建文件夹</string>
     <string name="file_browser_name_label">名称</string>

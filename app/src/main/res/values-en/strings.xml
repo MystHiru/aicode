@@ -377,6 +377,8 @@
     <string name="file_browser_empty">Empty folder</string>
     <string name="file_browser_error">Failed to read folder</string>
     <string name="file_browser_refresh">Refresh</string>
+    <string name="file_browser_expand">Expand</string>
+    <string name="file_browser_collapse">Collapse</string>
     <string name="file_browser_new_file">New file</string>
     <string name="file_browser_new_folder">New folder</string>
     <string name="file_browser_name_label">Name</string>

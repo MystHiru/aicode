@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import com.aicode.MainActivity
 import com.aicode.R
 import com.aicode.core.util.FileLogger
+import com.aicode.core.util.GitIgnoreMatcher
 import com.aicode.core.util.toUserMessage
 import com.aicode.feature.agent.data.local.dao.AgentMessageDao
 import com.aicode.feature.agent.domain.checkpoint.CheckpointManager
@@ -185,6 +186,8 @@ class AIAgentViewModel @Inject constructor(
     fun setWorkspace(path: String) {
         if (path.isBlank() || _currentWorkspace.value == path) return
         _currentWorkspace.value = path
+        // 切到新工作区：恢复该工作区上次持久化的展开状态（无记录则只展开根）。
+        _expandedPaths.value = loadExpansion(path)
     }
 
     val sessions: StateFlow<List<ChatSession>> = _currentWorkspace
@@ -209,59 +212,122 @@ class AIAgentViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
-    /** 侧边栏「文件」Tab 当前目录（容器路径）。单层浏览，不做多层展开。 */
-    private val _browsePath = MutableStateFlow(WorkspacePathMapper.CONTAINER_ROOT)
-    val browsePath: StateFlow<String> = _browsePath.asStateFlow()
+    /** 侧边栏「文件」Tab 已展开的目录集合（容器路径）。含工作区根：根也可折叠，默认展开；按工作区持久化。 */
+    private val _expandedPaths = MutableStateFlow(setOf(WorkspacePathMapper.CONTAINER_ROOT))
+
+    /** 文件树展开状态按工作区持久化（重启保留）；key 为工作区路径，值为已展开的容器路径集合。 */
+    private val expansionPrefs = context.getSharedPreferences("file_tree_expansion", Context.MODE_PRIVATE)
+
+    /** 读取某工作区持久化的展开集；无记录时默认只展开工作区根。 */
+    private fun loadExpansion(workspace: String): Set<String> =
+        expansionPrefs.getStringSet(workspace, null)?.toSet()
+            ?: setOf(WorkspacePathMapper.CONTAINER_ROOT)
+
+    /** 持久化当前工作区的展开集（传新集合副本，SharedPreferences 禁止复用已存实例）。 */
+    private fun saveExpansion(workspace: String, paths: Set<String>) {
+        if (workspace.isBlank()) return
+        expansionPrefs.edit().putStringSet(workspace, HashSet(paths)).apply()
+    }
+    val expandedPaths: StateFlow<Set<String>> = _expandedPaths.asStateFlow()
 
     /** 手动刷新信号：远程模式无 inotify，只能靠它；本地模式作为兜底。 */
     private val _browseRefresh = MutableStateFlow(0)
 
     /**
-     * 当前目录条目。listFiles 在本地是阻塞 IO、远程是网络调用，必须跑 IO 调度器。
-     * 除首次进入外，目录发生变动（不限 AI，终端与其它 App 同样算）或手动刷新都会重读。
+     * 扁平化的可见文件树。listFiles 在本地是阻塞 IO、远程是网络调用，必须跑 IO 调度器。
+     * 监听工作区根与所有已展开目录：任一发生变动（不限 AI，终端与其它 App 同样算）或手动刷新都会重建树。
+     * 只监听展开中的目录、不递归整棵树，避免大仓库开出大量 inotify 句柄。
      */
-    val browseState: StateFlow<FileBrowseState> = _browsePath
-        .flatMapLatest { path ->
+    val browseState: StateFlow<FileBrowseState> = _expandedPaths
+        .flatMapLatest { expanded ->
+            val watched = expanded + WorkspacePathMapper.CONTAINER_ROOT
             val triggers = merge(
-                dirWatcher.watch(path).debounce(BROWSE_DEBOUNCE_MS),
-                // drop(1) 丢掉 StateFlow 重建时的当前值，否则刚切目录就会多读一次
+                watched.map { dirWatcher.watch(it) }.merge().debounce(BROWSE_DEBOUNCE_MS),
+                // drop(1) 丢掉 StateFlow 重建时的当前值，否则刚展开就会多读一次
                 _browseRefresh.drop(1).map { }
             )
             flow {
-                emit(FileBrowseState.Loading)
-                emit(readBrowseDir(path))
-                triggers.collect { emit(readBrowseDir(path)) }
+                // 首次产出前由 stateIn 初值 Loading 占位；后续展开/折叠/刷新不再回到 Loading，
+                // StateFlow 保留上一份 Success 直到新树就绪，避免闪加载动画与滚动位置丢失。
+                emit(buildBrowseTree(expanded))
+                triggers.collect { emit(buildBrowseTree(expanded)) }
             }.flowOn(Dispatchers.IO)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FileBrowseState.Loading)
 
-    private fun readBrowseDir(path: String): FileBrowseState =
-        runCatching { fileAccess.listFiles(path) }.fold(
-            onSuccess = { FileBrowseState.Success(it.sortedWith(BROWSE_ORDER)) },
-            onFailure = { e ->
-                FileLogger.w(TAG, "列目录失败: $path", e)
-                FileBrowseState.Error(e.message)
-            }
+    /** 读取工作区根并按 [expanded] 递归展开，产出扁平的可见节点列表；根读取失败则整体报错。 */
+    private fun buildBrowseTree(expanded: Set<String>): FileBrowseState {
+        val root = WorkspacePathMapper.CONTAINER_ROOT
+        val rootEntries = runCatching { fileAccess.listFiles(root) }.getOrElse { e ->
+            FileLogger.w(TAG, "列目录失败: $root", e)
+            return FileBrowseState.Error(e.message)
+        }
+        val ignorePatterns = loadRootGitignore(root)
+        val rootExpanded = root in expanded
+        val nodes = mutableListOf<FileTreeNode>()
+        nodes += FileTreeNode(
+            entry = FileEntry(name = "workspace", isDirectory = true, size = 0, lastModified = 0),
+            path = root,
+            depth = 0,
+            isRoot = true,
+            isExpanded = rootExpanded
         )
+        if (rootExpanded) {
+            appendBrowseChildren(root, rootEntries, depth = 1, expanded = expanded, ignorePatterns = ignorePatterns, relParts = emptyList(), out = nodes)
+        }
+        return FileBrowseState.Success(nodes)
+    }
+
+    /** 读工作区根 .gitignore（本地/远程均可）；去空行/注释/否定行，读不到则空。仅根 .gitignore，不处理嵌套。 */
+    private fun loadRootGitignore(root: String): List<String> = runCatching {
+        val path = "$root/.gitignore"
+        if (!fileAccess.exists(path)) return emptyList()
+        fileAccess.readFile(path).lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") && !it.startsWith("!") }
+            .map { it.removeSuffix("/") }
+            .toList()
+    }.getOrDefault(emptyList())
+
+    private fun appendBrowseChildren(
+        parent: String,
+        entries: List<FileEntry>,
+        depth: Int,
+        expanded: Set<String>,
+        ignorePatterns: List<String>,
+        relParts: List<String>,
+        out: MutableList<FileTreeNode>
+    ) {
+        for (entry in entries.sortedWith(BROWSE_ORDER)) {
+            val path = "$parent/${entry.name}"
+            val parts = relParts + entry.name
+            val ignored = ignorePatterns.isNotEmpty() &&
+                GitIgnoreMatcher.isIgnored(ignorePatterns, parts)
+            val open = entry.isDirectory && path in expanded
+            if (!open) {
+                out += FileTreeNode(entry, path, depth, isRoot = false, isExpanded = false, ignored = ignored)
+                continue
+            }
+            val children = runCatching { fileAccess.listFiles(path) }.getOrNull()
+            out += FileTreeNode(entry, path, depth, isRoot = false, isExpanded = true, hasError = children == null, ignored = ignored)
+            if (children != null) appendBrowseChildren(path, children, depth + 1, expanded, ignorePatterns, parts, out)
+        }
+    }
 
     fun refreshBrowse() {
         _browseRefresh.value++
     }
 
-    fun openDir(path: String) {
-        _browsePath.value = path
-    }
-
-    /** 退到上一级；已在工作区根时不动，不允许越出工作区。 */
-    fun browseUp() {
-        val current = _browsePath.value
-        if (current == WorkspacePathMapper.CONTAINER_ROOT) return
-        _browsePath.value = fileAccess.parentPath(current) ?: WorkspacePathMapper.CONTAINER_ROOT
-    }
-
-    /** 切换工作区后回到根目录，避免停在旧工作区的子路径上。 */
-    fun resetBrowseToRoot() {
-        _browsePath.value = WorkspacePathMapper.CONTAINER_ROOT
+    /** 展开/折叠目录；折叠时连同其所有后代一并移出展开集，避免残留监听与再展开时意外深开。改变后按工作区持久化。 */
+    fun toggleExpand(path: String) {
+        val current = _expandedPaths.value
+        val updated = if (path in current) {
+            current.filterNot { it == path || it.startsWith("$path/") }.toSet()
+        } else {
+            current + path
+        }
+        _expandedPaths.value = updated
+        saveExpansion(_currentWorkspace.value, updated)
     }
 
     /**
@@ -271,20 +337,20 @@ class AIAgentViewModel @Inject constructor(
     private fun mutateBrowse(onResult: (Boolean) -> Unit, block: () -> Boolean) = viewModelScope.launch {
         val success = withContext(Dispatchers.IO) {
             runCatching(block)
-                .onFailure { FileLogger.w(TAG, "文件操作失败: ${_browsePath.value}", it) }
+                .onFailure { FileLogger.w(TAG, "文件操作失败", it) }
                 .getOrDefault(false)
         }
         if (success) refreshBrowse()
         onResult(success)
     }
 
-    /** 当前浏览目录下的子路径；名称非法时返回 null。 */
-    private fun browseChildPath(name: String): String? =
-        if (isValidFileEntryName(name)) "${_browsePath.value}/${name.trim()}" else null
+    /** [parent] 目录下的子路径；名称非法时返回 null。 */
+    private fun browseChildPath(parent: String, name: String): String? =
+        if (isValidFileEntryName(name)) "$parent/${name.trim()}" else null
 
-    /** 在当前浏览目录新建空文件。 */
-    fun createBrowseFile(name: String, onResult: (Boolean) -> Unit) = mutateBrowse(onResult) {
-        val target = browseChildPath(name)
+    /** 在 [parent] 目录新建空文件。 */
+    fun createBrowseFile(parent: String, name: String, onResult: (Boolean) -> Unit) = mutateBrowse(onResult) {
+        val target = browseChildPath(parent, name)
         if (target == null || fileAccess.exists(target)) {
             false
         } else {
@@ -293,9 +359,9 @@ class AIAgentViewModel @Inject constructor(
         }
     }
 
-    /** 在当前浏览目录新建文件夹。 */
-    fun createBrowseFolder(name: String, onResult: (Boolean) -> Unit) = mutateBrowse(onResult) {
-        val target = browseChildPath(name)
+    /** 在 [parent] 目录新建文件夹。 */
+    fun createBrowseFolder(parent: String, name: String, onResult: (Boolean) -> Unit) = mutateBrowse(onResult) {
+        val target = browseChildPath(parent, name)
         if (target == null || fileAccess.exists(target)) {
             false
         } else {

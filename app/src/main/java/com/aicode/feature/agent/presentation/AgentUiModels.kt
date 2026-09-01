@@ -6,6 +6,27 @@ import com.aicode.feature.agent.domain.provider.RetryErrorInfo
 import com.aicode.feature.workspace.domain.FileEntry
 import kotlinx.serialization.Serializable
 
+/**
+ * 侧边栏文件树的一个可见节点（已按展开状态扁平化，携带 [depth] 供 UI 缩进）。
+ * 从工作区根就地展开：只有 [FileBrowseState.Success] 里出现的节点才是当前可见的。
+ */
+@Immutable
+data class FileTreeNode(
+    val entry: FileEntry,
+    /** 容器绝对路径（如 `~/workspace/app/src`）；[isRoot] 时为工作区根。 */
+    val path: String,
+    /** 缩进层级：根为 0，其直接子项为 1，依此类推。 */
+    val depth: Int,
+    /** 工作区根节点：不可重命名/删除，只能在其下新建。 */
+    val isRoot: Boolean,
+    /** 目录是否已展开；非目录恒为 false。 */
+    val isExpanded: Boolean,
+    /** 展开该目录时读取子项失败（如权限不足）；根读取失败走 [FileBrowseState.Error]。 */
+    val hasError: Boolean = false,
+    /** 被工作区根 .gitignore 命中：UI 以橙色弱化显示（类 VSCode）。 */
+    val ignored: Boolean = false
+)
+
 /** 单轮工作流的最终结果状态（供 [AgentUIState.Result] 使用）。 */
 enum class WorkflowStatus {
     SUCCESS, PARTIAL_SUCCESS, FAILED, CANCELLED
@@ -19,10 +40,10 @@ sealed class AgentUIState {
     data class Error(val message: String) : AgentUIState()
 }
 
-/** 侧边栏「文件」Tab 的目录读取状态。远程模式走 SFTP/exec，读取可能失败或较慢，故区分三态。 */
+/** 侧边栏「文件」Tab 的文件树读取状态。远程模式走 SFTP/exec，读取可能失败或较慢，故区分三态。 */
 sealed interface FileBrowseState {
     data object Loading : FileBrowseState
-    data class Success(val entries: List<FileEntry>) : FileBrowseState
+    data class Success(val nodes: List<FileTreeNode>) : FileBrowseState
     data class Error(val detail: String?) : FileBrowseState
 }
 

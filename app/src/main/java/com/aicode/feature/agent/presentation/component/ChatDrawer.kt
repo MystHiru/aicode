@@ -5,6 +5,8 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
@@ -27,9 +29,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -59,9 +59,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
@@ -73,11 +76,9 @@ import com.aicode.feature.settings.presentation.component.settingsPageBackground
 import com.aicode.feature.agent.domain.model.ChatSession
 import com.aicode.feature.agent.presentation.AgentUIState
 import com.aicode.feature.agent.presentation.FileBrowseState
-import com.aicode.feature.workspace.domain.FileEntry
-import com.aicode.feature.workspace.domain.WorkspacePathMapper
+import com.aicode.feature.agent.presentation.FileTreeNode
 import com.aicode.feature.workspace.domain.isValidFileEntryName
 import compose.icons.FeatherIcons
-import compose.icons.feathericons.ArrowUp
 import compose.icons.feathericons.ChevronDown
 import compose.icons.feathericons.ChevronRight
 import compose.icons.feathericons.Download
@@ -114,14 +115,13 @@ fun ChatDrawerContent(
     onTogglePin: (ChatSession) -> Unit,
     onExport: (ChatSession) -> Unit,
     subSessionsByParent: Map<String, List<ChatSession>> = emptyMap(),
-    browsePath: String,
     browseState: FileBrowseState,
-    onOpenDir: (String) -> Unit,
-    onBrowseUp: () -> Unit,
+    expandedPaths: Set<String>,
+    onToggleExpand: (String) -> Unit,
     onOpenFile: (String) -> Unit,
     onRefreshBrowse: () -> Unit,
-    onCreateFile: (String) -> Unit,
-    onCreateFolder: (String) -> Unit,
+    onCreateFile: (String, String) -> Unit,
+    onCreateFolder: (String, String) -> Unit,
     onRenameEntry: (String, String) -> Unit,
     onDeleteEntry: (String) -> Unit,
     onNavigateToSettings: () -> Unit,
@@ -172,10 +172,9 @@ fun ChatDrawerContent(
                     onLongClick = { menuSession = it }
                 )
                 1 -> FileBrowserTab(
-                    path = browsePath,
                     state = browseState,
-                    onOpenDir = onOpenDir,
-                    onBrowseUp = onBrowseUp,
+                    expandedPaths = expandedPaths,
+                    onToggleExpand = onToggleExpand,
                     onOpenFile = onOpenFile,
                     onRefresh = onRefreshBrowse,
                     onCreateFile = onCreateFile,
@@ -461,73 +460,29 @@ private fun SubAgentExpandToggle(
 }
 
 /**
- * Tab1：当前工作区的单层文件浏览。
- * 不做缩进树：抽屉只有 300dp 宽，本项目自身路径就深达十层，缩进到四五层文件名就全是省略号。
+ * Tab1：当前工作区的文件树。从工作区根就地展开，缩进表示层级；
+ * 每行共享同一横向滚动，路径过深时左右滑动查看完整名称，不再截断成省略号。
+ * 新建文件/文件夹通过长按目录（含工作区根）行的菜单发起。
  */
 @Composable
 private fun FileBrowserTab(
-    path: String,
     state: FileBrowseState,
-    onOpenDir: (String) -> Unit,
-    onBrowseUp: () -> Unit,
+    expandedPaths: Set<String>,
+    onToggleExpand: (String) -> Unit,
     onOpenFile: (String) -> Unit,
     onRefresh: () -> Unit,
-    onCreateFile: (String) -> Unit,
-    onCreateFolder: (String) -> Unit,
+    onCreateFile: (String, String) -> Unit,
+    onCreateFolder: (String, String) -> Unit,
     onRenameEntry: (String, String) -> Unit,
     onDeleteEntry: (String) -> Unit
 ) {
-    var creating by remember { mutableStateOf<CreateKind?>(null) }
-    var menuEntry by remember { mutableStateOf<FileEntry?>(null) }
-    var pendingRename by remember { mutableStateOf<FileEntry?>(null) }
-    var pendingDelete by remember { mutableStateOf<FileEntry?>(null) }
+    var creating by remember { mutableStateOf<CreateTarget?>(null) }
+    var menuNode by remember { mutableStateOf<FileTreeNode?>(null) }
+    var pendingRename by remember { mutableStateOf<FileTreeNode?>(null) }
+    var pendingDelete by remember { mutableStateOf<FileTreeNode?>(null) }
+    val hScroll = rememberScrollState()
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            FileBreadcrumb(
-                path = path,
-                onNavigate = onOpenDir,
-                modifier = Modifier.weight(1f)
-            )
-            IconButton(
-                onClick = { creating = CreateKind.FILE },
-                modifier = Modifier.size(32.dp)
-            ) {
-                Icon(
-                    imageVector = FeatherIcons.FilePlus,
-                    contentDescription = stringResource(R.string.file_browser_new_file),
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            IconButton(
-                onClick = { creating = CreateKind.FOLDER },
-                modifier = Modifier.size(32.dp)
-            ) {
-                Icon(
-                    imageVector = FeatherIcons.FolderPlus,
-                    contentDescription = stringResource(R.string.file_browser_new_folder),
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            IconButton(onClick = onRefresh, modifier = Modifier.size(32.dp)) {
-                Icon(
-                    imageVector = FeatherIcons.RefreshCw,
-                    contentDescription = stringResource(R.string.file_browser_refresh),
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-        if (path != WorkspacePathMapper.CONTAINER_ROOT) {
-            FileBrowserRow(
-                icon = FileTypeIcon.Mono(FeatherIcons.ArrowUp),
-                label = stringResource(R.string.file_browser_up),
-                emphasized = true,
-                onClick = onBrowseUp
-            )
-        }
+    Box(modifier = Modifier.fillMaxSize()) {
         when (state) {
             is FileBrowseState.Loading -> Box(
                 modifier = Modifier.fillMaxSize(),
@@ -549,103 +504,139 @@ private fun FileBrowserTab(
                 )
             }
 
-            is FileBrowseState.Success -> if (state.entries.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = stringResource(R.string.file_browser_empty),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            is FileBrowseState.Success -> {
+                val listState = rememberLazyListState()
+                val textMeasurer = rememberTextMeasurer()
+                val textStyle = MaterialTheme.typography.bodyMedium
+                val density = LocalDensity.current
+                // 预算最宽一行的内容宽度（固定开销 + 缩进 + 文本），供所有行取统一宽度，
+                // 以实现整棵树统一横向平移（而非每行各自滚动）。
+                val maxContentPx = remember(state.nodes, textStyle) {
+                    with(density) {
+                        val overhead = FILE_TREE_ROW_OVERHEAD.toPx()
+                        state.nodes.maxOfOrNull { node ->
+                            val label = if (node.isRoot) WORKSPACE_LABEL else node.entry.name
+                            val textW = textMeasurer.measure(label, textStyle).size.width
+                            overhead + (Spacing.lg * node.depth).toPx() + textW
+                        }?.toInt() ?: 0
+                    }
                 }
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(state.entries, key = { it.name }) { entry ->
-                        FileBrowserRow(
-                            icon = if (entry.isDirectory) {
-                                FileTypeIcon.Mono(FeatherIcons.Folder)
-                            } else {
-                                fileTypeIconFor(entry.name)
-                            },
-                            label = entry.name,
-                            emphasized = entry.isDirectory,
-                            subtitle = fileRowSubtitle(entry),
-                            onClick = {
-                                val child = "$path/${entry.name}"
-                                if (entry.isDirectory) onOpenDir(child) else onOpenFile(child)
-                            },
-                            onLongClick = { menuEntry = entry }
-                        )
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val rowWidthPx = maxOf(constraints.maxWidth, maxContentPx)
+                    val rowWidth = with(density) { rowWidthPx.toDp() }
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .horizontalScroll(hScroll)
+                    ) {
+                        items(state.nodes, key = { it.path }) { node ->
+                            FileTreeRow(
+                                node = node,
+                                rowWidth = rowWidth,
+                                onClick = {
+                                    if (node.entry.isDirectory) onToggleExpand(node.path)
+                                    else onOpenFile(node.path)
+                                },
+                                onLongClick = { menuNode = node }
+                            )
+                        }
                     }
                 }
             }
         }
+
+        // 刷新按钮固定在面板右上角，不随树的横向滚动而移动。
+        IconButton(
+            onClick = onRefresh,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(Spacing.xs)
+                .size(32.dp)
+        ) {
+            Icon(
+                imageVector = FeatherIcons.RefreshCw,
+                contentDescription = stringResource(R.string.file_browser_refresh),
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 
-    creating?.let { kind ->
+    creating?.let { target ->
         FileNameInputDialog(
             title = stringResource(
-                if (kind == CreateKind.FILE) R.string.file_browser_new_file else R.string.file_browser_new_folder
+                if (target.kind == CreateKind.FILE) R.string.file_browser_new_file
+                else R.string.file_browser_new_folder
             ),
             confirmLabel = stringResource(R.string.common_create),
             initialName = "",
             onConfirm = { name ->
-                if (kind == CreateKind.FILE) onCreateFile(name) else onCreateFolder(name)
+                if (target.kind == CreateKind.FILE) onCreateFile(target.parent, name)
+                else onCreateFolder(target.parent, name)
                 creating = null
             },
             onDismiss = { creating = null }
         )
     }
 
-    menuEntry?.let { entry ->
-        FileEntryActionSheet(
-            name = entry.name,
+    menuNode?.let { node ->
+        FileTreeActionSheet(
+            node = node,
+            onNewFile = {
+                menuNode = null
+                if (!node.isRoot && node.path !in expandedPaths) onToggleExpand(node.path)
+                creating = CreateTarget(node.path, CreateKind.FILE)
+            },
+            onNewFolder = {
+                menuNode = null
+                if (!node.isRoot && node.path !in expandedPaths) onToggleExpand(node.path)
+                creating = CreateTarget(node.path, CreateKind.FOLDER)
+            },
             onRename = {
-                menuEntry = null
-                pendingRename = entry
+                menuNode = null
+                pendingRename = node
             },
             onDelete = {
-                menuEntry = null
-                pendingDelete = entry
+                menuNode = null
+                pendingDelete = node
             },
-            onDismiss = { menuEntry = null }
+            onDismiss = { menuNode = null }
         )
     }
 
-    pendingRename?.let { entry ->
+    pendingRename?.let { node ->
         FileNameInputDialog(
             title = stringResource(R.string.common_rename),
             confirmLabel = stringResource(R.string.common_rename),
-            initialName = entry.name,
+            initialName = node.entry.name,
             onConfirm = { name ->
-                onRenameEntry("$path/${entry.name}", name)
+                onRenameEntry(node.path, name)
                 pendingRename = null
             },
             onDismiss = { pendingRename = null }
         )
     }
 
-    pendingDelete?.let { entry ->
+    pendingDelete?.let { node ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             title = { Text(stringResource(R.string.common_delete)) },
             text = {
                 Text(
                     stringResource(
-                        if (entry.isDirectory) {
+                        if (node.entry.isDirectory) {
                             R.string.file_browser_delete_folder_confirm
                         } else {
                             R.string.file_browser_delete_file_confirm
                         },
-                        entry.name
+                        node.entry.name
                     )
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
-                    onDeleteEntry("$path/${entry.name}")
+                    onDeleteEntry(node.path)
                     pendingDelete = null
                 }) { Text(stringResource(R.string.common_delete), color = MaterialTheme.colorScheme.error) }
             },
@@ -658,6 +649,9 @@ private fun FileBrowserTab(
 
 /** 新建对象类型，决定确认后调创建文件还是创建文件夹。 */
 private enum class CreateKind { FILE, FOLDER }
+
+/** 新建目标：在哪个目录（[parent]）下新建，以及新建文件还是文件夹（[kind]）。 */
+private data class CreateTarget(val parent: String, val kind: CreateKind)
 
 /** 新建 / 重命名共用的名称输入弹窗：名称非法或与原名相同时禁用确认。 */
 @Composable
@@ -693,11 +687,13 @@ private fun FileNameInputDialog(
     )
 }
 
-/** 文件/目录行长按弹出的功能菜单：重命名 / 删除。 */
+/** 文件树节点长按弹出的功能菜单：目录（含工作区根）可新建，非根节点可重命名/删除。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun FileEntryActionSheet(
-    name: String,
+private fun FileTreeActionSheet(
+    node: FileTreeNode,
+    onNewFile: () -> Unit,
+    onNewFolder: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit
@@ -713,7 +709,7 @@ private fun FileEntryActionSheet(
                 .padding(bottom = Spacing.xl)
         ) {
             Text(
-                text = name,
+                text = if (node.isRoot) WORKSPACE_LABEL else node.entry.name,
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -722,157 +718,127 @@ private fun FileEntryActionSheet(
                     .padding(horizontal = Spacing.lg)
                     .padding(bottom = Spacing.md)
             )
-            SheetActionRow(
-                icon = FeatherIcons.Edit2,
-                label = stringResource(R.string.common_rename),
-                tint = MaterialTheme.colorScheme.onSurface,
-                onClick = onRename
-            )
-            SheetActionRow(
-                icon = FeatherIcons.Trash2,
-                label = stringResource(R.string.common_delete),
-                tint = MaterialTheme.colorScheme.error,
-                onClick = onDelete
-            )
-        }
-    }
-}
-
-/** 面包屑：每一段可点回该层，横向可滚以容纳深路径。 */
-@Composable
-private fun FileBreadcrumb(
-    path: String,
-    onNavigate: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val segments = remember(path) {
-        val relative = path.removePrefix(WorkspacePathMapper.CONTAINER_ROOT).trim('/')
-        buildList {
-            add(WORKSPACE_LABEL to WorkspacePathMapper.CONTAINER_ROOT)
-            if (relative.isNotEmpty()) {
-                var accumulated = WorkspacePathMapper.CONTAINER_ROOT
-                relative.split('/').forEach { name ->
-                    accumulated = "$accumulated/$name"
-                    add(name to accumulated)
-                }
-            }
-        }
-    }
-    LazyRow(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(vertical = Spacing.sm),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        itemsIndexed(segments) { index, segment ->
-            val (label, target) = segment
-            val isCurrent = index == segments.lastIndex
-            if (index > 0) {
-                Text(
-                    text = "/",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 2.dp)
+            if (node.entry.isDirectory) {
+                SheetActionRow(
+                    icon = FeatherIcons.FilePlus,
+                    label = stringResource(R.string.file_browser_new_file),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    onClick = onNewFile
+                )
+                SheetActionRow(
+                    icon = FeatherIcons.FolderPlus,
+                    label = stringResource(R.string.file_browser_new_folder),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    onClick = onNewFolder
                 )
             }
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (isCurrent) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.primary
-                },
-                maxLines = 1,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(Radius.pill))
-                    .then(
-                        if (isCurrent) Modifier else Modifier.clickable { onNavigate(target) }
-                    )
-                    .padding(horizontal = Spacing.sm, vertical = 2.dp)
-            )
+            if (!node.isRoot) {
+                SheetActionRow(
+                    icon = FeatherIcons.Edit2,
+                    label = stringResource(R.string.common_rename),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    onClick = onRename
+                )
+                SheetActionRow(
+                    icon = FeatherIcons.Trash2,
+                    label = stringResource(R.string.common_delete),
+                    tint = MaterialTheme.colorScheme.error,
+                    onClick = onDelete
+                )
+            }
         }
     }
 }
 
-/** 文件浏览的单行：目录 / 文件 / 上一级均复用。左侧图标，右侧两行（名称 + 修改时间·大小）。
- * [subtitle] 为 null 时只显单行名称（如「上一级」）；[onLongClick] 为 null 时不响应长按。 */
+/** 文件树的一行：按 [FileTreeNode.depth] 缩进，目录带展开箭头。
+ * 所有行取统一的 [rowWidth]（与外层 horizontalScroll 配合），横向滑动时整树一起平移，
+ * 名称不截断、不换行。着色优先级：读取失败 > .gitignore 命中（橙）> dotfile（弱化）> 常规。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FileBrowserRow(
-    icon: FileTypeIcon,
-    label: String,
-    emphasized: Boolean,
+private fun FileTreeRow(
+    node: FileTreeNode,
+    rowWidth: Dp,
     onClick: () -> Unit,
-    onLongClick: (() -> Unit)? = null,
-    subtitle: String? = null
+    onLongClick: () -> Unit
 ) {
+    val isDotfile = !node.isRoot && node.entry.name.startsWith(".")
+    val decorationColor: Color? = when {
+        node.hasError -> MaterialTheme.colorScheme.error
+        node.ignored -> FileTreeIgnoredColor
+        isDotfile -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+        else -> null
+    }
     Row(
         modifier = Modifier
-            .fillMaxWidth()
+            .width(rowWidth)
             .clip(RoundedCornerShape(10.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = Spacing.sm, vertical = Spacing.xs + 2.dp),
+            .padding(vertical = Spacing.xs + 2.dp)
+            .padding(start = Spacing.sm, end = Spacing.md),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        when (icon) {
-            is FileTypeIcon.Colored -> Icon(
-                painter = painterResource(icon.res),
-                contentDescription = null,
-                modifier = Modifier.size(22.dp),
-                // 彩色文件类型图标保留原色，不随主题染色
-                tint = Color.Unspecified
+        Spacer(Modifier.width(Spacing.lg * node.depth))
+        if (node.entry.isDirectory) {
+            Icon(
+                imageVector = if (node.isExpanded) FeatherIcons.ChevronDown else FeatherIcons.ChevronRight,
+                contentDescription = stringResource(
+                    if (node.isExpanded) R.string.file_browser_collapse else R.string.file_browser_expand
+                ),
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            is FileTypeIcon.Mono -> Icon(
-                imageVector = icon.vector,
-                contentDescription = null,
-                modifier = Modifier.size(22.dp),
-                tint = if (emphasized) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                }
-            )
+        } else {
+            Spacer(Modifier.width(16.dp))
         }
-        Spacer(Modifier.width(Spacing.md))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (subtitle != null) {
-                Spacer(Modifier.height(1.dp))
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
+        Spacer(Modifier.width(Spacing.xs))
+        FileTreeIcon(node = node, decorationColor = decorationColor)
+        Spacer(Modifier.width(Spacing.sm))
+        Text(
+            text = if (node.isRoot) WORKSPACE_LABEL else node.entry.name,
+            style = MaterialTheme.typography.bodyMedium,
+            color = decorationColor ?: MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }
 
-/** 文件行副标题：目录只显修改时间，文件显「修改时间 · 大小」；无有效信息时返回 null。 */
-private fun fileRowSubtitle(entry: FileEntry): String? {
-    val time = if (entry.lastModified > 0) formatModifiedTime(entry.lastModified) else null
-    if (entry.isDirectory) return time
-    val size = formatBytes(entry.size)
-    return if (time != null) "$time  ·  $size" else size
+/** 文件树行的类型图标：目录用文件夹，文件按扩展名。[decorationColor] 非空时统一染色（.gitignore/dotfile 弱化）。 */
+@Composable
+private fun FileTreeIcon(node: FileTreeNode, decorationColor: Color?) {
+    val icon = if (node.entry.isDirectory) {
+        FileTypeIcon.Mono(FeatherIcons.Folder)
+    } else {
+        fileTypeIconFor(node.entry.name)
+    }
+    when (icon) {
+        is FileTypeIcon.Colored -> Icon(
+            painter = painterResource(icon.res),
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            // 常规态保留彩色原色（tint=Unspecified）；.gitignore/dotfile 统一染成弱化色
+            tint = decorationColor ?: Color.Unspecified
+        )
+        is FileTypeIcon.Mono -> Icon(
+            imageVector = icon.vector,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = decorationColor
+                ?: if (node.entry.isDirectory) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }
 
-/** 修改时间格式化为本地时区的 yyyy-MM-dd HH:mm。 */
-private fun formatModifiedTime(millis: Long): String =
-    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
-        .format(java.util.Date(millis))
+/** .gitignore 命中条目的弱化色（橙，类 VSCode）。 */
+private val FileTreeIgnoredColor = Color(0xFFCC8844)
 
-/** 面包屑根节点显示名，对应容器路径 `~/workspace`。 */
+/** 文件树根节点显示名，对应容器路径 `~/workspace`。 */
 private const val WORKSPACE_LABEL = "workspace"
+
+/** 文件树一行除缩进与文本外的固定宽度开销（start 8 + 箭头 16 + 4 + 图标 20 + 8 + end 12），供预算整树统一行宽。 */
+private val FILE_TREE_ROW_OVERHEAD = 68.dp
+
 
 /**
  * 会话行长按弹出的功能菜单：置顶 / 重命名 / 导出 / 删除。底部 sheet 样式参照 git 分支的 RefActionSheet。
