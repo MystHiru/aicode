@@ -33,19 +33,19 @@ class ContainerInstaller @Inject constructor(
         private const val TAG = "ContainerInstaller"
         @Volatile private var docsExtractedSession = false
 
-        /** 从 assets 提取文档到 ~/.aicode/docs (内置使用指导) */
+        /**
+         * 从 assets 提取文档到 ~/.aicode/docs (内置使用指导)，支持 guide/ advanced/ 等分类子目录。
+         *
+         * 提取前先整目录删除：文档按功能分类，版本间调整分类会改变文件路径，只覆盖不清理会让
+         * 上个版本的同名旧文件残留在别的路径下，AI 可能读到过期内容。
+         */
         fun extractDocs(context: Context) {
             if (docsExtractedSession) return
             val destDir = File(File(context.filesDir, "aicode"), "docs")
-            destDir.mkdirs()
             runCatching {
-                val docs = context.assets.list("docs") ?: return
-                for (doc in docs) {
-                    val destFile = File(destDir, doc)
-                    context.assets.open("docs/$doc").use { input ->
-                        destFile.outputStream().use { output -> input.copyTo(output) }
-                    }
-                }
+                destDir.deleteRecursively()
+                destDir.mkdirs()
+                extractAssetsRecursive(context, "docs", destDir)
                 docsExtractedSession = true
             }.onFailure {
                 FileLogger.w(TAG, "提取内置文档失败: ${it.message}", it)
@@ -62,14 +62,14 @@ class ContainerInstaller @Inject constructor(
             val destDir = File(File(context.filesDir, "aicode"), "prompts")
             destDir.mkdirs()
             runCatching {
-                extractPromptsRecursive(context, "prompts", destDir)
+                extractAssetsRecursive(context, "prompts", destDir)
             }.onFailure {
                 FileLogger.w(TAG, "提取内置提示词失败: ${it.message}", it)
             }
         }
 
-        /** 递归复制 assets 下的提示词目录到目标目录，支持子目录（如 prompts/agent/）。 */
-        private fun extractPromptsRecursive(context: Context, assetDir: String, destDir: File) {
+        /** 递归复制 assets 下的目录到目标目录，支持子目录（如 prompts/agent/、docs/guide/）。 */
+        private fun extractAssetsRecursive(context: Context, assetDir: String, destDir: File) {
             val entries = context.assets.list(assetDir) ?: return
             destDir.mkdirs()
             for (entry in entries) {
@@ -81,7 +81,7 @@ class ContainerInstaller @Inject constructor(
                     }
                 } catch (e: IOException) {
                     // 目录项：assets.open 对目录抛 IOException，递归处理
-                    extractPromptsRecursive(context, assetPath, destFile)
+                    extractAssetsRecursive(context, assetPath, destFile)
                 }
             }
         }

@@ -239,7 +239,7 @@ class RemoteSshConnection @Inject constructor(
      * 查阅 ~/.aicode/docs/ 下的设置说明文档。每次连接/重连后全量覆盖，使 App 升级后
      * 远程文档随之更新。docs 是纯文本，用 exec + printf 写入即可，无需 SFTP。
      *
-     * @param docs 文件名 → 文件内容（文本）。
+     * @param docs 相对 docs/ 的路径（可含子目录，如 guide/terminal.md）→ 文件内容。
      */
     suspend fun uploadDocs(docs: Map<String, String>) {
         if (docs.isEmpty()) return
@@ -248,9 +248,14 @@ class RemoteSshConnection @Inject constructor(
         val destDir = home.trimEnd('/') + "/.aicode/docs"
         withContext(Dispatchers.IO) {
             runCatching {
-                val mkdirSession = client.startSession()
-                mkdirSession.exec("mkdir -p '$destDir'").join()
-                mkdirSession.close()
+                // 先建全部子目录并清掉旧 .md：版本间调整文档分类会改变路径，只覆盖不清理会让旧文件残留
+                val subDirs = docs.keys.mapNotNull { key ->
+                    key.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }
+                }.distinct()
+                val mkdirArgs = (listOf(destDir) + subDirs.map { "$destDir/$it" }).joinToString(" ") { "'$it'" }
+                val prepSession = client.startSession()
+                prepSession.exec("mkdir -p $mkdirArgs; find '$destDir' -type f -name '*.md' -delete").join()
+                prepSession.close()
                 for ((name, content) in docs) {
                     val dest = "$destDir/$name"
                     val escaped = content.replace("\\", "\\\\").replace("'", "'\\\"'\"'")

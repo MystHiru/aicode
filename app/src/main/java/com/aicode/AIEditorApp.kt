@@ -257,20 +257,31 @@ class AIEditorApp : Application(), Configuration.Provider {
             .build()
 
     /**
-     * 读取 assets/docs 下所有内置文档，通过 SSH exec 同步到远程 ~/.aicode/docs/。
+     * 读取 assets/docs 下所有内置文档（含 guide/ advanced/ 等分类子目录），通过 SSH exec 同步到远程 ~/.aicode/docs/。
      * 远程模式下 AI 查阅 ~/.aicode/docs/ 的设置说明文档时，需要这些文件存在于远程服务器。
      * 连接成功与重连成功后调用，保证远程文档随 App 升级更新。失败仅记日志，不阻断流程。
      */
     private suspend fun syncDocsToRemote() {
         runCatching {
-            val names = assets.list("docs") ?: return@runCatching
             val docs = linkedMapOf<String, String>()
-            for (name in names) {
-                val content = assets.open("docs/$name").bufferedReader().use { it.readText() }
-                docs[name] = content
-            }
+            collectAssetDocs("docs", "", docs)
             remoteSshConnection.uploadDocs(docs)
         }.onFailure { FileLogger.w(TAG, "同步内置文档到远程失败", it) }
+    }
+
+    /** 递归收集 assets 文档，key 为相对 docs/ 的路径（如 guide/terminal.md）。 */
+    private fun collectAssetDocs(assetDir: String, relativePrefix: String, out: MutableMap<String, String>) {
+        val entries = assets.list(assetDir) ?: return
+        for (entry in entries) {
+            val assetPath = "$assetDir/$entry"
+            val relativePath = if (relativePrefix.isEmpty()) entry else "$relativePrefix/$entry"
+            try {
+                out[relativePath] = assets.open(assetPath).bufferedReader().use { it.readText() }
+            } catch (e: java.io.IOException) {
+                // 目录项：assets.open 对目录抛 IOException，递归处理
+                collectAssetDocs(assetPath, relativePath, out)
+            }
+        }
     }
 
     /** 注册完整版 BouncyCastle 取代 Android 自带的裁剪版。

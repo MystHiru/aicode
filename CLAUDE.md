@@ -7,11 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 优先使用已有工具进行文件操作，比如读取、修改文件 (Prioritize using existing tools for file operations, such as reading and modifying files).
 
 ## Asset Synchronization
-项目中的 `app/src/main/assets/prompts/` 和 `app/src/main/assets/docs/` 是 AI Agent 的核心知识来源，必须与代码保持同步：
+项目中的 `app/src/main/assets/prompts/`（提示词）和 `docs-site/docs/`（用户文档）是 AI Agent 的核心知识来源，必须与代码保持同步：
 
 - **AI 工作流相关改动 → 检查 prompts**：任何与 AI 工作流相关的改动（工具新增/删除/重命名/参数签名变化、agent 行为变化、提示词逻辑调整等），都必须检查 `app/src/main/assets/prompts/` 下的提示词是否需要同步更新，确保模型看到的工具定义与行为说明与实际一致。AI 应自行在 `prompts/` 目录中查找对应的提示词文件；若不存在则新建。
-- **功能、工具变化 → 检查 docs**：任何功能新增/删除/行为变化或工具变更，还要检查 `app/src/main/assets/docs/` 下是否有对应使用文档需要更新（如新功能的使用说明、工具行为变化的提示）。
-- **UI 变化 → 必须更新对应使用文档**：任何 UI 变化（新增页面、改交互、调布局、改文案）**必须**同步更新 `app/src/main/assets/docs/` 下对应的使用文档，确保用户可见的说明与实际界面一致。AI 应自行在 `docs/` 目录中查找对应的文档；若不存在则新建。
+- **功能、工具变化 → 检查 docs**：任何功能新增/删除/行为变化或工具变更，还要检查 `docs-site/docs/` 下是否有对应使用文档需要更新（如新功能的使用说明、工具行为变化的提示）。
+- **UI 变化 → 必须更新对应使用文档**：任何 UI 变化（新增页面、改交互、调布局、改文案）**必须**同步更新 `docs-site/docs/` 下对应的使用文档，确保用户可见的说明与实际界面一致。AI 应自行在 `docs-site/docs/` 中查找对应的文档；若不存在则新建，并同步把新页面加进 `docs-site/.vitepress/config.ts` 的侧栏与 `docs-site/docs/guide/overview.md` 索引。
+- **文档目录约定**：`docs-site/docs/` 是文档的唯一事实源，一份 Markdown 同时供 VitePress 文档站与 App 内置 AI 文档使用。`guide/` 放 App 功能说明，`advanced/` 放环境搭建与进阶教程，`index.md` 是站点首页（不打进 APK）。构建时由 `app/build.gradle.kts` 的 `syncAiDocs` task 复制到 `assets/docs/`，AI 在容器内看到的是 `~/.aicode/docs/guide/*.md` 与 `~/.aicode/docs/advanced/*.md`。**面向用户书写**：讲清怎么做、会看到什么、出错怎么办；不要写变量名、错误码、内部实现路径这类只对代码有意义的细节（那些属于 `prompts/`）。
 - **UI 文案 → 必须同步 strings.xml**：任何新增或修改用户可见的中文文案（按钮、标题、提示、Toast 等），**必须**将其提取为 string resource 写入 `app/src/main/res/values/strings.xml`（中文）和 `app/src/main/res/values-en/strings.xml`（英文翻译），并在 `.kt` 代码中用 `stringResource(R.string.xxx)` 或 `context.getString(R.string.xxx)` 引用。**禁止在 .kt 文件中硬编码中文 UI 文案。** 命名规范：语义化英文全小写下划线分隔，通用文案用 `common_` 前缀跨页面复用。
 
 ## Git 提交规范

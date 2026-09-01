@@ -69,6 +69,20 @@ fun gitCommitCount(): Int = try {
     1
 }
 
+// AI 内置文档（~/.aicode/docs）的源在仓库根的 docs-site/docs：同一份 Markdown 既构建 VitePress
+// 文档站，也在这里复制进 assets/docs 打进 APK，保证「站上看到的」与「AI 读到的」永远一致。
+// 用纯 Gradle Copy 实现，APK 构建不依赖 Node —— CI 与 F-Droid 只装 JDK+Gradle 即可。
+val aiDocsGeneratedDir = layout.buildDirectory.dir("generated/aiDocs")
+val syncAiDocs = tasks.register<Copy>("syncAiDocs") {
+    description = "把 docs-site/docs 下的用户文档复制进 assets/docs，供 AI 在容器内查阅"
+    from(rootProject.layout.projectDirectory.dir("docs-site/docs")) {
+        include("**/*.md")
+        // index.md 是文档站首页（hero 布局的 frontmatter），对 AI 没有意义
+        exclude("index.md")
+    }
+    into(layout.buildDirectory.dir("generated/aiDocs/docs"))
+}
+
 android {
     namespace = "com.aicode"
     compileSdk = 36
@@ -134,6 +148,8 @@ android {
         getByName("universal") { assets.srcDir("src/_x86Assets") }
         getByName("armsolo") { assets.srcDir("src/_armAssets") }
         getByName("x86solo") { assets.srcDir("src/_x86Assets") }
+        // 文档不放在 app/src/main/assets 下，改由 syncAiDocs 从 docs-site/docs 生成后并入
+        getByName("main") { assets.srcDir(aiDocsGeneratedDir) }
     }
 
     buildTypes {
@@ -339,3 +355,6 @@ dependencies {
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
+
+// assets 合并前必须先生成文档，否则首次构建（或 clean 后）APK 里会没有 docs/。
+tasks.named("preBuild") { dependsOn(syncAiDocs) }
