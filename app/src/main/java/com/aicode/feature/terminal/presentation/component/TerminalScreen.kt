@@ -1,6 +1,7 @@
 package com.aicode.feature.terminal.presentation.component
 
 import android.content.Context
+import android.graphics.Typeface
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -70,6 +71,7 @@ import com.aicode.feature.agent.domain.container.ContainerInitState
 import com.aicode.feature.terminal.data.repository.TerminalSettings
 import com.aicode.feature.terminal.domain.RunState
 import com.aicode.feature.terminal.domain.TerminalTab
+import com.aicode.feature.terminal.domain.font.TerminalFontManager
 import com.aicode.feature.terminal.presentation.TerminalViewModel
 import com.termux.terminal.TerminalColors
 import com.termux.terminal.TextStyle
@@ -184,7 +186,8 @@ fun TerminalScreen(
                 onDismiss = { showSettingsSheet = false },
                 onSelectTheme = { viewModel.setTheme(it) },
                 onChangeFontSize = { viewModel.setFontSize(it) },
-                onChangeCursorStyle = { viewModel.setCursorStyle(it) }
+                onChangeCursorStyle = { viewModel.setCursorStyle(it) },
+                onChangeFontPath = { viewModel.setFontPath(it) }
             )
         }
     }
@@ -354,6 +357,8 @@ private fun TerminalSurface(
             view.setBackgroundColor(preset.background)
             val density = ctx.resources.displayMetrics.density
             view.setTextSize((settings.fontSizeSp * density).toInt())
+            view.setTypeface(TerminalFontManager.loadTypeface(settings.fontPath) ?: Typeface.MONOSPACE)
+            view.tag = (settings.fontSizeSp * density).toInt() to settings.fontPath
             view.setTerminalViewClient(
                 AppTerminalViewClient(
                     context = ctx,
@@ -396,9 +401,11 @@ private fun TerminalSurface(
             view.setBackgroundColor(preset.background)
             val density = view.context.resources.displayMetrics.density
             val targetTextSize = (settings.fontSizeSp * density).toInt()
-            if (view.tag != targetTextSize) {
+            val targetFontKey = targetTextSize to settings.fontPath
+            if (view.tag != targetFontKey) {
                 view.setTextSize(targetTextSize)
-                view.tag = targetTextSize
+                view.setTypeface(TerminalFontManager.loadTypeface(settings.fontPath) ?: Typeface.MONOSPACE)
+                view.tag = targetFontKey
             }
 
             // 同步更新全局默认色彩表与当前会话色彩

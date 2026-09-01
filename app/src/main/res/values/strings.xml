@@ -955,6 +955,11 @@
     <string name="terminal_cursor_block">方块</string>
     <string name="terminal_cursor_underline">下划线</string>
     <string name="terminal_cursor_bar">竖线</string>
+    <string name="terminal_font_title">终端字体</string>
+    <string name="terminal_font_import">导入</string>
+    <string name="terminal_font_default">系统等宽</string>
+    <string name="terminal_font_delete">删除该字体</string>
+    <string name="terminal_font_import_failed">导入失败，请选择有效的 ttf / otf / ttc 字体文件</string>
     <string name="terminal_preview_text">终端预览</string>
     <string name="terminal_theme_termius_dark">Termius Dark</string>
     <string name="terminal_theme_dracula">Dracula</string>

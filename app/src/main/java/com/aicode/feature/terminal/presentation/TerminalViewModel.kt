@@ -80,6 +80,10 @@ class TerminalViewModel @Inject constructor(
         viewModelScope.launch { terminalSettingsRepository.setCursorStyle(style) }
     }
 
+    fun setFontPath(path: String) {
+        viewModelScope.launch { terminalSettingsRepository.setFontPath(path) }
+    }
+
     init {
         prepare()
     }

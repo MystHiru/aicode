@@ -285,6 +285,10 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { terminalSettingsRepository.setCursorStyle(style) }
     }
 
+    fun setTerminalFontPath(path: String) {
+        viewModelScope.launch { terminalSettingsRepository.setFontPath(path) }
+    }
+
     // ── 全局代理 ──
 
     /** 全局代理配置快照（SharedPreferences 即时读写，改即对新连接生效）。 */

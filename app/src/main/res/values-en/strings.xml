@@ -956,6 +956,11 @@
     <string name="terminal_cursor_block">Block</string>
     <string name="terminal_cursor_underline">Underline</string>
     <string name="terminal_cursor_bar">Bar</string>
+    <string name="terminal_font_title">Terminal Font</string>
+    <string name="terminal_font_import">Import</string>
+    <string name="terminal_font_default">System Monospace</string>
+    <string name="terminal_font_delete">Delete this font</string>
+    <string name="terminal_font_import_failed">Import failed. Please pick a valid ttf / otf / ttc font file</string>
     <string name="terminal_preview_text">Terminal Preview</string>
     <string name="terminal_theme_termius_dark">Termius Dark</string>
     <string name="terminal_theme_dracula">Dracula</string>
