@@ -111,6 +111,7 @@ import com.aicode.feature.settings.domain.model.ProviderType
 import com.aicode.feature.settings.data.repository.ProxyConfig
 import com.aicode.feature.settings.domain.model.ProxyType
 import com.aicode.feature.settings.domain.model.mergeModelMetadata
+import com.aicode.feature.settings.domain.model.sanitized
 import com.aicode.feature.settings.presentation.FetchState
 import com.aicode.feature.settings.presentation.SettingsViewModel
 import androidx.compose.ui.platform.LocalFocusManager
@@ -247,7 +248,7 @@ fun ProviderEditorScreen(
         proxyPort = proxyPort,
         proxyUsername = proxyUsername,
         proxyPassword = proxyPassword
-    )
+    ).sanitized()
 
     // 新建场景下判断用户是否填写了实质内容：名称、API Key、Base URL 任一非空白，或已添加模型。
     // 全空白时退出不应落库，否则会存入一条名为“新提供商”的空记录。

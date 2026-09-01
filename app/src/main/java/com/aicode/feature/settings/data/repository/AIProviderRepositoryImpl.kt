@@ -7,6 +7,7 @@ import com.aicode.feature.settings.data.local.entity.AIProviderEntity
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.ProviderType
 import com.aicode.feature.settings.domain.model.ProxyType
+import com.aicode.feature.settings.domain.model.sanitized
 import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
@@ -43,7 +44,7 @@ class AIProviderRepositoryImpl @Inject constructor(
             val current = aiProviderDao.getProviderById(provider.id)
             val sortOrder = current?.sortOrder ?: (aiProviderDao.getMaxSortOrder() + 1)
             FileLogger.i(TAG, "保存提供商 id=${provider.id} name=${provider.name} sortOrder=$sortOrder")
-            aiProviderDao.insertProvider(provider.copy(sortOrder = sortOrder).toEntity())
+            aiProviderDao.insertProvider(provider.copy(sortOrder = sortOrder).sanitized().toEntity())
         }
     }
 
@@ -104,7 +105,7 @@ class AIProviderRepositoryImpl @Inject constructor(
             proxyPort = proxyPort,
             proxyUsername = proxyUsername,
             proxyPassword = proxyPassword
-        )
+        ).sanitized()
     }
 
     private fun AIProviderConfig.toEntity(): AIProviderEntity {

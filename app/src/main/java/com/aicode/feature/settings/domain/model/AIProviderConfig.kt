@@ -39,6 +39,29 @@ data class AIProviderConfig(
         get() = selectedModel.ifBlank { defaultModel }
 }
 
+/** 绝不包含空白的字段（API Key / URL）：连中间空白一并去掉。 */
+private fun String.stripAllWhitespace(): String = filterNot { it.isWhitespace() }
+
+/** 允许内部空格的字段（名称 / 模型名 / UA / 路径）：去换行与制表符，再 trim 首尾。 */
+private fun String.stripLineBreaks(): String =
+    filterNot { it == '\n' || it == '\r' || it == '\t' }.trim()
+
+/**
+ * 清洗手填/粘贴的提供商配置。粘贴 API Key 常带入换行或首尾空格，直接拼进 Authorization
+ * 头会被 OkHttp 拒绝（Unexpected char 0x0a in Authorization value）；baseUrl 带空白则拼出非法 URL。
+ * 写入与读取两侧各清洗一次，已存的脏数据不靠迁移也能恢复可用。
+ */
+fun AIProviderConfig.sanitized(): AIProviderConfig = copy(
+    name = name.stripLineBreaks(),
+    apiKey = apiKey.stripAllWhitespace(),
+    baseUrl = baseUrl.stripAllWhitespace(),
+    defaultModel = defaultModel.stripLineBreaks(),
+    models = models.map { it.stripLineBreaks() }.filter { it.isNotEmpty() }.distinct(),
+    selectedModel = selectedModel.stripLineBreaks(),
+    balanceScriptPath = balanceScriptPath.stripLineBreaks(),
+    userAgent = userAgent.stripLineBreaks()
+)
+
 enum class ProviderType {
     OPENAI, ANTHROPIC, GEMINI
 }
