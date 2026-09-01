@@ -711,6 +711,15 @@ class LinuxContainerEngine @Inject constructor(
             // 跨 rootfs 升级不丢）。git-credentials 同放该目录，credential.helper=store 经此读；
             // credential.helper 由 provision.sh 经 includeIf 限定 /root/workspace/ 加载（最小化注入）。
             "GIT_CONFIG_GLOBAL" to "/root/.aicode/.gitconfig",
+            // safe.directory=* 关掉 git 的 dubious ownership 检查。用户自选的外部工作区落在
+            // sdcardfs/FUSE 存储，其合成的文件属主 uid 与 proot 内 euid(0) 不一致，git 判为可疑属主
+            // 后 fatal 拒绝操作——表现为 `git init` 成功（init 不查属主）但随后 `git rev-parse` 全部失败，
+            // Git 页因此一直显示「未初始化」。容器是单用户沙盒，不存在跨用户仓库，全量放行是安全的。
+            // 用 GIT_CONFIG_COUNT 注入而非写进 .gitconfig：对已初始化的旧容器也立即生效，且不改用户配置文件。
+            // Git 页 / 终端 / agent 都经此环境启动，一处覆盖全部本地 git 入口。
+            "GIT_CONFIG_COUNT" to "1",
+            "GIT_CONFIG_KEY_0" to "safe.directory",
+            "GIT_CONFIG_VALUE_0" to "*",
             "TERM" to "xterm-256color",
             "LANG" to "C.UTF-8"
             // 全局 HTTP 代理：开启时注入 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY，

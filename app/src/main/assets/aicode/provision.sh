@@ -605,9 +605,14 @@ git_config() {
     helper = store --file=$AICODE_DIR/git-credentials
     helper = $AICODE_DIR/git-credential-aicode
 EOF
-    # 先清旧的 includeIf 段（幂等），再写限定工作区根的 includeIf
-    git config --global --remove-section includeIf 2>/dev/null || true
+    # 先清旧的 includeIf 段（幂等），再写限定工作区根的 includeIf。
+    # 段名必须带 subsection：真实段是 [includeIf "gitdir:…"]，只写 `--remove-section includeIf`
+    # 匹配不到它、报 fatal 后被 2>/dev/null 吞掉，于是每跑一次初始化就 --add 累加一条重复 path。
+    git config --global --remove-section "includeIf.gitdir:$HOME/workspace/" 2>/dev/null || true
     git config --global --add includeIf."gitdir:$HOME/workspace/".path "$AICODE_DIR/gitconfig.credential"
+    # 清掉全局顶层 [credential] 段：helper 只应经上面的 includeIf 按目录加载，
+    # 写在顶层会对容器内所有仓库生效，破坏「只注入工作区根下」的最小化设计。
+    git config --global --remove-section credential 2>/dev/null || true
 }
 
 # ── 交互初始化菜单（所有容器统一，在终端 PTY 上运行，用户自主选择安装方式）──
