@@ -39,3 +39,6 @@
 *.jks    binary
 *.keystore binary
 *.bin    binary
+*.ttf    binary
+*.otf    binary
+*.ttc    binary

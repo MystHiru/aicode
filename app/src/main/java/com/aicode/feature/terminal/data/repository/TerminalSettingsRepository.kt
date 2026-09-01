@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.aicode.feature.terminal.domain.font.TerminalFontManager
 import com.aicode.feature.terminal.domain.model.TerminalThemePreset
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -20,8 +21,8 @@ data class TerminalSettings(
     val themeId: String = TerminalThemePreset.TERMIUS_DARK.id,
     val fontSizeSp: Int = 12,
     val cursorStyle: Int = 0, // 0=Block, 1=Underline, 2=Bar
-    /** 自定义字体文件绝对路径，空表示系统等宽字体。 */
-    val fontPath: String = ""
+    /** 字体标识：空=系统等宽，TerminalFontManager.BUILTIN_PATH=内置 JetBrains Mono NL，其余为导入字体的绝对路径。 */
+    val fontPath: String = TerminalFontManager.BUILTIN_PATH
 ) {
     val theme: TerminalThemePreset
         get() = TerminalThemePreset.findById(themeId)
@@ -44,7 +45,12 @@ class TerminalSettingsRepository @Inject constructor(
             themeId = prefs[THEME_ID_KEY] ?: TerminalThemePreset.TERMIUS_DARK.id,
             fontSizeSp = prefs[FONT_SIZE_SP_KEY]?.coerceIn(10, 22) ?: 12,
             cursorStyle = prefs[CURSOR_STYLE_KEY] ?: 0,
-            fontPath = prefs[FONT_PATH_KEY]?.takeIf { File(it).isFile } ?: ""
+            // 未设过字体的用户给内置字体；显式选过“系统等宽”（空串）的保持原样；导入字体被删时回落内置
+            fontPath = when (val saved = prefs[FONT_PATH_KEY]) {
+                null -> TerminalFontManager.BUILTIN_PATH
+                "", TerminalFontManager.BUILTIN_PATH -> saved
+                else -> if (File(saved).isFile) saved else TerminalFontManager.BUILTIN_PATH
+            }
         )
     }
 

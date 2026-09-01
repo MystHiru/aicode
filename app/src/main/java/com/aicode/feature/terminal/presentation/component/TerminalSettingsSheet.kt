@@ -257,6 +257,15 @@ private fun TerminalFontSection(
                 selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
             )
         )
+        FilterChip(
+            selected = currentPath == TerminalFontManager.BUILTIN_PATH,
+            onClick = { onChangeFontPath(TerminalFontManager.BUILTIN_PATH) },
+            label = { Text(stringResource(R.string.terminal_font_builtin)) },
+            colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+        )
         fonts.forEach { font ->
             FilterChip(
                 selected = font.path == currentPath,
@@ -271,7 +280,7 @@ private fun TerminalFontSection(
                             .clickable {
                                 TerminalFontManager.deleteFont(font.path)
                                 fonts = TerminalFontManager.listFonts(context)
-                                if (font.path == currentPath) onChangeFontPath("")
+                                if (font.path == currentPath) onChangeFontPath(TerminalFontManager.BUILTIN_PATH)
                             }
                     )
                 },
@@ -288,6 +297,9 @@ private fun TerminalFontSection(
 @Composable
 private fun rememberPreviewFontFamily(path: String): FontFamily = remember(path) {
     if (path.isBlank()) return@remember FontFamily.Monospace
+    if (path == TerminalFontManager.BUILTIN_PATH) {
+        return@remember FontFamily(Font(R.font.jetbrains_mono_nl))
+    }
     val file = File(path)
     if (!file.isFile) return@remember FontFamily.Monospace
     runCatching { FontFamily(Font(file)) }.getOrDefault(FontFamily.Monospace)

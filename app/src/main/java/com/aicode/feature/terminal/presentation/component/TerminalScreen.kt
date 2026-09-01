@@ -357,7 +357,7 @@ private fun TerminalSurface(
             view.setBackgroundColor(preset.background)
             val density = ctx.resources.displayMetrics.density
             view.setTextSize((settings.fontSizeSp * density).toInt())
-            view.setTypeface(TerminalFontManager.loadTypeface(settings.fontPath) ?: Typeface.MONOSPACE)
+            view.setTypeface(TerminalFontManager.loadTypeface(ctx, settings.fontPath) ?: Typeface.MONOSPACE)
             view.tag = (settings.fontSizeSp * density).toInt() to settings.fontPath
             view.setTerminalViewClient(
                 AppTerminalViewClient(
@@ -404,7 +404,7 @@ private fun TerminalSurface(
             val targetFontKey = targetTextSize to settings.fontPath
             if (view.tag != targetFontKey) {
                 view.setTextSize(targetTextSize)
-                view.setTypeface(TerminalFontManager.loadTypeface(settings.fontPath) ?: Typeface.MONOSPACE)
+                view.setTypeface(TerminalFontManager.loadTypeface(view.context, settings.fontPath) ?: Typeface.MONOSPACE)
                 view.tag = targetFontKey
             }
 

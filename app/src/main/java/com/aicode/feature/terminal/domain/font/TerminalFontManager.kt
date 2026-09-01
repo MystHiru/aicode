@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Typeface
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.core.content.res.ResourcesCompat
+import com.aicode.R
 import com.aicode.core.util.FileLogger
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -19,6 +21,9 @@ data class TerminalFont(
  * 不走 Hilt，设置面板与终端渲染两侧都直接以 Context 调用。
  */
 object TerminalFontManager {
+
+    /** 内置字体的伪路径。不是真实文件路径，凡是校验 fontPath 是否存在的地方都要先放行它。 */
+    const val BUILTIN_PATH = "builtin:jetbrains-mono-nl"
 
     private const val DIR_NAME = "terminal_fonts"
     private val SUPPORTED_EXTENSIONS = setOf("ttf", "otf", "ttc")
@@ -63,8 +68,15 @@ object TerminalFontManager {
     }
 
     /** 加载字体；路径为空或文件损坏时返回 null，由调用方回落到系统等宽字体。 */
-    fun loadTypeface(path: String): Typeface? {
+    fun loadTypeface(context: Context, path: String): Typeface? {
         if (path.isBlank()) return null
+        if (path == BUILTIN_PATH) {
+            typefaceCache[BUILTIN_PATH]?.let { return it }
+            return runCatching { ResourcesCompat.getFont(context, R.font.jetbrains_mono_nl) }
+                .onFailure { FileLogger.e("TerminalFont", "加载内置字体失败", it) }
+                .getOrNull()
+                ?.also { typefaceCache[BUILTIN_PATH] = it }
+        }
         typefaceCache[path]?.let { return it }
         val file = File(path)
         if (!file.isFile) return null
