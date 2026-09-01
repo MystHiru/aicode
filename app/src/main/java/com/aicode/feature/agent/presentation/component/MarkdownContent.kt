@@ -120,6 +120,12 @@ internal fun MarkdownContent(
         Highlights.Builder().theme(SyntaxThemes.atom(darkMode = isDark))
     }
 
+    val processed = remember(text) { MarkdownPreprocessor.process(text) }
+    val baseTransformer = LocalMarkdownImageTransformer.current
+    val mathTransformer = remember(baseTransformer, body.fontSize.value) {
+        MathImageTransformer(baseTransformer, body.fontSize.value)
+    }
+
     androidx.compose.runtime.CompositionLocalProvider(
         androidx.compose.material3.LocalContentColor provides color
     ) {
@@ -132,13 +138,13 @@ internal fun MarkdownContent(
         // 显示原文纯文本，流式场景下每次文本变化都会闪现「最新文本的裸文本」（底部字在闪）。
         // 因此 Loading 期间优先渲染最近一次成功解析的结果（旧文本的完整 md 排版），解析
         // 完成后再平滑切到新文本，内容只增不跳。
-        val mdState = rememberMarkdownState(content = text, retainState = true)
+        val mdState = rememberMarkdownState(content = processed, retainState = true)
         val parseState by mdState.state.collectAsState()
-        val cachedState = cache?.get(text)
+        val cachedState = cache?.get(processed)
         // 委托属性不能智能转换，先取局部快照再判断
         val currentState = parseState
         val parsedState: MarkdownParseState = when {
-            currentState is MarkdownParseState.Success && currentState.content == text -> currentState
+            currentState is MarkdownParseState.Success && currentState.content == processed -> currentState
             cachedState != null -> cachedState
             else -> currentState
         }
@@ -169,7 +175,7 @@ internal fun MarkdownContent(
                 dimens = mdDimens,
                 // 关闭段落文本的 animateContentSize：快速流式更新下它会持续追赶目标高度，反而弹性抖动。
                 animations = markdownAnimations(animateTextSize = { this }),
-                imageTransformer = LocalMarkdownImageTransformer.current,
+                imageTransformer = mathTransformer,
                 components = markdownComponents(
                     codeFence = {
                         MarkdownHighlightedCodeFence(

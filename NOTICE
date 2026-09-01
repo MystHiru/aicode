@@ -55,7 +55,19 @@ accordance with the respective license terms.
    metadata and on the Alpine Linux project site.
 
 ========================================================================
-5. Components under the Apache License 2.0
+5. jlatexmath-android
+------------------------------------------------------------------------
+   Project:  https://github.com/noties/jlatexmath-android
+             (fork of https://github.com/opencollab/jlatexmath)
+   License:  GNU General Public License v2.0 or later (GPL-2.0-or-later)
+
+   Used to render LaTeX math formulas to bitmaps in Markdown
+   (ru.noties:jlatexmath-android). Distributed as an unmodified library;
+   its GPL-2.0-or-later terms allow use under GPL-3.0, compatible with
+   this product's license.
+
+========================================================================
+6. Components under the Apache License 2.0
 ------------------------------------------------------------------------
    The following libraries are distributed under the Apache License 2.0
    (https://www.apache.org/licenses/LICENSE-2.0), copyright by their
@@ -78,7 +90,7 @@ accordance with the respective license terms.
    - Material Design Icons (AndroidX material-icons-*)
 
 ========================================================================
-6. Components under MIT-style licenses
+7. Components under MIT-style licenses
 ------------------------------------------------------------------------
    - jsoup (https://jsoup.org), Copyright (C) Jonathan Hedley — MIT
    - SLF4J (https://www.slf4j.org) — MIT
@@ -87,7 +99,7 @@ accordance with the respective license terms.
    - XZ for Java (org.tukaani:xz) — 0BSD
 
 ========================================================================
-7. Test-only components
+8. Test-only components
 ------------------------------------------------------------------------
    These are used solely for testing and are not distributed in the
    released APK:

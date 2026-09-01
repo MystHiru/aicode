@@ -308,6 +308,8 @@ dependencies {
     implementation("com.mikepenz:multiplatform-markdown-renderer-code:0.41.0")
     // 语法高亮引擎（markdown-renderer-code 传递引入，显式声明以供 diff 视图直接使用）
     implementation("dev.snipme:highlights-jvm:1.1.0")
+    // LaTeX 数学公式渲染（纯 JVM，无 .so；jlatexmath-android 内置字体资源）
+    implementation("ru.noties:jlatexmath-android:0.2.0")
 
     // 代码编辑器（独立编辑器页）。只取纯 JVM 模块：language-treesitter 与 oniguruma-native 含 .so，
     // 会与 ABI flavor 拆分和 F-Droid 可复现构建冲突，故不引入。
