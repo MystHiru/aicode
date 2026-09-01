@@ -13,7 +13,10 @@ class AIProviderConfigSanitizeTest {
         selectedModel: String = "gpt-4o",
         defaultModel: String = "gpt-4o",
         userAgent: String = "",
-        balanceScriptPath: String = ""
+        balanceScriptPath: String = "",
+        proxyHost: String = "",
+        proxyUsername: String = "",
+        proxyPassword: String = ""
     ) = AIProviderConfig(
         id = "p1",
         name = name,
@@ -24,7 +27,10 @@ class AIProviderConfigSanitizeTest {
         models = models,
         selectedModel = selectedModel,
         userAgent = userAgent,
-        balanceScriptPath = balanceScriptPath
+        balanceScriptPath = balanceScriptPath,
+        proxyHost = proxyHost,
+        proxyUsername = proxyUsername,
+        proxyPassword = proxyPassword
     )
 
     @Test
@@ -42,16 +48,27 @@ class AIProviderConfigSanitizeTest {
     }
 
     @Test
+    fun proxyHost_stripsAllWhitespace() {
+        val sanitized = config(proxyHost = " 127.0.0.1\n").sanitized()
+
+        assertEquals("127.0.0.1", sanitized.proxyHost)
+    }
+
+    @Test
     fun textFields_keepInnerSpacesButDropLineBreaks() {
         val sanitized = config(
             name = " My\nProvider ",
             userAgent = " AiCode/1.0 (Android)\n",
-            balanceScriptPath = " ~/.aicode/scripts/my panel.py \n"
+            balanceScriptPath = " ~/.aicode/scripts/my panel.py \n",
+            proxyUsername = " user name\n",
+            proxyPassword = " pa ss\r\n"
         ).sanitized()
 
         assertEquals("MyProvider", sanitized.name)
         assertEquals("AiCode/1.0 (Android)", sanitized.userAgent)
         assertEquals("~/.aicode/scripts/my panel.py", sanitized.balanceScriptPath)
+        assertEquals("user name", sanitized.proxyUsername)
+        assertEquals("pa ss", sanitized.proxyPassword)
     }
 
     @Test

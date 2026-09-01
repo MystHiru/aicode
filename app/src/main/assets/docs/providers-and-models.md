@@ -8,7 +8,7 @@
 *   **名称**：文本框。给提供商取个别名（如“我的中转 API”）。留空保存时自动填“新提供商”。
 *   **类型**：FilterChip 三选一：`OpenAI` / `Anthropic` / `Gemini`。决定发包协议。第三方中转站基本都选 `OpenAI`。
 *   **API Key**：文本框。填入秘钥（如 `sk-xxx`）。
-*   **输入自动清洗**：保存（含返回自动保存）与「拉取模型」时会自动清理配置里的多余空白：**API Key 与 Base URL 去掉全部空白字符**（含中间的空格与粘贴带入的换行），名称 / 模型名 / User-Agent / 面板脚本路径去掉换行与制表符并裁掉首尾空格。粘贴秘钥时尾部带换行曾会导致请求头非法而报 `Unexpected char 0x0a in Authorization value`，现在旧配置在读取时也会一并清洗，无需手动重填。
+*   **输入自动清洗**：保存（含返回自动保存）与「拉取模型」时会自动清理配置里的多余空白：**API Key / Base URL / 代理主机去掉全部空白字符**（含中间的空格与粘贴带入的换行），名称 / 模型名 / User-Agent / 面板脚本路径 / 代理账号密码去掉换行与制表符并裁掉首尾空格。粘贴秘钥时尾部带换行曾会导致请求头非法而报 `Unexpected char 0x0a in Authorization value`，现在旧配置在读取时也会一并清洗，无需手动重填。
 *   **Base URL**：文本框。填 API 根域名，placeholder 随类型变化（OpenAI→`https://api.openai.com/`，Anthropic→`https://api.anthropic.com/`，Gemini→`https://generativelanguage.googleapis.com/`）。留空时按类型回填默认值。不要带尾部的 `/v1` 或具体的 path。
 *   **API 地址**：文本框。紧跟 Base URL 后的请求路径，默认 `/chat/completions`。
 *   **Response API (新版)**：开关，仅当类型为 `OpenAI` 时显示。默认**关闭**。开启后该提供商的所有对话改走 OpenAI Responses 协议：端点自动换成 `/v1/responses`，请求体用 `input` item 序列（工具调用与结果是独立的 `function_call` / `function_call_output` item），流式按语义事件解析并以 `response.completed` / `response.incomplete` / `response.failed` 结束（Responses 不发 `[DONE]`）。文本流、思考过程、工具调用、图片输入、token 用量与超长自动续写均已支持，「模型」Tab 的连通性测试也会改用该端点。**仅在服务端确实支持 Responses 时开启**（如 OpenAI 官方、`https://api.deepseek.com`），不支持的中转会直接报 400；同时开启「完整 URL」时，填的地址必须指向 responses 端点，不能仍指向 `/chat/completions`。
