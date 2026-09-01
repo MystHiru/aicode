@@ -7,12 +7,17 @@
 ## 1. 配置 Tab 字段
 *   **名称**：文本框。给提供商取个别名（如“我的中转 API”）。留空保存时自动填“新提供商”。
 *   **类型**：FilterChip 三选一：`OpenAI` / `Anthropic` / `Gemini`。决定发包协议。第三方中转站基本都选 `OpenAI`。
-*   **API Key**：文本框。填入秘钥（如 `sk-xxx`）。
+*   **API Key**：文本框。填入秘钥（如 `sk-xxx`）。**开启「多 Key 模式」后此输入框会隐藏**，秘钥改在「多 Key 管理」页里维护。
+*   **多 Key 模式**（位于「选项」分组）：开关，默认关闭。开启后该提供商可挂多个 API Key，遇到限流或额度用尽时自动切换，开关下方会出现「多 Key 管理」入口行（右侧显示 `N 个 · 顺序/轮询` 摘要），点击进入独立管理页（与「代理」页同款子页）。开启时若单 Key 输入框里已填了秘钥，会自动带入列表首位，不会丢失。管理页包含三部分：
+    *   **Key 列表**：逐行增删 Key，右上角 + 添加、行尾 × 删除，右上角眼睛图标可整页切换明文/掩码显示。列表顺序即优先级。
+    *   **取用策略**：`顺序` 始终用靠前的 Key，只有失败达阈值才切下一个；`轮询` 让新会话轮流从不同 Key 起步以摊平额度。**两种策略在同一会话内都不会换 Key**——服务端 prompt 缓存按 Key 隔离，会话内逐请求换 Key 会让缓存全部失效、成本和首字延迟一起变差。
+    *   **失败切换**：`切换阈值` 是同一个 Key 连续失败多少次后切换（默认 2 次）；`冷却时长` 是被切走的 Key 隔多久重新纳入候选（默认 5 分钟，可设为「不冷却」）。**只有鉴权/权限（401、403）、限流（429）与余额/额度类（402、`insufficient_quota` 等）错误才计入失败**；5xx、超时、DNS/连接故障属于服务端或网络问题，换 Key 也没用，不会消耗计数、也不会把好 Key 打进冷却。触发切换时本次请求的报错文案末尾会附带「已切换到第 N/M 个 Key，可重试」。
+    *   进程重启后回到第一个 Key、冷却记录清空。自定义面板/余量脚本拿到的 `AICODE_PROVIDER_API_KEY` 始终是**当前活动的那个 Key**；「拉取模型」与连通性测试用列表里第一个 Key。
 *   **输入自动清洗**：保存（含返回自动保存）与「拉取模型」时会自动清理配置里的多余空白：**API Key / Base URL / 代理主机去掉全部空白字符**（含中间的空格与粘贴带入的换行），名称 / 模型名 / User-Agent / 面板脚本路径 / 代理账号密码去掉换行与制表符并裁掉首尾空格。粘贴秘钥时尾部带换行曾会导致请求头非法而报 `Unexpected char 0x0a in Authorization value`，现在旧配置在读取时也会一并清洗，无需手动重填。
 *   **Base URL**：文本框。填 API 根域名，placeholder 随类型变化（OpenAI→`https://api.openai.com/`，Anthropic→`https://api.anthropic.com/`，Gemini→`https://generativelanguage.googleapis.com/`）。留空时按类型回填默认值。不要带尾部的 `/v1` 或具体的 path。
 *   **API 地址**：文本框。紧跟 Base URL 后的请求路径，默认 `/chat/completions`。
 *   **Response API (新版)**：开关，仅当类型为 `OpenAI` 时显示。默认**关闭**。开启后该提供商的所有对话改走 OpenAI Responses 协议：端点自动换成 `/v1/responses`，请求体用 `input` item 序列（工具调用与结果是独立的 `function_call` / `function_call_output` item），流式按语义事件解析并以 `response.completed` / `response.incomplete` / `response.failed` 结束（Responses 不发 `[DONE]`）。文本流、思考过程、工具调用、图片输入、token 用量与超长自动续写均已支持，「模型」Tab 的连通性测试也会改用该端点。**仅在服务端确实支持 Responses 时开启**（如 OpenAI 官方、`https://api.deepseek.com`），不支持的中转会直接报 400；同时开启「完整 URL」时，填的地址必须指向 responses 端点，不能仍指向 `/chat/completions`。
-*   **User-Agent**：文本框。自定义该提供商所有 AI 请求（对话/流式/识图）的 `User-Agent` 请求头，留空使用默认。部分中转网关会校验 UA，可按需填写（如 `MyApp/1.0`）。
+*   **User-Agent**（位于「基本信息」分组）：文本框。自定义该提供商所有 AI 请求（对话/流式/识图）的 `User-Agent` 请求头，留空使用默认。部分中转网关会校验 UA，可按需填写（如 `MyApp/1.0`）。
 *   **自定义面板脚本**：文本框与选择器。配置执行当前提供商自定义面板/余量统计的脚本文件（存放于 `~/.aicode/scripts/`，如 `demo_balance.py` 或 `demo_subscription.py`），支持 Python/Bash/Node 等。配置后可在编辑页点击「运行测试」实时调试输出；在主聊天界面输入框上方会自动展示该提供商的自定义面板卡片（支持折叠/展开视图）。脚本执行时会自动注入当前模型、工作区、会话 ID 及每次请求的 Token 统计等环境变量，每次 Agent 单次 LLM 请求完成时会自动刷新面板。如需深度自定义排版与卡片布局，可参考 [自定义面板 (DIY Dashboard) 与 Adaptive Cards 设计规范指南](provider-dashboard-cards-guide.md)。
 
 ## 2. 模型 Tab

@@ -30,6 +30,7 @@ import com.aicode.feature.agent.presentation.AgentAttachment
 import com.aicode.feature.settings.data.remote.ModelMetadataService
 import com.aicode.feature.settings.data.repository.CompactionModelSettingsRepository
 import com.aicode.feature.settings.data.repository.DefaultModelSettingsRepository
+import com.aicode.feature.settings.data.repository.ProviderKeyRotator
 import com.aicode.feature.settings.data.repository.TitleModelSettingsRepository
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.agent.data.remote.anthropic.AnthropicApi
@@ -39,6 +40,7 @@ import com.aicode.feature.agent.data.local.dao.LlmCallRecordDao
 import com.aicode.feature.agent.data.local.entity.LlmCallRecordEntity
 import com.aicode.feature.agent.domain.provider.AnthropicAdapter
 import com.aicode.feature.agent.domain.provider.GeminiAdapter
+import com.aicode.feature.agent.domain.provider.isApiKeyFailure
 import com.aicode.feature.agent.domain.provider.OpenAIAdapter
 import com.aicode.feature.settings.domain.model.ProviderType
 import com.aicode.feature.settings.domain.repository.AIProviderRepository
@@ -83,7 +85,8 @@ class StatefulAgentWorkflow @Inject constructor(
     private val sessionUseCase: SessionUseCase,
     private val messagePersistenceUseCase: MessagePersistenceUseCase,
     private val checkpointManager: CheckpointManager,
-    private val llmCallRecordDao: LlmCallRecordDao
+    private val llmCallRecordDao: LlmCallRecordDao,
+    private val keyRotator: ProviderKeyRotator
 ) : AgentWorkflow {
 
     private companion object {
@@ -172,7 +175,7 @@ class StatefulAgentWorkflow @Inject constructor(
     private suspend fun getEffectiveProvider(sessionId: String?): AIProvider {
         val config = resolveProviderConfig(sessionId)
             ?: throw IllegalStateException("尚未配置 AI 提供商，请到设置中添加并选择一个")
-        if (config.apiKey.isBlank()) throw IllegalStateException("「${config.name}」未填写 API Key")
+        if (!config.hasUsableApiKey) throw IllegalStateException("「${config.name}」未填写 API Key")
         if (config.effectiveModel.isBlank()) throw IllegalStateException("「${config.name}」未选择模型")
         return createStandaloneProvider(config, sessionId)
     }
@@ -188,7 +191,7 @@ class StatefulAgentWorkflow @Inject constructor(
             val boundModel = session?.model
             if (!boundProviderId.isNullOrBlank()) {
                 val config = aiProviderRepository.getProviderById(boundProviderId)
-                if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
+                if (config != null && config.isEnabled && config.hasUsableApiKey) {
                     // 绑定的模型可能已被移出该 provider 的模型列表，此时绑定失效、继续往下回退默认模型
                     if (boundModel.isNullOrBlank()) return config
                     if (boundModel in config.models) return config.copy(selectedModel = boundModel)
@@ -200,7 +203,7 @@ class StatefulAgentWorkflow @Inject constructor(
         val defaultModel = defaultModelSettingsRepository.getDefaultModel()
         if (defaultProviderId.isNotBlank() && defaultModel.isNotBlank()) {
             val config = aiProviderRepository.getProviderById(defaultProviderId)
-            if (config != null && config.isEnabled && config.apiKey.isNotBlank() && defaultModel in config.models) {
+            if (config != null && config.isEnabled && config.hasUsableApiKey && defaultModel in config.models) {
                 return config.copy(selectedModel = defaultModel)
             }
         }
@@ -210,7 +213,7 @@ class StatefulAgentWorkflow @Inject constructor(
     override suspend fun compactSession(sessionId: String, onEvent: suspend (AgentEvent) -> Unit): Boolean {
         val config = resolveProviderConfig(sessionId)
             ?: throw IllegalStateException("尚未配置 AI 提供商，请到设置中添加并选择一个")
-        if (config.apiKey.isBlank()) throw IllegalStateException("「${config.name}」未填写 API Key")
+        if (!config.hasUsableApiKey) throw IllegalStateException("「${config.name}」未填写 API Key")
         if (config.effectiveModel.isBlank()) throw IllegalStateException("「${config.name}」未选择模型")
         val provider = createStandaloneProvider(config, sessionId)
         val history = messagePersistenceUseCase.buildHistory(sessionId, "__manual_compress__")
@@ -235,7 +238,8 @@ class StatefulAgentWorkflow @Inject constructor(
                 it.chatCacheKeyEnabled = config.openaiChatCacheKey
             }
         }
-        provider.apiKey = config.apiKey
+        // 多 Key 模式下由轮换器决定本次用哪个 Key（会话内粘住，失败达阈值才切）。
+        provider.apiKey = keyRotator.activeKey(config, sessionId) ?: config.apiKey
         provider.baseUrl = config.baseUrl
         provider.model = config.effectiveModel
         provider.useFullUrl = config.useFullUrl
@@ -531,6 +535,7 @@ class StatefulAgentWorkflow @Inject constructor(
                             flushPendingReasoningDelta()
                             val aiResponse = finalResponse ?: AIResponse(content = acc.toString())
                             callCompleted = true
+                            keyRotator.reportSuccess(providerInUse.providerId, providerInUse.apiKey)
                             // 将本轮 reasoning 附加到 AIResponse，以便 reduce 时存入 AssistantMessage 并在下一轮回传
                             val responseWithReasoning = if (reasoningAcc.isNotEmpty()) {
                                 aiResponse.copy(reasoning = reasoningAcc.toString())
@@ -551,7 +556,20 @@ class StatefulAgentWorkflow @Inject constructor(
                             if (partial.isNotEmpty() || reasoning.isNotBlank()) {
                                 send(AgentEvent.AssistantText(partial, emptyList(), reasoning))
                             }
-                            actionQueue.addLast(AgentAction.LlmError("LLM 调用失败: ${e.message}"))
+                            // 多 Key：仅鉴权/限流/配额类失败计数，达阈值则切到下一个 Key，
+                            // 并把切换结果拼进错误文案——用户看到的就是这条报错，不必再开新的 UI 通道。
+                            var errorText = "LLM 调用失败: ${e.message}"
+                            if (e.isApiKeyFailure()) {
+                                val switched = keyRotator.reportFailure(
+                                    providerInUse.providerId,
+                                    currentContext.sessionId,
+                                    providerInUse.apiKey
+                                )
+                                if (switched != null) {
+                                    errorText += "（已切换到第 ${switched.newIndex}/${switched.total} 个 Key，可重试）"
+                                }
+                            }
+                            actionQueue.addLast(AgentAction.LlmError(errorText))
                             callError = e.message ?: e.javaClass.simpleName
                         } finally {
                             val durationMillis = (SystemClock.elapsedRealtime() - callStartElapsed).toInt()
@@ -752,7 +770,7 @@ class StatefulAgentWorkflow @Inject constructor(
         val model = compactionModelSettingsRepository.getCompactionModel().trim()
         if (model.isEmpty()) return null
         val config = aiProviderRepository.getProviderById(providerId) ?: return null
-        if (!config.isEnabled || config.apiKey.isBlank()) return null
+        if (!config.isEnabled || !config.hasUsableApiKey) return null
         return createStandaloneProvider(config.copy(selectedModel = model), sessionId)
     }
 
@@ -766,7 +784,7 @@ class StatefulAgentWorkflow @Inject constructor(
         val model = titleModelSettingsRepository.getTitleModel().trim()
         if (model.isEmpty()) return null
         val config = aiProviderRepository.getProviderById(providerId) ?: return null
-        if (!config.isEnabled || config.apiKey.isBlank()) return null
+        if (!config.isEnabled || !config.hasUsableApiKey) return null
         return createStandaloneProvider(config.copy(selectedModel = model), sessionId)
     }
 

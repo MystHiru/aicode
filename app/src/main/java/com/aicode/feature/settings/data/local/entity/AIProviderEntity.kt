@@ -10,6 +10,16 @@ data class AIProviderEntity(
     val type: String,
     /** 明文 Room，与 git token 同口径；后续统一加密时一并处理。 */
     val apiKey: String,
+    /** 多 Key 模式开关；关闭时只用 [apiKey]。 */
+    val multiKeyEnabled: Boolean = false,
+    /** 多 Key 候选列表，以换行分隔持久化（同 [models]）。 */
+    val apiKeys: String = "",
+    /** 多 Key 取用策略：SEQUENTIAL / ROUND_ROBIN。 */
+    val keyRotationStrategy: String = "SEQUENTIAL",
+    /** 同一个 Key 连续失败多少次后切换。 */
+    val keyFailoverThreshold: Int = 2,
+    /** 被切走的 Key 冷却分钟数；0 表示不冷却。 */
+    val keyCooldownMinutes: Int = 5,
     val baseUrl: String,
     val defaultModel: String,
     /** 可用模型列表，以换行分隔持久化。 */

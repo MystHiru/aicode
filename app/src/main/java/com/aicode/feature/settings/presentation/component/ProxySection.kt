@@ -136,7 +136,6 @@ internal fun ProxySection(
                 )
             }
 
-            SettingsDivider()
             var passwordVisible by remember { mutableStateOf(false) }
             Column(modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.md)) {
                 AppTextField(
@@ -168,7 +167,6 @@ internal fun ProxySection(
                 )
             }
 
-            SettingsDivider()
             if (showNoProxy) {
                 Column(modifier = Modifier.padding(start = Spacing.lg, end = Spacing.lg, bottom = Spacing.lg)) {
                     AppTextField(

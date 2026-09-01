@@ -3,6 +3,7 @@ package com.aicode.feature.settings.domain.service
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.container.CommandEngine
 import com.aicode.feature.agent.domain.container.ContainerInstaller
+import com.aicode.feature.settings.data.repository.ProviderKeyRotator
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.AdaptiveCardAction
 import com.aicode.feature.settings.domain.model.AdaptiveCardElement
@@ -50,7 +51,8 @@ import javax.inject.Singleton
 @Singleton
 class ProviderBalanceRunner @Inject constructor(
     private val commandEngine: CommandEngine,
-    private val containerInstaller: ContainerInstaller
+    private val containerInstaller: ContainerInstaller,
+    private val keyRotator: ProviderKeyRotator
 ) {
     companion object {
         private const val TAG = "ProviderBalanceRunner"
@@ -702,12 +704,14 @@ class ProviderBalanceRunner @Inject constructor(
         }
         val effectiveModel = context?.model?.ifBlank { null }
             ?: provider.selectedModel.ifBlank { provider.defaultModel }
+        // 多 Key 模式下查当前活动的 Key，否则面板会报一个已被切走的 Key 的余额。
+        val effectiveApiKey = keyRotator.currentKey(provider) ?: provider.apiKey
 
         val envs = mutableListOf(
             "AICODE_PROVIDER_ID=${escape(provider.id)}",
             "AICODE_PROVIDER_NAME=${escape(provider.name)}",
             "AICODE_PROVIDER_TYPE=${escape(provider.type.name)}",
-            "AICODE_PROVIDER_API_KEY=${escape(provider.apiKey)}",
+            "AICODE_PROVIDER_API_KEY=${escape(effectiveApiKey)}",
             "AICODE_PROVIDER_BASE_URL=${escape(provider.baseUrl)}",
             "AICODE_PROVIDER_DEFAULT_MODEL=${escape(provider.defaultModel)}",
             "AICODE_PROVIDER_SELECTED_MODEL=${escape(provider.selectedModel)}",

@@ -630,14 +630,51 @@ class BackupManagerImpl @Inject constructor(
     // ── Entity ↔ DTO 转换 ──────────────────────────────────────
 
     private fun AIProviderEntity.toDto() = ProviderDto(
-        id, name, type, apiKey, baseUrl, defaultModel, models, selectedModel, isEnabled, useFullUrl, useResponseApi,
-        anthropicCacheBreakpoints, openaiChatCacheKey, balanceScriptPath, balanceRefreshInterval, sortOrder
+        id = id,
+        name = name,
+        type = type,
+        apiKey = apiKey,
+        baseUrl = baseUrl,
+        defaultModel = defaultModel,
+        models = models,
+        selectedModel = selectedModel,
+        isEnabled = isEnabled,
+        useFullUrl = useFullUrl,
+        useResponseApi = useResponseApi,
+        anthropicCacheBreakpoints = anthropicCacheBreakpoints,
+        openaiChatCacheKey = openaiChatCacheKey,
+        balanceScriptPath = balanceScriptPath,
+        balanceRefreshInterval = balanceRefreshInterval,
+        sortOrder = sortOrder,
+        multiKeyEnabled = multiKeyEnabled,
+        apiKeys = apiKeys,
+        keyRotationStrategy = keyRotationStrategy,
+        keyFailoverThreshold = keyFailoverThreshold,
+        keyCooldownMinutes = keyCooldownMinutes
     )
 
     private fun ProviderDto.toEntity() = AIProviderEntity(
-        id, name, type, apiKey, baseUrl, defaultModel, models, selectedModel, isEnabled, useFullUrl, useResponseApi,
-        anthropicCacheBreakpoints ?: true, openaiChatCacheKey ?: false, balanceScriptPath ?: "", balanceRefreshInterval ?: 5,
-        sortOrder = sortOrder ?: 0
+        id = id,
+        name = name,
+        type = type,
+        apiKey = apiKey,
+        baseUrl = baseUrl,
+        defaultModel = defaultModel,
+        models = models,
+        selectedModel = selectedModel,
+        isEnabled = isEnabled,
+        useFullUrl = useFullUrl,
+        useResponseApi = useResponseApi,
+        anthropicCacheBreakpoints = anthropicCacheBreakpoints ?: true,
+        openaiChatCacheKey = openaiChatCacheKey ?: false,
+        balanceScriptPath = balanceScriptPath ?: "",
+        balanceRefreshInterval = balanceRefreshInterval ?: 5,
+        sortOrder = sortOrder ?: 0,
+        multiKeyEnabled = multiKeyEnabled ?: false,
+        apiKeys = apiKeys ?: "",
+        keyRotationStrategy = keyRotationStrategy ?: "SEQUENTIAL",
+        keyFailoverThreshold = keyFailoverThreshold ?: 2,
+        keyCooldownMinutes = keyCooldownMinutes ?: 5
     )
 
     private fun RemoteConnectionEntity.toDto() = RemoteConnectionDto(

@@ -172,14 +172,14 @@ fun AIChatPanel(
     // 未绑定会话回退：新会话默认模型（主页空会话中选择后记忆），未设置则为 null（UI 显示默认图标/顶栏模型名留空）。
     val defaultFallbackProvider = providers
         .find { it.id == defaultProviderId }
-        ?.takeIf { it.apiKey.isNotBlank() }
+        ?.takeIf { it.hasUsableApiKey }
         ?.let { if (defaultModelName.isNotBlank() && defaultModelName in it.models) it.copy(selectedModel = defaultModelName) else it }
     val activeProvider = run {
         val (boundProviderId, boundModel) = sessionProviderModel
         if (!boundProviderId.isNullOrBlank()) {
             // 与 workflow.resolveProviderConfig 保持一致：绑定 provider 须启用且已填 apiKey，否则回退默认模型
             providers.find { it.id == boundProviderId }
-                ?.takeIf { it.apiKey.isNotBlank() }
+                ?.takeIf { it.hasUsableApiKey }
                 // 绑定模型已被移出列表时绑定失效，回退默认模型（与 workflow.resolveProviderConfig 一致）
                 ?.takeIf { boundModel.isNullOrBlank() || boundModel in it.models }
                 ?.let {

@@ -106,6 +106,7 @@ import com.aicode.core.ui.FloatingTabItem
 import com.aicode.feature.settings.data.local.CustomModelMetadataStore
 import com.aicode.feature.settings.data.remote.ModelTestResult
 import com.aicode.feature.settings.domain.model.AIProviderConfig
+import com.aicode.feature.settings.domain.model.KeyRotationStrategy
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.domain.model.ProviderType
 import com.aicode.feature.settings.data.repository.ProxyConfig
@@ -131,6 +132,7 @@ import compose.icons.feathericons.Eye
 import compose.icons.feathericons.EyeOff
 import compose.icons.feathericons.FileText
 import compose.icons.feathericons.Folder
+import compose.icons.feathericons.Minus
 import compose.icons.feathericons.Play
 import compose.icons.feathericons.Plus
 import compose.icons.feathericons.RefreshCw
@@ -157,6 +159,11 @@ fun ProviderEditorScreen(
     var name by remember { mutableStateOf(initialProvider?.name ?: "") }
     var apiKey by remember { mutableStateOf(initialProvider?.apiKey ?: "") }
     var apiKeyVisible by remember { mutableStateOf(false) }
+    var multiKeyEnabled by remember { mutableStateOf(initialProvider?.multiKeyEnabled ?: false) }
+    val apiKeys = remember { mutableStateListOf<String>().apply { addAll(initialProvider?.apiKeys ?: emptyList()) } }
+    var keyRotationStrategy by remember { mutableStateOf(initialProvider?.keyRotationStrategy ?: KeyRotationStrategy.SEQUENTIAL) }
+    var keyFailoverThreshold by remember { mutableIntStateOf(initialProvider?.keyFailoverThreshold ?: 2) }
+    var keyCooldownMinutes by remember { mutableIntStateOf(initialProvider?.keyCooldownMinutes ?: 5) }
     var baseUrl by remember { mutableStateOf(initialProvider?.baseUrl ?: "") }
     var useFullUrl by remember { mutableStateOf(initialProvider?.useFullUrl ?: false) }
     var useResponseApi by remember { mutableStateOf(initialProvider?.useResponseApi ?: false) }
@@ -186,6 +193,7 @@ fun ProviderEditorScreen(
     var showScriptPickerSheet by remember { mutableStateOf(false) }
     var showIntervalSheet by remember { mutableStateOf(false) }
     var showProxyPage by remember { mutableStateOf(false) }
+    var showKeysPage by remember { mutableStateOf(false) }
     var fetchDialogKey by remember { mutableIntStateOf(0) }
 
     // 两个 tab 的滚动状态提升到页面层，聚合出「是否正在滚动」供底部 tab栏滚动弱化（同 Git 页面）。
@@ -229,6 +237,11 @@ fun ProviderEditorScreen(
         name = name.ifEmpty { context.getString(R.string.provider_new) },
         type = type,
         apiKey = apiKey,
+        multiKeyEnabled = multiKeyEnabled,
+        apiKeys = apiKeys.toList(),
+        keyRotationStrategy = keyRotationStrategy,
+        keyFailoverThreshold = keyFailoverThreshold,
+        keyCooldownMinutes = keyCooldownMinutes,
         baseUrl = baseUrl.ifBlank { defaultProviderBaseUrl(type) },
         useFullUrl = useFullUrl,
         isEnabled = isEnabled,
@@ -256,6 +269,7 @@ fun ProviderEditorScreen(
         initialProvider != null ||
             name.isNotBlank() ||
             apiKey.isNotBlank() ||
+            apiKeys.any { it.isNotBlank() } ||
             baseUrl.isNotBlank() ||
             balanceScriptPath.isNotBlank() ||
             models.isNotEmpty()
@@ -270,8 +284,11 @@ fun ProviderEditorScreen(
         onNavigateBack()
     }
 
-    if (showProxyPage) {
-        BackHandler { showProxyPage = false }
+    if (showProxyPage || showKeysPage) {
+        BackHandler {
+            showProxyPage = false
+            showKeysPage = false
+        }
     } else {
         BackHandler { saveAndNavigateBack() }
     }
@@ -327,35 +344,41 @@ fun ProviderEditorScreen(
                             value = name,
                             onValueChange = { name = it }
                         )
-                        SettingsDivider()
-                        ProviderTextFieldRow(
-                            label = "API Key",
-                            value = apiKey,
-                            onValueChange = { apiKey = it },
-                            visualTransformation = if (apiKeyVisible) {
-                                VisualTransformation.None
-                            } else {
-                                PasswordVisualTransformation()
-                            },
-                            trailing = {
-                                Icon(
-                                    imageVector = if (apiKeyVisible) FeatherIcons.EyeOff else FeatherIcons.Eye,
-                                    contentDescription = stringResource(
-                                        if (apiKeyVisible) R.string.provider_hide_api_key else R.string.provider_show_api_key
-                                    ),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier
-                                        .size(24.dp)
-                                        .clickable { apiKeyVisible = !apiKeyVisible }
-                                        .padding(2.dp)
-                                )
-                            }
-                        )
-                        SettingsDivider()
+                        if (!multiKeyEnabled) {
+                            ProviderTextFieldRow(
+                                label = "API Key",
+                                value = apiKey,
+                                onValueChange = { apiKey = it },
+                                visualTransformation = if (apiKeyVisible) {
+                                    VisualTransformation.None
+                                } else {
+                                    PasswordVisualTransformation()
+                                },
+                                trailing = {
+                                    Icon(
+                                        imageVector = if (apiKeyVisible) FeatherIcons.EyeOff else FeatherIcons.Eye,
+                                        contentDescription = stringResource(
+                                            if (apiKeyVisible) R.string.provider_hide_api_key else R.string.provider_show_api_key
+                                        ),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clickable { apiKeyVisible = !apiKeyVisible }
+                                            .padding(2.dp)
+                                    )
+                                }
+                            )
+                        }
                         ProviderTextFieldRow(
                             label = "Base URL",
                             value = baseUrl,
                             onValueChange = { baseUrl = it }
+                        )
+                        ProviderTextFieldRow(
+                            label = stringResource(R.string.provider_user_agent),
+                            value = userAgent,
+                            onValueChange = { userAgent = it },
+                            placeholder = stringResource(R.string.provider_user_agent_hint)
                         )
                         SettingsDivider()
                         SettingsRow(
@@ -412,12 +435,35 @@ fun ProviderEditorScreen(
                             )
                         }
                         SettingsDivider()
-                        ProviderTextFieldRow(
-                            label = stringResource(R.string.provider_user_agent),
-                            value = userAgent,
-                            onValueChange = { userAgent = it },
-                            placeholder = stringResource(R.string.provider_user_agent_hint)
+                        ProviderSwitchRow(
+                            title = stringResource(R.string.provider_multi_key_title),
+                            subtitle = stringResource(R.string.provider_multi_key_subtitle),
+                            checked = multiKeyEnabled,
+                            onCheckedChange = { enabled ->
+                                multiKeyEnabled = enabled
+                                // 开启时把已填的单 Key 带进列表，避免输入框隐藏后看起来「刚填的 Key 丢了」。
+                                if (enabled && apiKeys.isEmpty() && apiKey.isNotBlank()) apiKeys.add(apiKey)
+                            }
                         )
+                        if (multiKeyEnabled) {
+                            SettingsDivider()
+                            SettingsRow(
+                                icon = null,
+                                title = stringResource(R.string.provider_multi_key_manage),
+                                onClick = { showKeysPage = true },
+                                trailing = {
+                                    Text(
+                                        text = stringResource(
+                                            R.string.provider_multi_key_summary,
+                                            apiKeys.count { it.isNotBlank() },
+                                            keyRotationStrategyLabel(keyRotationStrategy)
+                                        ),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            )
+                        }
                         SettingsDivider()
                         SettingsRow(
                             icon = null,
@@ -671,6 +717,19 @@ fun ProviderEditorScreen(
                     url
                 )
             }
+        )
+    }
+
+    if (showKeysPage) {
+        ProviderKeysPage(
+            keys = apiKeys,
+            strategy = keyRotationStrategy,
+            failoverThreshold = keyFailoverThreshold,
+            cooldownMinutes = keyCooldownMinutes,
+            onBack = { showKeysPage = false },
+            onSetStrategy = { keyRotationStrategy = it },
+            onSetFailoverThreshold = { keyFailoverThreshold = it },
+            onSetCooldownMinutes = { keyCooldownMinutes = it }
         )
     }
 
@@ -1436,6 +1495,211 @@ internal fun providerTypeLabel(type: ProviderType): String = when (type) {
     ProviderType.OPENAI -> "OpenAI"
     ProviderType.ANTHROPIC -> "Anthropic"
     ProviderType.GEMINI -> "Gemini"
+}
+
+@Composable
+private fun keyRotationStrategyLabel(strategy: KeyRotationStrategy): String = stringResource(
+    when (strategy) {
+        KeyRotationStrategy.SEQUENTIAL -> R.string.provider_multi_key_strategy_sequential
+        KeyRotationStrategy.ROUND_ROBIN -> R.string.provider_multi_key_strategy_round_robin
+    }
+)
+
+/**
+ * 多 Key 管理子页：Key 列表增删 + 取用策略 + 失败切换阈值 + 冷却时长。
+ * 与代理页同一模式——就地渲染的内嵌页，改动写回编辑器状态，随提供商一起保存。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProviderKeysPage(
+    keys: MutableList<String>,
+    strategy: KeyRotationStrategy,
+    failoverThreshold: Int,
+    cooldownMinutes: Int,
+    onBack: () -> Unit,
+    onSetStrategy: (KeyRotationStrategy) -> Unit,
+    onSetFailoverThreshold: (Int) -> Unit,
+    onSetCooldownMinutes: (Int) -> Unit
+) {
+    var keysVisible by remember { mutableStateOf(false) }
+    Scaffold(
+        containerColor = settingsPageBackground(),
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.provider_multi_key_manage)) },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = settingsPageBackground(),
+                    titleContentColor = MaterialTheme.colorScheme.onBackground
+                ),
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(FeatherIcons.ArrowLeft, contentDescription = stringResource(R.string.common_back))
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { keysVisible = !keysVisible }) {
+                        Icon(
+                            imageVector = if (keysVisible) FeatherIcons.EyeOff else FeatherIcons.Eye,
+                            contentDescription = stringResource(
+                                if (keysVisible) R.string.provider_hide_api_key else R.string.provider_show_api_key
+                            )
+                        )
+                    }
+                    IconButton(onClick = { keys.add("") }) {
+                        Icon(FeatherIcons.Plus, contentDescription = stringResource(R.string.provider_multi_key_add))
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = Spacing.lg)
+                .padding(bottom = Spacing.xl),
+            verticalArrangement = Arrangement.spacedBy(Spacing.sm)
+        ) {
+            SettingsGroupHeader(text = stringResource(R.string.provider_multi_key_list))
+            SettingsGroup {
+                if (keys.isEmpty()) {
+                    SettingsRow(
+                        icon = null,
+                        title = stringResource(R.string.provider_multi_key_empty),
+                        onClick = { keys.add("") }
+                    )
+                } else {
+                    keys.forEachIndexed { index, key ->
+                        ProviderTextFieldRow(
+                            label = stringResource(R.string.provider_multi_key_item, index + 1),
+                            value = key,
+                            onValueChange = { keys[index] = it },
+                            visualTransformation = if (keysVisible) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
+                            trailing = {
+                                Icon(
+                                    imageVector = FeatherIcons.X,
+                                    contentDescription = stringResource(R.string.provider_multi_key_remove),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .size(24.dp)
+                                        .clickable { keys.removeAt(index) }
+                                        .padding(4.dp)
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+
+            SettingsGroupHeader(text = stringResource(R.string.provider_multi_key_strategy))
+            SettingsGroup {
+                KeyRotationStrategy.entries.forEachIndexed { index, item ->
+                    if (index > 0) SettingsDivider()
+                    SettingsRow(
+                        icon = null,
+                        title = keyRotationStrategyLabel(item),
+                        subtitle = stringResource(
+                            when (item) {
+                                KeyRotationStrategy.SEQUENTIAL -> R.string.provider_multi_key_strategy_sequential_desc
+                                KeyRotationStrategy.ROUND_ROBIN -> R.string.provider_multi_key_strategy_round_robin_desc
+                            }
+                        ),
+                        onClick = { onSetStrategy(item) },
+                        trailing = {
+                            if (item == strategy) {
+                                Icon(
+                                    imageVector = FeatherIcons.Check,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    )
+                }
+            }
+
+            SettingsGroupHeader(text = stringResource(R.string.provider_multi_key_failover))
+            SettingsGroup {
+                StepperRow(
+                    title = stringResource(R.string.provider_multi_key_threshold),
+                    subtitle = stringResource(R.string.provider_multi_key_threshold_desc),
+                    valueText = stringResource(R.string.provider_multi_key_threshold_value, failoverThreshold),
+                    onDecrease = { onSetFailoverThreshold((failoverThreshold - 1).coerceAtLeast(1)) },
+                    onIncrease = { onSetFailoverThreshold((failoverThreshold + 1).coerceAtMost(10)) }
+                )
+                SettingsDivider()
+                StepperRow(
+                    title = stringResource(R.string.provider_multi_key_cooldown),
+                    subtitle = stringResource(R.string.provider_multi_key_cooldown_desc),
+                    valueText = if (cooldownMinutes <= 0) {
+                        stringResource(R.string.provider_multi_key_cooldown_off)
+                    } else {
+                        stringResource(R.string.provider_multi_key_cooldown_value, cooldownMinutes)
+                    },
+                    onDecrease = { onSetCooldownMinutes((cooldownMinutes - 1).coerceAtLeast(0)) },
+                    onIncrease = { onSetCooldownMinutes((cooldownMinutes + 1).coerceAtMost(120)) }
+                )
+            }
+        }
+    }
+}
+
+/** 分组内数字步进行：标题 + 副标题，右侧「− 值 +」。 */
+@Composable
+private fun StepperRow(
+    title: String,
+    subtitle: String,
+    valueText: String,
+    onDecrease: () -> Unit,
+    onIncrease: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = Spacing.lg, end = Spacing.sm, top = 11.dp, bottom = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        IconButton(onClick = onDecrease, modifier = Modifier.size(32.dp)) {
+            Icon(
+                imageVector = FeatherIcons.Minus,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+        Text(
+            text = valueText,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = Spacing.xs)
+        )
+        IconButton(onClick = onIncrease, modifier = Modifier.size(32.dp)) {
+            Icon(
+                imageVector = FeatherIcons.Plus,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

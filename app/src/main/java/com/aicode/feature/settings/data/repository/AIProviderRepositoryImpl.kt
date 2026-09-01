@@ -5,6 +5,7 @@ import com.aicode.feature.agent.data.local.database.AgentDatabase
 import com.aicode.feature.settings.data.local.dao.AIProviderDao
 import com.aicode.feature.settings.data.local.entity.AIProviderEntity
 import com.aicode.feature.settings.domain.model.AIProviderConfig
+import com.aicode.feature.settings.domain.model.KeyRotationStrategy
 import com.aicode.feature.settings.domain.model.ProviderType
 import com.aicode.feature.settings.domain.model.ProxyType
 import com.aicode.feature.settings.domain.model.sanitized
@@ -86,6 +87,12 @@ class AIProviderRepositoryImpl @Inject constructor(
             name = name,
             type = try { ProviderType.valueOf(type) } catch (e: Exception) { ProviderType.OPENAI },
             apiKey = apiKey,
+            multiKeyEnabled = multiKeyEnabled,
+            apiKeys = apiKeys.split("\n").map { it.trim() }.filter { it.isNotEmpty() },
+            keyRotationStrategy = runCatching { KeyRotationStrategy.valueOf(keyRotationStrategy) }
+                .getOrDefault(KeyRotationStrategy.SEQUENTIAL),
+            keyFailoverThreshold = keyFailoverThreshold,
+            keyCooldownMinutes = keyCooldownMinutes,
             baseUrl = baseUrl,
             defaultModel = defaultModel,
             models = modelList,
@@ -114,6 +121,11 @@ class AIProviderRepositoryImpl @Inject constructor(
             name = name,
             type = type.name,
             apiKey = apiKey,
+            multiKeyEnabled = multiKeyEnabled,
+            apiKeys = apiKeys.joinToString("\n"),
+            keyRotationStrategy = keyRotationStrategy.name,
+            keyFailoverThreshold = keyFailoverThreshold,
+            keyCooldownMinutes = keyCooldownMinutes,
             baseUrl = baseUrl,
             useFullUrl = useFullUrl,
             defaultModel = defaultModel,

@@ -109,7 +109,13 @@ data class ProviderDto(
     /** 套餐余量刷新间隔（分钟）；null 表示旧备份无此字段，导入时回退默认值 5。 */
     val balanceRefreshInterval: Int? = null,
     /** 提供商列表排序序号；null 表示旧备份无此字段，导入时回退默认 0。 */
-    val sortOrder: Int? = null
+    val sortOrder: Int? = null,
+    /** 多 Key 模式相关字段；null 表示旧备份无此字段，导入时回退默认值。 */
+    val multiKeyEnabled: Boolean? = null,
+    val apiKeys: String? = null,
+    val keyRotationStrategy: String? = null,
+    val keyFailoverThreshold: Int? = null,
+    val keyCooldownMinutes: Int? = null
 )
 
 @Serializable
