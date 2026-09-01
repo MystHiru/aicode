@@ -205,17 +205,20 @@ fun GitScreen(
         }
 
         // 底部渐变蒙版 + 悬浮 tab 组：内容可滚动到屏幕底部穿过 tab 栏，被渐变遮罩（同主页输入框）。
-        FloatingTabBar(
-            pagerState = pagerState,
-            items = listOf(
-                FloatingTabItem(FeatherIcons.Activity, stringResource(R.string.git_tab_status)),
-                FloatingTabItem(FeatherIcons.GitBranch, stringResource(R.string.git_tab_branches)),
-                FloatingTabItem(FeatherIcons.GitCommit, stringResource(R.string.git_tab_commits))
-            ),
-            maskColor = settingsPageBackground(),
-            isScrolling = tabsScrolling,
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
+        // 仅仓库态显示：加载中/非仓库态时 HorizontalPager 未组合，点击 tab 无内容可切换。
+        if (!state.loading && !state.notARepo) {
+            FloatingTabBar(
+                pagerState = pagerState,
+                items = listOf(
+                    FloatingTabItem(FeatherIcons.Activity, stringResource(R.string.git_tab_status)),
+                    FloatingTabItem(FeatherIcons.GitBranch, stringResource(R.string.git_tab_branches)),
+                    FloatingTabItem(FeatherIcons.GitCommit, stringResource(R.string.git_tab_commits))
+                ),
+                maskColor = settingsPageBackground(),
+                isScrolling = tabsScrolling,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
     }
     }
 
