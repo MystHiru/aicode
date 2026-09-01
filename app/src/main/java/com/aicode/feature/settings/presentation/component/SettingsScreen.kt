@@ -69,6 +69,7 @@ import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.presentation.SettingsViewModel
 import com.aicode.feature.settings.presentation.SkillUiEntry
+import com.aicode.feature.settings.presentation.SubAgentUiEntry
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.ArrowLeft
 import compose.icons.feathericons.BarChart2
@@ -92,6 +93,7 @@ import compose.icons.feathericons.Server
 import compose.icons.feathericons.Shield
 import compose.icons.feathericons.Terminal
 import compose.icons.feathericons.Trash2
+import compose.icons.feathericons.Users
 import com.aicode.feature.terminal.data.repository.TerminalSettings
 import com.aicode.feature.terminal.presentation.component.TerminalSettingsSheet
 
@@ -107,6 +109,8 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     Mcp(R.string.settings_mcp),
     Skills(R.string.settings_skills),
     SkillDetail(R.string.settings_skills),
+    SubAgents(R.string.settings_subagents),
+    SubAgentDetail(R.string.settings_subagents),
     Container(R.string.settings_container),
     ContainerDownloads(R.string.container_download_image),
     Proxy(R.string.proxy_title),
@@ -133,6 +137,7 @@ fun SettingsScreen(
     val mcpStatuses by viewModel.mcpStatuses.collectAsStateWithLifecycle()
     val mcpReloading by viewModel.mcpReloading.collectAsStateWithLifecycle()
     val skills by viewModel.skills.collectAsStateWithLifecycle()
+    val subAgents by viewModel.subAgents.collectAsStateWithLifecycle()
     val globalRules by viewModel.globalRules.collectAsStateWithLifecycle()
     val projectRules by viewModel.projectRules.collectAsStateWithLifecycle()
     val currentProjectName by viewModel.currentProjectName.collectAsStateWithLifecycle()
@@ -186,6 +191,10 @@ fun SettingsScreen(
     var editingMcp by remember { mutableStateOf<McpServerEntry?>(null) }
     var selectedSkill by remember { mutableStateOf<SkillUiEntry?>(null) }
     var skillToDelete by remember { mutableStateOf<SkillUiEntry?>(null) }
+    var selectedSubAgent by remember { mutableStateOf<SubAgentUiEntry?>(null) }
+    var subAgentToDelete by remember { mutableStateOf<SubAgentUiEntry?>(null) }
+    // 子代理提示词 Markdown 解析缓存：与技能详情同理，避免重复解析卡顿
+    val subAgentMarkdownCache = remember { MarkdownRenderCache() }
     // 技能正文 Markdown 解析缓存：详情页多次进入复用，避免重复解析卡顿
     val skillMarkdownCache = remember { MarkdownRenderCache() }
     var showContainerAddSheet by remember { mutableStateOf(false) }
@@ -202,13 +211,17 @@ fun SettingsScreen(
             SettingsSection.ProviderEditor -> section = SettingsSection.Providers
             SettingsSection.Log -> section = logReturnSection
             SettingsSection.SkillDetail -> section = SettingsSection.Skills
+            SettingsSection.SubAgentDetail -> section = SettingsSection.SubAgents
             SettingsSection.ContainerDownloads -> section = SettingsSection.Container
             else -> section = SettingsSection.Menu
         }
     }
 
     // settingsViewModel 为 Activity 级共享实例，每次进入设置页重新扫描技能，反映磁盘增删改。
-    LaunchedEffect(Unit) { viewModel.refreshSkills() }
+    LaunchedEffect(Unit) {
+        viewModel.refreshSkills()
+        viewModel.refreshSubAgents()
+    }
 
     // 首次（或公告内容更新后）进入「容器与镜像」页自动弹出使用说明；哈希比对在 ViewModel 完成。
     LaunchedEffect(section, containerAnnouncementOutdated) {
@@ -245,6 +258,8 @@ fun SettingsScreen(
                     Text(
                         text = if (section == SettingsSection.SkillDetail) {
                             selectedSkill?.name ?: stringResource(section.titleRes)
+                        } else if (section == SettingsSection.SubAgentDetail) {
+                            selectedSubAgent?.name ?: stringResource(section.titleRes)
                         } else {
                             stringResource(section.titleRes)
                         }
@@ -262,6 +277,8 @@ fun SettingsScreen(
                             section = logReturnSection
                         } else if (section == SettingsSection.SkillDetail) {
                             section = SettingsSection.Skills
+                        } else if (section == SettingsSection.SubAgentDetail) {
+                            section = SettingsSection.SubAgents
                         } else {
                             section = SettingsSection.Menu
                         }
@@ -441,6 +458,21 @@ fun SettingsScreen(
                             // 同步更新详情页快照，开关立即响应
                             selectedSkill = selectedSkill?.copy(disabled = !enabled)
                         }
+                    )
+                }
+                SettingsSection.SubAgents -> SubAgentsSection(
+                    projectName = currentProjectName,
+                    entries = subAgents,
+                    onDelete = { subAgentToDelete = it },
+                    onOpenDetail = {
+                        selectedSubAgent = it
+                        section = SettingsSection.SubAgentDetail
+                    }
+                )
+                SettingsSection.SubAgentDetail -> selectedSubAgent?.let { entry ->
+                    SubAgentDetailSection(
+                        entry = entry,
+                        cache = subAgentMarkdownCache
                     )
                 }
                 SettingsSection.Container -> ContainerSection(
@@ -630,6 +662,23 @@ fun SettingsScreen(
         )
     }
 
+    subAgentToDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { subAgentToDelete = null },
+            title = { Text(stringResource(R.string.subagents_delete_confirm_title)) },
+            text = { Text(stringResource(R.string.subagents_delete_confirm_message, target.name)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteSubAgent(target.name, target.scope)
+                    subAgentToDelete = null
+                }) { Text(stringResource(R.string.common_delete)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { subAgentToDelete = null }) { Text(stringResource(R.string.common_cancel)) }
+            }
+        )
+    }
+
     // 「容器与镜像」使用说明公告：首次进入（或内容更新后）自动弹出，右上角 Info 按钮可随时重看。
     if (showContainerAnnouncement) {
         val dismiss = {
@@ -744,6 +793,12 @@ internal fun SettingsMenu(
                 icon = FeatherIcons.Book,
                 title = stringResource(SettingsSection.Skills.titleRes),
                 onClick = { onOpen(SettingsSection.Skills) }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon = FeatherIcons.Users,
+                title = stringResource(SettingsSection.SubAgents.titleRes),
+                onClick = { onOpen(SettingsSection.SubAgents) }
             )
         }
 

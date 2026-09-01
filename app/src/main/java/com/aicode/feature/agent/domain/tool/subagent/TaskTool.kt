@@ -4,7 +4,10 @@ import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.data.local.dao.AgentMessageDao
 import com.aicode.feature.agent.data.local.dao.ChatSessionDao
 import com.aicode.feature.agent.domain.model.AgentContext
+import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.agent.domain.session.SessionUseCase
+import com.aicode.feature.agent.domain.subagent.AgentDefinition
+import com.aicode.feature.agent.domain.subagent.AgentDefinitionRepository
 import com.aicode.feature.agent.domain.subagent.SubAgentEvent
 import com.aicode.feature.agent.domain.subagent.SubAgentEventBus
 import com.aicode.feature.agent.domain.subagent.SubAgentEventType
@@ -15,6 +18,8 @@ import com.aicode.feature.agent.domain.tool.ToolParameter
 import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
 import com.aicode.feature.agent.domain.tool.ToolResult
 import com.aicode.feature.agent.presentation.MessageRole
+import com.aicode.feature.settings.domain.repository.AIProviderRepository
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.addJsonObject
@@ -37,18 +42,25 @@ import javax.inject.Inject
  *
  * 最多同时允许 5 个运行中的子代理（create 时检查上限）。
  * 子代理不能嵌套创建子代理（其工具集中不含 `task`）。
+ *
+ * `create` 可用 `agent` 参数指定自定义子代理定义（`agents/<name>.md`），
+ * 由定义决定该子会话的模型、工具集与系统提示词；省略则用继承父会话模型的默认通用子代理。
  */
 class TaskTool @Inject constructor(
     private val sessionUseCase: SessionUseCase,
     private val chatSessionDao: ChatSessionDao,
     private val agentMessageDao: AgentMessageDao,
-    private val eventBus: SubAgentEventBus
+    private val eventBus: SubAgentEventBus,
+    private val agentDefinitionRepository: AgentDefinitionRepository,
+    private val aiProviderRepository: AIProviderRepository
 ) : AbstractContextualTool() {
 
     private companion object {
         const val TAG = "TaskTool"
         const val TASK_DESCRIPTION_MAX = 30
         const val MAX_RUNNING_SUBAGENTS = 5
+        /** 未指定 agent 时子会话记录的类型标识。 */
+        const val DEFAULT_SUBAGENT_TYPE = "subagent"
     }
 
     override val name = "task"
@@ -63,7 +75,7 @@ class TaskTool @Inject constructor(
         }
     }
 
-    override val description = "管理子代理的生命周期：创建、读取结果、停止、删除、列表。子代理拥有独立上下文与完整工具能力，可并行工作。最多同时运行 5 个。子代理完成后你会收到一条后台通知。"
+    override val description = "管理子代理的生命周期：创建、读取结果、停止、删除、列表。子代理拥有独立上下文与完整工具能力，可并行工作。最多同时运行 5 个。子代理完成后你会收到一条后台通知，不要主动轮询。create 可用 agent 参数指定自定义子代理（专属提示词/模型/工具集）。"
 
     override val parameters: Map<String, ToolParameter> = mapOf(
         "action" to ToolParameter(
@@ -88,6 +100,12 @@ class TaskTool @Inject constructor(
             name = "prompt",
             type = ParameterType.STRING,
             description = "给子代理的完整指令（create 必填），将作为它的第一条用户消息；子代理看到的是全新上下文",
+            required = false
+        ),
+        "agent" to ToolParameter(
+            name = "agent",
+            type = ParameterType.STRING,
+            description = "自定义子代理名（create 可选）：取系统提示词「可用子代理」清单中的名称，按其专属提示词、模型与工具集运行；省略则用继承本会话模型的默认通用子代理",
             required = false
         )
     )
@@ -127,12 +145,30 @@ class TaskTool @Inject constructor(
             ?.take(TASK_DESCRIPTION_MAX)
             ?: "子代理任务"
 
+        // 指定 agent 时必须能找到定义：写错名字就报错并列出可用名，不静默回退成通用子代理，
+        // 否则会拿着错的工具集与提示词跑完整个任务。
+        val agentName = (args["agent"] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
+        var definition: AgentDefinition? = null
+        if (agentName != null) {
+            definition = agentDefinitionRepository.find(agentName)
+            if (definition == null) {
+                val available = agentDefinitionRepository.listAll().map { it.definition.name }
+                val hint = if (available.isEmpty()) "当前未定义任何自定义子代理" else "可用：${available.joinToString(", ")}"
+                return ToolResult.Error("子代理定义不存在: $agentName（$hint）", "AGENT_NOT_FOUND")
+            }
+        }
+
         // 创建子代理会话
         val subSession = sessionUseCase.newSubSessionEntity(
             title = description,
             parentId = parentSessionId,
             parent = parentSession,
-            subagentType = "subagent"
+            subagentType = definition?.name ?: DEFAULT_SUBAGENT_TYPE,
+            providerId = definition?.providerId?.let { resolveProviderId(it) },
+            model = definition?.model,
+            reasoningEffort = definition?.reasoningEffort?.let { effort ->
+                ReasoningEffort.entries.firstOrNull { it.apiValue == effort }?.name
+            }
         )
         sessionUseCase.upsertSession(subSession)
         val subSessionId = subSession.id
@@ -146,15 +182,26 @@ class TaskTool @Inject constructor(
                 detail = prompt
             )
         )
-        FileLogger.i(TAG, "子代理已创建: session=$subSessionId parent=$parentSessionId")
+        FileLogger.i(TAG, "子代理已创建: session=$subSessionId parent=$parentSessionId agent=${definition?.name ?: "-"}")
 
         return ToolResult.Success(
             buildJsonObject {
                 put("id", subSessionId)
                 put("state", "running")
+                definition?.let { put("agent", it.name) }
                 put("message", "子代理已创建并开始执行，任务完成后会通知。可用 task(action=\"read\", id=...) 读取输出，task(action=\"stop\", id=...) 主动关闭。")
             }
         )
+    }
+
+    /**
+     * 把定义里的 provider 字段解析为真实 provider id：先按 id 精确匹配，再按名称忽略大小写匹配，
+     * 让用户在 frontmatter 里能直接写设置里看到的提供商名。都匹不上则返回 null（继承父会话）。
+     */
+    private suspend fun resolveProviderId(raw: String): String? {
+        aiProviderRepository.getProviderById(raw)?.let { return it.id }
+        val all = aiProviderRepository.getAllProviders().first()
+        return all.firstOrNull { it.name.equals(raw, ignoreCase = true) }?.id
     }
 
     /** 读取指定子代理的最后输出。 */

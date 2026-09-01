@@ -719,6 +719,25 @@
     <string name="skills_description">描述</string>
     <string name="skills_instructions">指令正文</string>
 
+    <!-- Subagent Settings -->
+    <string name="settings_subagents">子代理</string>
+    <string name="subagents_empty">还没有自定义子代理</string>
+    <string name="subagents_empty_hint">子代理定义放在 ~/.aicode/agents/（全局）或项目 .aicode/agents/（项目级）目录，一个 .md 文件一个 agent</string>
+    <string name="subagents_no_project">当前项目暂无子代理</string>
+    <string name="subagents_no_global">暂无全局子代理</string>
+    <string name="subagents_delete_confirm_title">删除子代理</string>
+    <string name="subagents_delete_confirm_message">将删除「%1$s」的定义文件，此操作不可恢复。确定删除？</string>
+    <string name="subagent_model">模型</string>
+    <string name="subagent_tools">工具集</string>
+    <string name="subagent_inject">注入的提示词</string>
+    <string name="subagent_prompt">agent 提示词</string>
+    <string name="subagent_source_file">定义文件</string>
+    <string name="subagent_inherit_parent">继承父会话</string>
+    <string name="subagent_all_tools">继承全量工具（不含 task）</string>
+    <string name="subagent_tools_allow">仅允许：%1$s</string>
+    <string name="subagent_tools_deny">禁用：%1$s</string>
+    <string name="subagent_inject_none">不注入任何额外提示词</string>
+
     <!-- MCP stdio Fields -->
     <string name="mcp_command">启动命令</string>
     <string name="mcp_command_hint">例如：npx</string>

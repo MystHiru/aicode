@@ -100,13 +100,19 @@ class SessionUseCase @Inject constructor(
      * 创建子代理会话，继承父会话的 provider/model/reasoningEffort/workspacePath。
      * @param title 子会话标题（由 task 描述派生）
      * @param parentId 父会话 id
-     * @param subagentType 子代理类型 id（如 coder / researcher）
+     * @param subagentType 子代理类型 id（自定义 agent 名，或默认通用子代理标识）
+     * @param providerId 覆盖 provider；null 表示继承父会话
+     * @param model 覆盖模型；null 表示继承父会话
+     * @param reasoningEffort 覆盖思考强度；null 表示继承父会话
      */
     fun newSubSessionEntity(
         title: String,
         parentId: String,
         parent: ChatSessionEntity,
-        subagentType: String
+        subagentType: String,
+        providerId: String? = null,
+        model: String? = null,
+        reasoningEffort: String? = null
     ): ChatSessionEntity {
         val now = System.currentTimeMillis()
         return ChatSessionEntity(
@@ -115,9 +121,9 @@ class SessionUseCase @Inject constructor(
             workspacePath = parent.workspacePath,
             createdAt = now,
             updatedAt = now,
-            providerId = parent.providerId,
-            model = parent.model,
-            reasoningEffort = parent.reasoningEffort,
+            providerId = providerId ?: parent.providerId,
+            model = model ?: parent.model,
+            reasoningEffort = reasoningEffort ?: parent.reasoningEffort,
             parentId = parentId,
             subagentType = subagentType
         )

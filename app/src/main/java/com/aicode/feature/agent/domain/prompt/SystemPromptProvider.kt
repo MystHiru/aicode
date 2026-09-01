@@ -7,6 +7,9 @@ import com.aicode.feature.agent.domain.memory.MemoryRepository
 import com.aicode.feature.agent.domain.memory.MemoryScope
 import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.skill.SkillRepository
+import com.aicode.feature.agent.domain.subagent.AgentDefinition
+import com.aicode.feature.agent.domain.subagent.AgentDefinitionRepository
+import com.aicode.feature.agent.domain.subagent.InjectPart
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -22,7 +25,8 @@ class SystemPromptProvider @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val skillRepository: SkillRepository,
     private val memoryRepository: MemoryRepository,
-    private val containerInstaller: ContainerInstaller
+    private val containerInstaller: ContainerInstaller,
+    private val agentDefinitionRepository: AgentDefinitionRepository
 ) {
     // 抽象独立的 Source
     interface PromptSource {
@@ -69,6 +73,54 @@ class SystemPromptProvider @Inject constructor(
 
             val list = skills.joinToString("\n") { "- ${it.name}: ${it.description.ifBlank { "（无描述）" }}" }
             val content = "可用技能 (skills)（格式为 名称: 何时使用；相关时用 loadSkill 传入名称取完整正文，详见上文「技能」说明）：\n当清单里有与当前任务对口的技能时，在合适的时机主动 `loadSkill` 加载并按其正文行事，让技能辅助你更规范、更高效地完成工作，而不是仅凭默认流程硬做。\n$list"
+            cachedByKey[key] = content
+            trimIfNeeded()
+            return content
+        }
+
+        private fun trimIfNeeded() {
+            if (cachedByKey.size > SOURCE_CACHE_LIMIT) cachedByKey.clear()
+        }
+    }
+
+    /** 子代理专用精简基线：只保留工具用法、路径约定与安全边界，不含模式切换、结尾总结等主代理专属规则。 */
+    private inner class SubAgentBaseSource : PromptSource {
+        @Volatile private var cached: String? = null
+
+        override fun build(ctx: AgentContext): String =
+            cached ?: resolvePrompt(SUBAGENT_BASE_FILE)
+                .replace(LEADING_COMMENT, "")
+                .trim()
+                .also { cached = it }
+    }
+
+    /**
+     * 可用子代理清单（仅注入主代理）：让 AI 知道有哪些自定义 agent 可派发。
+     * 会话级缓存，避免每轮扫盘导致 system prompt 抖动打断 KV 缓存。
+     */
+    private inner class SubAgentListSource : PromptSource {
+        private val cachedByKey = ConcurrentHashMap<SourceCacheKey, String>()
+
+        override fun build(ctx: AgentContext): String? {
+            val key = SourceCacheKey(ctx.sessionId, ctx.projectRoot)
+            val cached = cachedByKey[key]
+            if (cached != null) return cached.ifEmpty { null }
+            val entries = try {
+                agentDefinitionRepository.listAll()
+            } catch (e: Exception) {
+                FileLogger.w(TAG, "扫描子代理定义失败: ${e.message}", e)
+                return null
+            }
+            if (entries.isEmpty()) {
+                cachedByKey[key] = ""
+                return null
+            }
+
+            val list = entries.joinToString("\n") { entry ->
+                "- ${entry.definition.name}: ${entry.definition.description.ifBlank { "（无描述）" }}"
+            }
+            val content = "可用子代理 (subagents)（格式为 名称: 何时派发；用 `task(action=\"create\", agent=\"名称\", ...)` 派发）：\n" +
+                "这些子代理有各自专属的提示词、模型与工具集，任务与某个 agent 对口时优先按名派发，而不是用默认通用子代理。\n$list"
             cachedByKey[key] = content
             trimIfNeeded()
             return content
@@ -174,6 +226,8 @@ class SystemPromptProvider @Inject constructor(
     private data class SourceCacheKey(val sessionId: String?, val projectRoot: String)
 
     private val staticRuleSource = StaticRuleSource()
+    private val subAgentBaseSource = SubAgentBaseSource()
+    private val subAgentListSource = SubAgentListSource()
     private val memoryListSource = MemoryListSource()
     private val activeSkillsSource = ActiveSkillsSource()
     private val projectRuleSource = ProjectRuleSource()
@@ -181,9 +235,12 @@ class SystemPromptProvider @Inject constructor(
     private val currentTimeSource = CurrentTimeSource()
 
     fun build(agentContext: AgentContext): String {
+        agentContext.agentDefinition?.let { return buildForSubAgent(it, agentContext) }
+
         // 1. 获取各个 Source 的基线快照。
         val staticContent = staticRuleSource.build(agentContext)
         val skillsContent = activeSkillsSource.build(agentContext)
+        val subAgentsContent = subAgentListSource.build(agentContext)
         val memoriesContent = memoryListSource.build(agentContext)
         val projectRules = projectRuleSource.build(agentContext)
         
@@ -195,6 +252,11 @@ class SystemPromptProvider @Inject constructor(
             append(staticContent)
 
             skillsContent?.let {
+                append("\n\n")
+                append(it)
+            }
+
+            subAgentsContent?.let {
                 append("\n\n")
                 append(it)
             }
@@ -214,6 +276,52 @@ class SystemPromptProvider @Inject constructor(
             append("\n\n")
             append(currentTimeSource.build(agentContext))
         }
+    }
+
+    /**
+     * 按子代理定义组装提示词：只注入 [AgentDefinition.inject] 列出的片段，再接 agent 自己的提示词。
+     * 不注入可用子代理清单（子代理不能嵌套派发）。
+     */
+    private fun buildForSubAgent(
+        definition: AgentDefinition,
+        agentContext: AgentContext
+    ): String = buildString {
+        if (InjectPart.MAIN_RULES in definition.inject) {
+            append(staticRuleSource.build(agentContext))
+            append("\n\n")
+        }
+        if (InjectPart.BASE in definition.inject) {
+            append(subAgentBaseSource.build(agentContext))
+            append("\n\n")
+        }
+
+        append("当前角色 (subagent: ${definition.name})：你是一个由主代理派发的子代理，拥有独立上下文，看不到主对话历史。")
+        append("专注完成本会话交给你的任务，并在最后一条回复里给出完整结论——主代理只能读到你的最后一条回复，中间过程与工具结果它看不到。\n\n")
+        append(definition.prompt)
+
+        if (InjectPart.SKILLS in definition.inject) {
+            activeSkillsSource.build(agentContext)?.let {
+                append("\n\n")
+                append(it)
+            }
+        }
+        if (InjectPart.MEMORY in definition.inject) {
+            memoryListSource.build(agentContext)?.let {
+                append("\n\n")
+                append(it)
+            }
+        }
+        if (InjectPart.PROJECT_RULES in definition.inject) {
+            projectRuleSource.build(agentContext)?.let {
+                append("\n\n")
+                append(it)
+            }
+        }
+
+        append("\n\n")
+        append(workspaceSource.build(agentContext))
+        append("\n\n")
+        append(currentTimeSource.build(agentContext))
     }
 
     /**
@@ -246,6 +354,7 @@ class SystemPromptProvider @Inject constructor(
         const val TAG = "SystemPromptProvider"
         const val AGENTS_FILE = "AGENTS.md"
         const val CLAUDE_FILE = "CLAUDE.md"
+        const val SUBAGENT_BASE_FILE = "90-subagent-base.md"
         const val MAX_AGENTS_CHARS = 32_000
         /** 会话级缓存 key 数量上限：超过后整体清空，仅防长期累积；正常会话数远小于此。 */
         const val SOURCE_CACHE_LIMIT = 32

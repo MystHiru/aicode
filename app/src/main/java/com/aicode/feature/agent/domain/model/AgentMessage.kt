@@ -1,6 +1,7 @@
 package com.aicode.feature.agent.domain.model
 
 import kotlinx.serialization.Serializable
+import com.aicode.feature.agent.domain.subagent.AgentDefinition
 import com.aicode.feature.agent.domain.tool.ToolCall
 
 @Serializable
@@ -62,5 +63,10 @@ data class AgentContext(
     val sessionId: String? = null,
     val mode: AgentMode = AgentMode.BUILD,
     /** 思考强度（"low"/"medium"/"high"），随每次 LLM 请求传给支持的 provider。 */
-    val reasoningEffort: String? = null
+    val reasoningEffort: String? = null,
+    /**
+     * 本会话绑定的自定义子代理定义；非空表示这是一个按定义运行的子代理会话，
+     * 系统提示词与工具集都按其配置组装（见 [com.aicode.feature.agent.domain.prompt.SystemPromptProvider]）。
+     */
+    val agentDefinition: AgentDefinition? = null
 )

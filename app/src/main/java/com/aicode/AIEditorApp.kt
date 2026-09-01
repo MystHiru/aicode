@@ -171,6 +171,10 @@ class AIEditorApp : Application(), Configuration.Provider {
         appScope.launch {
             ContainerInstaller.extractScripts(this@AIEditorApp)
         }
+        // 启动即释放内置子代理定义（Explore）到 ~/.aicode/agents/；已存在不覆盖，用户改过或删掉都不会被升级拉回。
+        appScope.launch {
+            ContainerInstaller.extractAgents(this@AIEditorApp)
+        }
         // 启动即把旧 Room git 凭据一次性迁移到 git-credentials 文件（真源已迁到文件，删表由迁移器完成）。
         appScope.launch {
             legacyCredentialMigrator.migrateIfNeeded()

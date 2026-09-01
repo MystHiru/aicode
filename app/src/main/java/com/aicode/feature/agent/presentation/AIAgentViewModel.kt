@@ -33,6 +33,8 @@ import com.aicode.feature.agent.domain.model.ChatSession
 import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.agent.domain.permission.PermissionChoice
 import com.aicode.feature.agent.domain.mcp.McpManager
+import com.aicode.feature.agent.domain.subagent.AgentDefinition
+import com.aicode.feature.agent.domain.subagent.AgentDefinitionRepository
 import com.aicode.feature.agent.domain.subagent.SubAgentEvent
 import com.aicode.feature.agent.domain.subagent.SubAgentEventBus
 import com.aicode.feature.agent.domain.subagent.SubAgentEventType
@@ -119,6 +121,7 @@ class AIAgentViewModel @Inject constructor(
     private val mcpManager: McpManager,
     private val agentSoundSettings: AgentSoundSettingsRepository,
     private val subAgentEventBus: SubAgentEventBus,
+    private val agentDefinitionRepository: AgentDefinitionRepository,
     val fileAccess: FileAccessProvider,
     private val dirWatcher: WorkspaceDirWatcher,
     @param:ApplicationContext private val context: Context
@@ -976,6 +979,10 @@ class AIAgentViewModel @Inject constructor(
             val sessionEntity = sessionUseCase.getSessionById(sessionId)
             val sessionDomain = sessionEntity?.toDomain()
             val mode = sessionDomain?.mode ?: AgentMode.BUILD
+            // 子会话的 subagentType 存的是自定义 agent 名；能查到定义时提示词与工具集都按它组装。
+            val agentDefinition = sessionEntity?.takeIf { it.parentId != null }
+                ?.subagentType
+                ?.let { agentDefinitionRepository.find(it) }
 
             val agentContext = AgentContext(
                 currentFile = currentFile,
@@ -986,12 +993,20 @@ class AIAgentViewModel @Inject constructor(
                 inputImages = inputImages,
                 sessionId = sessionId,
                 mode = mode,
-                reasoningEffort = sessionDomain?.reasoningEffort?.apiValue
+                reasoningEffort = sessionDomain?.reasoningEffort?.apiValue,
+                agentDefinition = agentDefinition
             )
 
-            val isSub = sessionUseCase.getSessionById(sessionId)?.parentId != null
             val allTools = toolRegistry.getAvailableTools()
-            val tools = if (isSub) allTools.filterNot { it.name == "task" } else allTools
+            val isSub = sessionEntity?.parentId != null
+            val tools = when {
+                agentDefinition != null -> {
+                    val allowed = agentDefinition.filterToolNames(allTools.map { it.name }).toSet()
+                    allTools.filter { it.name in allowed }
+                }
+                isSub -> allTools.filterNot { it.name == AgentDefinition.NESTED_TOOL }
+                else -> allTools
+            }
 
             agentWorkflow.executeEvents(
                 userRequest = modelRequest,

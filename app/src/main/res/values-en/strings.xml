@@ -719,6 +719,25 @@
     <string name="skills_description">Description</string>
     <string name="skills_instructions">Instructions</string>
 
+    <!-- Subagent Settings -->
+    <string name="settings_subagents">Subagents</string>
+    <string name="subagents_empty">No custom subagents yet</string>
+    <string name="subagents_empty_hint">Put definitions in ~/.aicode/agents/ (global) or .aicode/agents/ in the project (project-level); one .md file per agent</string>
+    <string name="subagents_no_project">No subagents in this project</string>
+    <string name="subagents_no_global">No global subagents</string>
+    <string name="subagents_delete_confirm_title">Delete subagent</string>
+    <string name="subagents_delete_confirm_message">This deletes the definition file of \"%1$s\" and cannot be undone. Delete it?</string>
+    <string name="subagent_model">Model</string>
+    <string name="subagent_tools">Tools</string>
+    <string name="subagent_inject">Injected prompts</string>
+    <string name="subagent_prompt">Agent prompt</string>
+    <string name="subagent_source_file">Definition file</string>
+    <string name="subagent_inherit_parent">Inherit from parent session</string>
+    <string name="subagent_all_tools">All tools except task</string>
+    <string name="subagent_tools_allow">Allowed only: %1$s</string>
+    <string name="subagent_tools_deny">Denied: %1$s</string>
+    <string name="subagent_inject_none">No extra prompt injected</string>
+
     <!-- MCP stdio Fields -->
     <string name="mcp_command">Command</string>
     <string name="mcp_command_hint">e.g. npx</string>

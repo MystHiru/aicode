@@ -30,6 +30,9 @@ import com.aicode.feature.agent.domain.permission.PermissionRulesRepository
 import com.aicode.feature.agent.domain.skill.SkillConfigRepository
 import com.aicode.feature.agent.domain.skill.SkillRepository
 import com.aicode.feature.agent.domain.skill.SkillScope
+import com.aicode.feature.agent.domain.subagent.AgentDefinitionRepository
+import com.aicode.feature.agent.domain.subagent.AgentDefinitionScope
+import com.aicode.feature.agent.domain.subagent.InjectPart
 import com.aicode.feature.settings.data.remote.ModelApiService
 import com.aicode.feature.settings.data.remote.ContainerImageDownloader
 import com.aicode.feature.settings.data.remote.ModelMetadataService
@@ -177,6 +180,21 @@ data class SkillUiEntry(
     val instructions: String
 )
 
+/** 子代理列表页的 UI 状态：定义内容 + 来源作用域。 */
+data class SubAgentUiEntry(
+    val name: String,
+    val description: String,
+    val scope: AgentDefinitionScope,
+    val providerId: String?,
+    val model: String?,
+    val reasoningEffort: String?,
+    val allowedTools: List<String>,
+    val disallowedTools: List<String>,
+    val inject: Set<InjectPart>,
+    val prompt: String,
+    val filePath: String?
+)
+
 /**
  * 把趋势聚合补全为周期内的完整时间轴：无记录的天/小时补 0，避免周期内调用集中在同一天时
  * 趋势只有单个点而无法绘制折线图。「全部」周期从最早有记录的那天起补到当天。
@@ -220,6 +238,7 @@ class SettingsViewModel @Inject constructor(
     private val mcpManager: McpManager,
     private val permissionRulesRepository: PermissionRulesRepository,
     private val skillRepository: SkillRepository,
+    private val agentDefinitionRepository: AgentDefinitionRepository,
     private val skillConfigRepository: SkillConfigRepository,
     private val visionModelSettingsRepository: VisionModelSettingsRepository,
     private val compactionModelSettingsRepository: CompactionModelSettingsRepository,
@@ -377,6 +396,9 @@ class SettingsViewModel @Inject constructor(
 
     private val _skills = MutableStateFlow<List<SkillUiEntry>>(emptyList())
     val skills: StateFlow<List<SkillUiEntry>> = _skills.asStateFlow()
+
+    private val _subAgents = MutableStateFlow<List<SubAgentUiEntry>>(emptyList())
+    val subAgents: StateFlow<List<SubAgentUiEntry>> = _subAgents.asStateFlow()
 
     val mcpStatuses: StateFlow<List<McpServerStatus>> = mcpManager.statuses
 
@@ -796,6 +818,37 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             skillRepository.deleteSkill(name, scope)
             refreshSkills()
+        }
+    }
+
+    /** 重新扫描子代理定义（进入设置页 / 删除后调用，反映盘上增删改）。 */
+    fun refreshSubAgents() {
+        viewModelScope.launch {
+            _subAgents.value = withContext(Dispatchers.IO) {
+                agentDefinitionRepository.listAll().map { entry ->
+                    SubAgentUiEntry(
+                        name = entry.definition.name,
+                        description = entry.definition.description,
+                        scope = entry.scope,
+                        providerId = entry.definition.providerId,
+                        model = entry.definition.model,
+                        reasoningEffort = entry.definition.reasoningEffort,
+                        allowedTools = entry.definition.allowedTools,
+                        disallowedTools = entry.definition.disallowedTools,
+                        inject = entry.definition.inject,
+                        prompt = entry.definition.prompt,
+                        filePath = entry.definition.file?.absolutePath
+                    )
+                }
+            }
+        }
+    }
+
+    /** 删除指定作用域的子代理定义文件（不可恢复），随后立即刷新列表。 */
+    fun deleteSubAgent(name: String, scope: AgentDefinitionScope) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { agentDefinitionRepository.delete(name, scope) }
+            refreshSubAgents()
         }
     }
 
