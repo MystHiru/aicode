@@ -24,14 +24,16 @@ if (keystorePropertiesFile.exists()) {
 //   1. 若当前 commit 刚好有 tag（如 v1.7.0 或 v1.7.0-rc1），直接提取为 "1.7.0" 或 "1.7.0-rc1"；
 //   2. 若当前 commit 比上个 tag 多了 N 个提交（如 v1.7.0-2-g04bc2fa），提取为 "1.7.0-dev.2+g04bc2fa"；
 //   3. 若无 git 环境或报错，fallback 到默认版本号 "1.7.0-dev"。
+// providers.exec 而非 Runtime.exec：配置缓存要求配置阶段的外部进程调用登记为 provider 输入，
+// 直接 fork 会让缓存条目被丢弃（external process started）。
+val gitDescribeOutput = providers.exec {
+    workingDir = rootProject.projectDir
+    commandLine("git", "describe", "--tags", "--always", "--dirty")
+    isIgnoreExitValue = true
+}.standardOutput.asText
+
 fun gitVersionName(): String = try {
-    val process = Runtime.getRuntime().exec(
-        arrayOf("git", "describe", "--tags", "--always", "--dirty"),
-        null,
-        rootProject.projectDir
-    )
-    process.waitFor()
-    val raw = process.inputStream.bufferedReader().readText().trim()
+    val raw = gitDescribeOutput.get().trim()
     if (raw.startsWith("v")) {
         val version = raw.substring(1) // 去掉开头的 'v'
         // 如 "1.7.0"、"1.7.0-rc1" 或 "1.7.0-2-g04bc2fa"
@@ -57,14 +59,14 @@ fun gitVersionName(): String = try {
 // 杜绝"升 versionName 忘升 versionCode"导致升级判定失效。
 // 工作目录用 rootProject.projectDir（仓库根），无 git 环境（如下载 zip 构建）时 fallback 到 1。
 // CI 额外校验 versionCode 单调（见 .github/workflows/android-release.yml），防 rebase/squash 改写历史导致回退。
+val gitCommitCountOutput = providers.exec {
+    workingDir = rootProject.projectDir
+    commandLine("git", "rev-list", "--count", "HEAD")
+    isIgnoreExitValue = true
+}.standardOutput.asText
+
 fun gitCommitCount(): Int = try {
-    val process = Runtime.getRuntime().exec(
-        arrayOf("git", "rev-list", "--count", "HEAD"),
-        null,
-        rootProject.projectDir
-    )
-    process.waitFor()
-    process.inputStream.bufferedReader().readText().trim().toIntOrNull() ?: 1
+    gitCommitCountOutput.get().trim().toIntOrNull() ?: 1
 } catch (e: Exception) {
     1
 }
