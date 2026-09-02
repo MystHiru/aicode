@@ -86,20 +86,13 @@ export default defineConfig({
         {
           text: '环境搭建',
           items: [
-            { text: '在容器中编译 Android 应用', link: '/advanced/build-android-app' },
-            { text: '自定义容器镜像', link: '/advanced/custom-image' }
+            { text: '在容器中编译 Android 应用', link: '/advanced/build-android-app' }
           ]
         },
         {
           text: '扩展开发',
           items: [
             { text: '自定义面板', link: '/advanced/dashboard-cards' }
-          ]
-        },
-        {
-          text: '排查',
-          items: [
-            { text: '常见问题', link: '/advanced/troubleshooting' }
           ]
         }
       ]

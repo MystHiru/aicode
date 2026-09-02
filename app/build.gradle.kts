@@ -73,7 +73,7 @@ fun gitCommitCount(): Int = try {
 // 文档站，也在这里复制进 assets/docs 打进 APK，保证「站上看到的」与「AI 读到的」永远一致。
 // 用纯 Gradle Copy 实现，APK 构建不依赖 Node —— CI 与 F-Droid 只装 JDK+Gradle 即可。
 val aiDocsGeneratedDir = layout.buildDirectory.dir("generated/aiDocs")
-val syncAiDocs = tasks.register<Copy>("syncAiDocs") {
+val syncAiDocs = tasks.register<Sync>("syncAiDocs") {
     description = "把 docs-site/docs 下的用户文档复制进 assets/docs，供 AI 在容器内查阅"
     from(rootProject.layout.projectDirectory.dir("docs-site/docs")) {
         include("**/*.md")

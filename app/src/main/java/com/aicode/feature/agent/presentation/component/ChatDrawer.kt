@@ -102,7 +102,7 @@ import java.util.Locale
 
 /**
  * 侧边栏内容：顶部 Tab 切换「会话」/「文件」，底部「设置」入口卡片。
- * Tab0 为根会话列表，带子代理的会话行可就地展开；Tab1 为当前工作区的单层文件浏览。
+ * Tab0 为根会话列表，带子代理的会话行可就地展开；Tab1 为当前工作区的文件树。
  */
 @Composable
 fun ChatDrawerContent(

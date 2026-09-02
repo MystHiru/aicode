@@ -60,7 +60,80 @@ App 自带一个 Alpine 镜像，首次启动会自动加进列表并选中，sh
 
 ## 自定义镜像
 
-想用 Debian、Ubuntu 或者别的发行版，看[自定义容器镜像](/advanced/custom-image)，那里讲了内置下载和手动导入两种方式，以及镜像从哪里获取。
+内置 Alpine 够用，但如果你要 Debian / Ubuntu，或者想要一个预装特定工具链的环境，可以自己加镜像。两种办法。
+
+### 方式一：内置镜像下载（推荐）
+
+1. 打开「设置 → 容器与镜像」，点右上角的下载图标。
+2. 页面会列出可下载的镜像（Alpine、Ubuntu、Debian 等），点一行看详情并下载。
+3. 右上角可以切换下载源（官方源 / 华为云 / 阿里云 / 腾讯云），国内网络建议选国内源。
+4. 下载完成后点「导入」，镜像就加入容器列表了，选中即可使用。
+
+已下载的镜像可以重复导入；左滑可以删除下载好的镜像文件。
+
+### 方式二：手动导入镜像文件
+
+需要特定版本或特定发行版时，可以自己准备 rootfs 镜像导入。
+
+**镜像要求**：
+
+- 压缩格式：`.tar.gz`、`.tgz`、`.tar.xz`、`.txz`
+- 内容必须是完整的 Linux rootfs（文件系统根目录，里面有 `/bin/sh` 或其它 shell）
+- 架构要和设备匹配：ARM64 设备用 aarch64 镜像，x86 设备用 x86_64 镜像
+
+**从哪里拿镜像**：
+
+- Alpine（体积小、启动快）：`https://alpine.linuxhub.cn/alpine/edge/releases/`，在 aarch64 目录下选 `alpine-minirootfs-*-aarch64.tar.gz`
+- Ubuntu：`https://cdimage.ubuntu.com/ubuntu-base/releases/`，选 `ubuntu-base-*-base-arm64.tar.gz`
+- Debian：可以从 Docker Hub 的官方镜像（如 `arm64v8/debian`）导出
+
+有 Docker 环境的话，从任意镜像导出 rootfs：
+
+```bash
+docker pull debian:bookworm
+docker create --name temp-rootfs debian:bookworm
+docker export temp-rootfs | gzip > debian-rootfs.tar.gz
+docker rm temp-rootfs
+```
+
+也可以在已有的 Linux 环境里用 `debootstrap`（Debian / Ubuntu）或 `alpine-make-rootfs`（Alpine）自己做。
+
+**导入步骤**：
+
+1. 打开「设置 → 容器与镜像」，点右上角 +，选「本地镜像」。
+2. 填配置：
+   - **名称**：这个镜像配置的别名。
+   - **shell 路径**：容器内的 shell，如 `/bin/sh` 或 `/bin/bash`。
+   - **镜像文件**：选择准备好的 rootfs 文件。保存时会复制一份到 App 私有目录，之后重置容器都从这份副本重新解压，不依赖原始文件；删除镜像时副本一并清理。
+   - **挂载**（可选）：把手机里的目录挂进容器，详见下面的「把手机目录挂给 AI 用」。
+   - **proot 参数**（可选）：逐项添加，原样追加到 PRoot 启动参数。
+   - **环境变量**（可选）：注入容器内进程的键值对。
+3. 保存后在列表里选中这个配置，就切换成了自定义容器。
+
+首次使用自定义镜像时 App 会解压 rootfs 到私有目录，耗时取决于镜像大小。自定义镜像默认不配国内软件源，首次进终端的初始化菜单里可以换。
+
+### 自定义镜像的两个常见毛病
+
+**装软件报错**：容器内硬链接不可用导致的。编辑镜像 → proot 参数 → 添加 `--link2symlink` → 保存，重进终端。用内置下载功能导入的镜像已经默认带了这个参数。
+
+**方向键显示成 `^[[A`**：当前 shell 是 `sh`，没有行编辑能力。编辑容器，把 Shell 改成 `/bin/bash`，它自带方向键、历史记录和补全。
+
+## 把手机目录挂给 AI 用
+
+AI 跑在容器里，默认只看得到工作区，看不到手机的公共存储。要让它访问，得把手机上的目录挂进容器：
+
+1. 先确认存储权限已授权。首次使用时会弹权限请求；之前拒给过的话，去系统设置 → 应用 → AiCode → 权限 → 存储 里开启。
+2. 打开「设置 → 容器与镜像」，编辑当前正在用的容器。
+3. 在「挂载」里加一条：**本地目录**填手机上的路径（例如 `/sdcard/Download`），**容器目录**填容器内路径（例如 `/mnt/Download`）。
+4. 保存后重启终端会话，AI 就能通过容器内路径访问了。
+
+::: warning 按需挂载
+只挂你需要的子目录，不要图省事直接挂整个 `/sdcard`——那等于把手机里所有文件都暴露给 AI，有隐私泄露风险。
+:::
+
+例子：想让 AI 自己看 App 的日志，把本地目录 `/storage/emulated/0/Android/data/com.aicode/` 挂到容器 `/mnt/aicode`，它就能读 `/mnt/aicode/files/logs/` 下的日志。注意 `Android/data/` 下只能访问 AiCode 自己的目录，其他应用的目录受分区存储限制访问不了。
+
+如果只是想处理某一个文件，更简单的办法是把它复制进工作区，AI 默认就能访问。
 
 ## 全部删掉会怎样
 
