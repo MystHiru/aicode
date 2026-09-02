@@ -13,6 +13,12 @@ data class ModelMetadata(
     val supportsTools: Boolean = false,
     val supportsVision: Boolean = false,
     val supportsReasoning: Boolean = false,
+    /**
+     * models.dev `temperature`：该模型是否接受自定义 temperature。
+     * false（含元数据缺失）表示服务端把采样温度固定住了，请求里必须不带该字段——
+     * kimi-k3 / gpt-5 系等模型带了会直接 400。
+     */
+    val supportsCustomTemperature: Boolean = false,
     val modelType: ModelType = ModelType.CHAT,
     val supportsImageOutput: Boolean = false,
     val source: Source = Source.INFERRED,

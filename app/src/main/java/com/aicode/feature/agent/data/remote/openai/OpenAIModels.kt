@@ -3,7 +3,8 @@ package com.aicode.feature.agent.data.remote.openai
 data class ChatCompletionRequest(
     val model: String,
     val messages: List<OpenAIChatMessage>,
-    val temperature: Float = 0.7f,
+    /** null 时 Gson 跳过该字段：服务端固定温度的模型（kimi-k3、gpt-5 系等）带上任何值都会 400。 */
+    val temperature: Float? = null,
     val reasoning_effort: String? = null,
     val tools: List<OpenAIToolDefinition>? = null,
     val tool_choice: String? = null,

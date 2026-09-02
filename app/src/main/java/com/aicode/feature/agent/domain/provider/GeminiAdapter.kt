@@ -39,6 +39,9 @@ class GeminiAdapter @Inject constructor(
     // Gemini 发 generationConfig.maxOutputTokens（模型元数据的输出上限）；为 null 时不发该参数，用服务端默认。
     override var maxOutputTokens: Int? = null
 
+    // 原生 generateContent 不发 generationConfig.temperature：Gemini 2.0 起服务端默认就是 1.0，与推荐值一致。
+    override var temperature: Float? = null
+
     private fun extraHeaders(): Map<String, String> =
         if (userAgent.isNotBlank()) mapOf("User-Agent" to userAgent) else emptyMap()
 

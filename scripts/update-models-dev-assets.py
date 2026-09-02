@@ -3,7 +3,7 @@
 
 约束：
 - 仅保留内置快照已有的 provider，不引入新 provider；这些 provider 下的新模型可直接加入。
-- 每个模型仅保留裁剪字段：id / name / tool_call / reasoning / reasoning_options / limit / modalities(input) / cost。
+- 每个模型仅保留裁剪字段：id / name / tool_call / temperature / reasoning / reasoning_options / limit / modalities(input) / cost。
 - 旧快照有而网络版已下架的模型保留（用户可能仍在使用）。
 - 网络拉取或解析失败时打印错误并以非零退出，绝不改动现有快照。
 
@@ -24,7 +24,7 @@ UA = "aicode-assets-updater"
 
 def trim_model(mv: dict) -> dict:
     out = {}
-    for key in ("id", "name", "tool_call", "reasoning", "reasoning_options", "limit"):
+    for key in ("id", "name", "tool_call", "temperature", "reasoning", "reasoning_options", "limit"):
         if key in mv:
             out[key] = mv[key]
     modalities = mv.get("modalities", {})

@@ -39,6 +39,7 @@ import com.aicode.feature.agent.data.remote.openai.OpenAIApi
 import com.aicode.feature.agent.data.local.dao.LlmCallRecordDao
 import com.aicode.feature.agent.data.local.entity.LlmCallRecordEntity
 import com.aicode.feature.agent.domain.provider.AnthropicAdapter
+import com.aicode.feature.agent.domain.provider.fixedTemperature
 import com.aicode.feature.agent.domain.provider.GeminiAdapter
 import com.aicode.feature.agent.domain.provider.isApiKeyFailure
 import com.aicode.feature.agent.domain.provider.OpenAIAdapter
@@ -247,10 +248,11 @@ class StatefulAgentWorkflow @Inject constructor(
         provider.providerId = config.id
         provider.logSessionId = sessionId
         provider.userAgent = config.userAgent
+        val metadata = modelMetadataService.resolve(config.id, config.type, config.effectiveModel)
         // 模型元数据的输出上限（models.dev limit.output）：不传时 Anthropic 会把输出卡在 adapter 兜底值上。
-        provider.maxOutputTokens = modelMetadataService
-            .resolve(config.id, config.type, config.effectiveModel)
-            .outputTokens
+        provider.maxOutputTokens = metadata.outputTokens
+        // 元数据说不接受自定义温度就不发该字段（kimi-k3、gpt-5 系带了直接 400）；允许的只发官方固定值。
+        provider.temperature = if (metadata.supportsCustomTemperature) fixedTemperature(config.effectiveModel) else null
         return provider
     }
 

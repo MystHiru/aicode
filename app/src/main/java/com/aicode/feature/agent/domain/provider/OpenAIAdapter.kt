@@ -55,6 +55,9 @@ class OpenAIAdapter @Inject constructor(
     // OpenAI 系不发输出上限参数（用服务端默认），仅为接口完整性保留。
     override var maxOutputTokens: Int? = null
 
+    // null 时请求体不带 temperature（Gson 跳过 null 字段），交由服务端默认。
+    override var temperature: Float? = null
+
     private fun extraHeaders(): Map<String, String> =
         if (userAgent.isNotBlank()) mapOf("User-Agent" to userAgent) else emptyMap()
 
@@ -98,6 +101,7 @@ class OpenAIAdapter @Inject constructor(
         val request = ChatCompletionRequest(
             model = model,
             messages = openAIMessages,
+            temperature = temperature,
             reasoning_effort = reasoningEffort,
             tools = toolDefs,
             tool_choice = if (toolDefs != null) "auto" else null,
@@ -244,6 +248,7 @@ class OpenAIAdapter @Inject constructor(
         val request = ChatCompletionRequest(
             model = model,
             messages = openAIMessages,
+            temperature = temperature,
             reasoning_effort = reasoningEffort,
             tools = toolDefs,
             tool_choice = if (toolDefs != null) "auto" else null,

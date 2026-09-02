@@ -294,6 +294,7 @@ class ModelMetadataService @Inject constructor(
                     supportsTools = model["tool_call"]?.jsonPrimitive?.booleanOrNull == true,
                     supportsVision = "image" in inputModalities || "video" in inputModalities || "pdf" in inputModalities,
                     supportsReasoning = model["reasoning"]?.jsonPrimitive?.booleanOrNull == true,
+                    supportsCustomTemperature = model["temperature"]?.jsonPrimitive?.booleanOrNull == true,
                     reasoningEffortOptions = reasoningOptions.takeIf { it.isNotEmpty() },
                     inputCostUsdPerM = cost?.get("input")?.jsonPrimitive?.doubleOrNull,
                     outputCostUsdPerM = cost?.get("output")?.jsonPrimitive?.doubleOrNull,

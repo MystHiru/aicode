@@ -51,6 +51,9 @@ class AnthropicAdapter @Inject constructor(
 
     override var maxOutputTokens: Int? = null
 
+    // null 时请求体不带 temperature（Gson 跳过 null 字段），交由服务端默认；开启 thinking 时官方要求必须不带。
+    override var temperature: Float? = null
+
     private fun extraHeaders(): Map<String, String> =
         if (userAgent.isNotBlank()) mapOf("User-Agent" to userAgent) else emptyMap()
 
@@ -79,7 +82,7 @@ class AnthropicAdapter @Inject constructor(
             messages = anthropicMessages,
             system = buildSystemPayload(systemPrompt),
             max_tokens = resolveMaxTokens(thinking),
-            temperature = if (thinking != null) null else 0.7f,
+            temperature = if (thinking != null) null else temperature,
             thinking = thinking,
             output_config = outputConfig,
             tools = toolDefs,
@@ -155,7 +158,7 @@ class AnthropicAdapter @Inject constructor(
             messages = anthropicMessages,
             system = buildSystemPayload(systemPrompt),
             max_tokens = resolveMaxTokens(thinking),
-            temperature = if (thinking != null) null else 0.7f,
+            temperature = if (thinking != null) null else temperature,
             thinking = thinking,
             output_config = outputConfig,
             tools = toolDefs,

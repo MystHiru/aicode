@@ -12,6 +12,7 @@ import com.aicode.feature.agent.domain.model.AgentImage
 import com.aicode.feature.agent.domain.model.AgentMessage
 import com.aicode.feature.agent.domain.provider.AIProvider
 import com.aicode.feature.agent.domain.provider.AnthropicAdapter
+import com.aicode.feature.agent.domain.provider.fixedTemperature
 import com.aicode.feature.agent.domain.provider.GeminiAdapter
 import com.aicode.feature.agent.domain.provider.OpenAIAdapter
 import com.aicode.feature.agent.domain.session.SessionUseCase
@@ -282,9 +283,9 @@ class ViewImageTool @Inject constructor(
         provider.providerId = config.id
         provider.logSessionId = sessionId
         provider.userAgent = config.userAgent
-        provider.maxOutputTokens = modelMetadataService
-            .resolve(config.id, config.type, config.effectiveModel)
-            .outputTokens
+        val metadata = modelMetadataService.resolve(config.id, config.type, config.effectiveModel)
+        provider.maxOutputTokens = metadata.outputTokens
+        provider.temperature = if (metadata.supportsCustomTemperature) fixedTemperature(config.effectiveModel) else null
         return provider
     }
 

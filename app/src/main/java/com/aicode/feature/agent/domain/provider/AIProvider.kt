@@ -111,6 +111,13 @@ interface AIProvider {
     var maxOutputTokens: Int?
 
     /**
+     * 本次请求的采样温度，调用前由工作流按模型元数据设置（见 [fixedTemperature]）。
+     * null 表示请求里不带该字段、用服务端默认——服务端把温度固定住的模型（kimi-k3、gpt-5 系等）
+     * 带上任何值都会 400。
+     */
+    var temperature: Float?
+
+    /**
      * 单轮补全。[tools] 会以提供商的 function-calling 格式真正发给模型，
      * 模型若决定调用工具，结果会出现在返回的 [AIResponse.toolCalls] 中。
      * [reasoningEffort] 为思考强度（"low"/"medium"/"high"），仅 OpenAI 系生效；
@@ -138,6 +145,33 @@ interface AIProvider {
 }
 
 private val VERSION_SEGMENT_REGEX = Regex("""^v\d+.*$""", RegexOption.IGNORE_CASE)
+
+/** 官方给出推荐采样温度、填别的值会明显掉效果的 Gemini 世代；其余 Gemini 不发温度。 */
+private val GEMINI_MODELS_WITH_SAMPLING_DEFAULTS = listOf(
+    Regex("""gemini-2[.-]5([.-]|$)"""),
+    Regex("""gemini-3-(flash|pro)([.-]|$)"""),
+    Regex("""gemini-3[.-]1([.-]|$)"""),
+    Regex("""gemini-3[.-]5-flash(?!-lite)([.-]|$)""")
+)
+
+/**
+ * 部分模型的采样温度被服务端钉死在某个值上（或官方明确要求用该值），这里按模型 id 给出它。
+ * 表外模型返回 null，即请求不带 temperature、用服务端默认值。
+ * 仅在模型元数据允许自定义温度时才取用本表：元数据说不允许的（kimi-k3、gpt-5 系等）一律不发。
+ */
+fun fixedTemperature(modelId: String): Float? {
+    val id = modelId.lowercase()
+    return when {
+        id.contains("glm-4.6") || id.contains("glm-4.7") -> 1.0f
+        id.contains("minimax-m2") -> 1.0f
+        id.contains("gemini") ->
+            if (GEMINI_MODELS_WITH_SAMPLING_DEFAULTS.any { it.containsMatchIn(id) }) 1.0f else null
+        // Kimi K2 的思考型（k2-thinking / k2.5 / k2.6 …）固定 1.0，非思考的 K2 固定 0.6。
+        id.contains("kimi-k2") ->
+            if (listOf("thinking", "k2.", "k2p", "k2-5").any { id.contains(it) }) 1.0f else 0.6f
+        else -> null
+    }
+}
 
 /**
  * Builds an absolute request URL from a user-configured base URL and an API path
