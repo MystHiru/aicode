@@ -11,13 +11,10 @@ sealed interface ContainerInitState {
     /** 正在解压 Alpine rootfs，[processed] 为已处理的 tar 条目数。 */
     data class ExtractingRootfs(val processed: Int) : ContainerInitState
 
-    /** 正在部署 proot 二进制 / loader / 动态依赖库。 */
-    data object DeployingProot : ContainerInitState
-
     /** 正在安装基础包（python3/git/pip/node/npm/rg），[line] 为 apk 的实时输出行（可为 null）。 */
     data class InstallingPackages(val line: String?) : ContainerInitState
 
-    /** 容器已就绪（rootfs + proot + 基础包均完成）。 */
+    /** 容器已就绪（rootfs 解压 + 基础包安装均完成；proot 随 APK 安装，无需部署）。 */
     data object Ready : ContainerInitState
 
     /** 初始化失败，[reason] 为原因。 */

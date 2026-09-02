@@ -479,8 +479,6 @@ private fun StatusView(
 private fun containerInitMessage(context: Context, state: ContainerInitState): String = when (state) {
     is ContainerInitState.ExtractingRootfs ->
         context.getString(R.string.terminal_extracting_env, state.processed)
-    ContainerInitState.DeployingProot ->
-        context.getString(R.string.terminal_deploying_proot)
     is ContainerInitState.InstallingPackages ->
         context.getString(R.string.terminal_installing_packages, state.line ?: "")
     is ContainerInitState.Failed ->

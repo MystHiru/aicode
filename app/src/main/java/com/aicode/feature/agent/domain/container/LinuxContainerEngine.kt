@@ -659,7 +659,11 @@ class LinuxContainerEngine @Inject constructor(
     private fun buildBaseProotArgv(projectPath: String?, profile: ContainerProfile): MutableList<String> {
         val rootfs = containerInstaller.rootfsDirFor(profile).absolutePath
         val prootBin = containerInstaller.prootBin.absolutePath
-
+        if (!containerInstaller.prootBin.exists()) {
+            // 不可能缺失除非打包配置回退：jniLibs sourceSet 或 packaging.jniLibs.useLegacyPackaging
+            // 丢了，此时 nativeLibraryDir 为空，proot 报 ENOENT 而看不出真因。
+            FileLogger.e(TAG, "proot 不在 nativeLibraryDir：$prootBin（检查 jniLibs 与 useLegacyPackaging）")
+        }
         val argv = mutableListOf(
             prootBin,
             "-r", rootfs,
@@ -705,8 +709,8 @@ class LinuxContainerEngine @Inject constructor(
             // Termux proot 的 loader 分离，必须用 PROOT_LOADER/_32 指向，否则无法注入子进程而起不来。
             "PROOT_LOADER" to containerInstaller.prootLoader.absolutePath,
             "PROOT_LOADER_32" to containerInstaller.prootLoader32.absolutePath,
-            // Termux proot 动态链接 libtalloc.so.2 / libandroid-shmem.so，需让 linker64 能找到它们；
-            // libc.so/liblog.so 走系统默认路径(/system/lib64)。
+            // Termux proot 动态链接 libtalloc.so / libandroid-shmem.so（与 proot 同居 nativeLibraryDir），
+            // 需让 linker64 能找到它们；libc.so/liblog.so 走系统默认路径(/system/lib64)。
             "LD_LIBRARY_PATH" to "${containerInstaller.prootLibDir.absolutePath}:/system/lib64:/system/lib",
             // 说明（statx / seccomp）：旧 proot 5.1.0 的 seccomp 过滤表没有 statx，Node 用 statx 解析
             // 模块路径会拿到未翻译的 ~/workspace/xxx → ENOENT「Cannot find module」。Termux proot

@@ -960,7 +960,6 @@
     <string name="terminal_no_open_tabs">No open terminal tabs</string>
     <string name="terminal_close_tab">Close Tab</string>
     <string name="terminal_extracting_env">Extracting environment…\n%1$s files processed</string>
-    <string name="terminal_deploying_proot">Deploying proot runtime…</string>
     <string name="terminal_installing_packages">Installing python3 / git / pip / node / npm…\n%1$s</string>
     <string name="terminal_preparing_env_failed">Preparing container environment…\n%1$s</string>
     <string name="terminal_preparing_env_first_run">Preparing container environment…\nFirst run will extract the container, please wait</string>

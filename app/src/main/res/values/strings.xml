@@ -959,7 +959,6 @@
     <string name="terminal_no_open_tabs">没有打开的终端标签</string>
     <string name="terminal_close_tab">关闭标签</string>
     <string name="terminal_extracting_env">正在解压环境…\n已处理 %1$s 个文件</string>
-    <string name="terminal_deploying_proot">正在部署 proot 运行时…</string>
     <string name="terminal_installing_packages">正在安装 python3 / git / pip / node / npm…\n%1$s</string>
     <string name="terminal_preparing_env_failed">正在准备容器环境…\n%1$s</string>
     <string name="terminal_preparing_env_first_run">正在准备容器环境…\n首次运行会解压容器，请稍候</string>
