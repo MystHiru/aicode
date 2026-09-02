@@ -2,7 +2,6 @@ package com.aicode.feature.agent.presentation.component
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
@@ -29,7 +28,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -38,6 +36,9 @@ import androidx.core.content.FileProvider
 import com.aicode.R
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.ui.LocalImageViewer
+import com.aicode.core.ui.THUMBNAIL_MAX_EDGE
+import com.aicode.core.ui.decodeSampledBitmap
 import com.aicode.feature.agent.presentation.AgentAttachment
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.FileText
@@ -61,13 +62,27 @@ internal fun MessageAttachmentPreviewRow(
     }
 }
 
+/**
+ * 单个附件预览卡。
+ *
+ * 图片一律走内置全屏查看器（隐式依赖组合树上层提供了 [LocalImageViewer]，聊天区都满足）；
+ * 非图片才用调用方给的 [onClick] —— 工具卡片传的是「系统 app 打开」，用户气泡不传即不可点。
+ */
 @Composable
 private fun MessageAttachmentPreviewItem(
     attachment: AgentAttachment,
     onClick: ((AgentAttachment) -> Unit)? = null
 ) {
-    val clickModifier = if (onClick != null) {
-        Modifier.clickable { onClick(attachment) }
+    val viewer = LocalImageViewer.current
+    val handler: (() -> Unit)? = if (attachment.isImage) {
+        { viewer.show(attachment.toViewerRequest()) }
+    } else if (onClick != null) {
+        { onClick(attachment) }
+    } else {
+        null
+    }
+    val clickModifier = if (handler != null) {
+        Modifier.clickable(onClick = handler)
     } else {
         Modifier
     }
@@ -138,13 +153,7 @@ private fun isApk(attachment: AgentAttachment): Boolean {
 @Composable
 private fun MessageImagePreview(attachment: AgentAttachment) {
     val bitmap = remember(attachment.localPath) {
-        runCatching {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(attachment.localPath, bounds)
-            val sampleSize = calculateMessageAttachmentSampleSize(bounds.outWidth, bounds.outHeight, 180, 180)
-            val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-            BitmapFactory.decodeFile(attachment.localPath, options)?.asImageBitmap()
-        }.getOrNull()
+        decodeSampledBitmap(attachment.localPath, THUMBNAIL_MAX_EDGE)
     }
     if (bitmap != null) {
         ComposeImage(
@@ -196,16 +205,4 @@ private fun MessageFilePreview(attachment: AgentAttachment) {
             overflow = TextOverflow.Ellipsis
         )
     }
-}
-
-private fun calculateMessageAttachmentSampleSize(width: Int, height: Int, reqWidth: Int, reqHeight: Int): Int {
-    var sampleSize = 1
-    if (height > reqHeight || width > reqWidth) {
-        val halfHeight = height / 2
-        val halfWidth = width / 2
-        while (halfHeight / sampleSize >= reqHeight && halfWidth / sampleSize >= reqWidth) {
-            sampleSize *= 2
-        }
-    }
-    return sampleSize.coerceAtLeast(1)
 }

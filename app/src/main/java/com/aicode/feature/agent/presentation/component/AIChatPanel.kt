@@ -63,7 +63,11 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicode.R
 import com.aicode.core.theme.Spacing
+import com.aicode.core.ui.ImageViewerHost
+import com.aicode.core.ui.LocalImageViewer
 import com.aicode.core.ui.readableContentMaxWidth
+import com.aicode.core.ui.rememberImageViewerState
+import com.aicode.core.ui.rememberViewerDecodeSpec
 import com.aicode.feature.agent.domain.tool.question.UserQuestionAnswer
 import com.aicode.feature.agent.presentation.AgentUIMessage
 import com.aicode.feature.agent.presentation.AgentUIState
@@ -621,9 +625,15 @@ fun AIChatPanel(
     val markdownImageTransformer = remember(viewModel.fileAccess) {
         MarkdownImageTransformer(viewModel.fileAccess)
     }
+    val imageViewerState = rememberImageViewerState()
+    val viewerDecodeSpec = rememberViewerDecodeSpec()
+    val chatImageLoad = remember(viewModel.fileAccess, viewerDecodeSpec) {
+        chatImageLoader(viewModel.fileAccess, viewerDecodeSpec.maxEdge, viewerDecodeSpec.maxPixels)
+    }
 
     CompositionLocalProvider(
-        LocalMarkdownImageTransformer provides markdownImageTransformer
+        LocalMarkdownImageTransformer provides markdownImageTransformer,
+        LocalImageViewer provides imageViewerState
     ) {
         Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -935,6 +945,10 @@ fun AIChatPanel(
         }
         }
     }
+
+        // Dialog 是独立 window、不占父布局尺寸，挂在 Scaffold 之后即可覆盖整屏 ——
+        // 平板双栏下不会只盖住聊天列，也不会被 MainActivity 画在最上层的全局背景水印压住。
+        ImageViewerHost(state = imageViewerState, load = chatImageLoad)
     }
 }
 

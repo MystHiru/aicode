@@ -28,7 +28,7 @@ class SendFileTool @Inject constructor(
     private val fileAccess: FileAccessProvider
 ) : AgentTool() {
     override val name = "sendFile"
-    override val description = "把工作区文件以「文件卡片」形式发送到聊天区展示给用户，点击卡片会用系统对应 app 打开。支持一次发送多个文件（聊天区可左右滑动）。所有文件必须全部存在，任一文件不存在/不是文件/过大则整体失败，需修正后重新调用。仅用于把已有文件展示给用户，不读取文件内容。"
+    override val description = "把工作区文件以「文件卡片」形式发送到聊天区展示给用户，点击卡片查看：图片在应用内全屏预览，其它类型用系统对应 app 打开。支持一次发送多个文件（聊天区可左右滑动）。所有文件必须全部存在，任一文件不存在/不是文件/过大则整体失败，需修正后重新调用。仅用于把已有文件展示给用户，不读取文件内容。"
     override val capabilities = setOf(ToolCapability.READ_WORKSPACE)
     override val parameters = mapOf(
         "paths" to ToolParameter(

@@ -1,6 +1,5 @@
 package com.aicode.feature.agent.presentation.component
 
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image as ComposeImage
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,7 +34,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +42,9 @@ import androidx.compose.ui.unit.dp
 import com.aicode.R
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.ui.LocalImageViewer
+import com.aicode.core.ui.THUMBNAIL_MAX_EDGE
+import com.aicode.core.ui.decodeSampledBitmap
 import com.aicode.feature.agent.presentation.QueuedRequest
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Camera
@@ -168,9 +169,16 @@ private fun PendingAttachmentPreviewItem(
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             if (attachment.image != null) {
+                val viewer = LocalImageViewer.current
+                val previewLabel = stringResource(R.string.common_image_preview)
                 ImageThumbnail(
                     attachment = attachment,
-                    modifier = Modifier.fillMaxSize()
+                    // 右上角的移除按钮是 Box 里后声明的兄弟节点，绘制在上层、命中测试也先到，两者不抢
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(onClickLabel = previewLabel) {
+                            viewer.show(attachment.toViewerRequest())
+                        }
                 )
             } else {
                 FileAttachmentPreview(attachment = attachment)
@@ -205,13 +213,9 @@ private fun ImageThumbnail(
 ) {
     val base64Data = attachment.image?.base64Data.orEmpty()
     val bitmap = remember(base64Data) {
+        // Base64 解码本身会对非法输入抛异常，位图解码那一层已自带兜底
         runCatching {
-            val bytes = Base64.getDecoder().decode(base64Data)
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            val sampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight, 180, 180)
-            val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
+            decodeSampledBitmap(Base64.getDecoder().decode(base64Data), THUMBNAIL_MAX_EDGE)
         }.getOrNull()
     }
     Surface(
@@ -273,18 +277,6 @@ private fun FileAttachmentPreview(attachment: PendingUploadAttachment) {
             overflow = TextOverflow.Ellipsis
         )
     }
-}
-
-private fun calculateInSampleSize(width: Int, height: Int, reqWidth: Int, reqHeight: Int): Int {
-    var sampleSize = 1
-    if (height > reqHeight || width > reqWidth) {
-        var halfHeight = height / 2
-        var halfWidth = width / 2
-        while (halfHeight / sampleSize >= reqHeight && halfWidth / sampleSize >= reqWidth) {
-            sampleSize *= 2
-        }
-    }
-    return sampleSize.coerceAtLeast(1)
 }
 
 /**
