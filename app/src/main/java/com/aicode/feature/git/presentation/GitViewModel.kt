@@ -59,6 +59,10 @@ class GitViewModel @Inject constructor(
         const val MAX_DIFF_LINES = 2000
         /** 单行长度上限：超长单行（如压缩的 JSON）渲染会撑爆 Compose Constraints，直接降级提示。 */
         const val MAX_DIFF_LINE_LENGTH = 2000
+        /** diff 两侧内容的来源标记，只进 [DiffData.oldRef]/[DiffData.newRef] 供排查，不展示给用户。 */
+        const val REF_WORKTREE = "worktree"
+        const val REF_INDEX = "index"
+        const val REF_EMPTY = "empty"
     }
 
     data class GitUiState(
@@ -91,6 +95,10 @@ class GitViewModel @Inject constructor(
         val branchesLoading: Boolean = false,
         /** 正在切换分支。 */
         val checkoutLoading: String? = null,
+        /** 已展开的未跟踪目录 → 其下未跟踪文件清单。git status 把新目录折叠成一行，展开时按需查询。 */
+        val untrackedDirFiles: Map<String, List<String>> = emptyMap(),
+        /** 正在展开的未跟踪目录路径。 */
+        val untrackedDirLoading: String? = null,
         /** 是否显示 diff 全屏页；进入即置 true，diffData 为 null 时页内显示加载中。 */
         val diffVisible: Boolean = false,
         /** 正在查看 diff 的文件路径；加载中（diffData 为 null）时供顶栏显示文件名。 */
@@ -111,7 +119,8 @@ class GitViewModel @Inject constructor(
         val status: GitStatus,
         val graph: GitGraph,
         val hasRemote: Boolean,
-        val hasIdentity: Boolean = false
+        val hasIdentity: Boolean = false,
+        val untrackedDirFiles: Map<String, List<String>> = emptyMap()
     )
 
     /** 并发拉取轻量快照：status + graph(本地 refs) + remote + 可选 identity。 */
@@ -121,7 +130,21 @@ class GitViewModel @Inject constructor(
         val r = async { repository.hasRemote() }
         val id = async { if (includeIdentity) repository.getUserName().isNotBlank() else false }
         val g = async { repository.graph(refs = localRefs.await()) }
-        RepoSnapshot(s.await(), g.await(), r.await(), id.await())
+        val status = s.await()
+        RepoSnapshot(status, g.await(), r.await(), id.await(), reloadExpandedUntrackedDirs(status))
+    }
+
+    /**
+     * 刷新后重查已展开的未跟踪目录，保住展开态。只保留仍出现在 [GitStatus.untracked] 里的目录——
+     * 目录被暂存或删除后就不该再留着陈旧的文件列表。
+     */
+    private suspend fun reloadExpandedUntrackedDirs(status: GitStatus): Map<String, List<String>> {
+        val dirs = _state.value.untrackedDirFiles.keys.filter { it in status.untracked }
+        if (dirs.isEmpty()) return emptyMap()
+        return coroutineScope {
+            dirs.map { dir -> dir to async { repository.untrackedFilesIn(dir) } }
+                .associate { (dir, deferred) -> dir to deferred.await() }
+        }
     }
 
     fun setTab(tab: GitTab) {
@@ -190,7 +213,7 @@ class GitViewModel @Inject constructor(
                 val snap = loadSnapshot(includeIdentity = true)
                 val commits = snap.graph.commits.map { GitCommit(it.hash, it.shortHash, it.author, it.date, it.message) }
                 _state.update {
-                    it.copy(loading = false, notARepo = false, status = snap.status, commits = commits, graph = snap.graph, hasRemote = snap.hasRemote, hasIdentity = snap.hasIdentity, branchesLoaded = false, branchesLoading = false, branches = emptyList(), tags = emptyList())
+                    it.copy(loading = false, notARepo = false, status = snap.status, commits = commits, graph = snap.graph, hasRemote = snap.hasRemote, hasIdentity = snap.hasIdentity, untrackedDirFiles = snap.untrackedDirFiles, branchesLoaded = false, branchesLoading = false, branches = emptyList(), tags = emptyList())
                 }
                 // 页面已打开：后台拉取全量分支/标签，用户切到 BRANCHES tab 时无需再等。
                 loadBranches()
@@ -225,7 +248,7 @@ class GitViewModel @Inject constructor(
                 if (repository.isRepo()) {
                     val snap = loadSnapshot(includeIdentity = false)
                     val commits = snap.graph.commits.map { GitCommit(it.hash, it.shortHash, it.author, it.date, it.message) }
-                    _state.update { it.copy(busy = false, status = snap.status, commits = commits, graph = snap.graph, hasRemote = snap.hasRemote, notARepo = false, toast = msg) }
+                    _state.update { it.copy(busy = false, status = snap.status, commits = commits, graph = snap.graph, hasRemote = snap.hasRemote, untrackedDirFiles = snap.untrackedDirFiles, notARepo = false, toast = msg) }
                     refreshBranchesIfLoaded()
                 } else {
                     _state.update { it.copy(busy = false, notARepo = true, toast = msg) }
@@ -241,6 +264,47 @@ class GitViewModel @Inject constructor(
     fun unstage(path: String) = runAction(R.string.git_unstage, { repository.unstage(path) })
     fun stageAll() = runAction(R.string.git_action_stage_all, { repository.stageAll() })
     fun unstageAll() = runAction(R.string.git_action_unstage_all, { repository.unstageAll() })
+
+    /**
+     * 回退单个文件的改动。[staged] 为 true 时连已暂存内容一起还原到上次提交，否则只回退未暂存改动
+     * （被删除的文件由此取回）。改动未提交过，回退后无法再找回，故 UI 侧须先二次确认。
+     */
+    fun revertFile(path: String, staged: Boolean) =
+        runAction(R.string.git_action_revert, {
+            if (staged) repository.revertToHead(path) else repository.revertWorktree(path)
+        })
+
+    /** 回退全部未暂存改动，已暂存内容保持不动。 */
+    fun revertAllUnstaged() = runAction(R.string.git_action_revert_all, { repository.revertAllWorktree() })
+
+    /** 删除未跟踪的文件或目录。这些文件从未提交过，删除后 git 无法恢复。 */
+    fun deleteUntracked(path: String) =
+        runAction(R.string.git_action_delete_file, { repository.deleteUntracked(path) })
+
+    /**
+     * 展开/收起一个折叠的未跟踪目录（`git status` 把新目录显示成 `dir/` 一行）。展开时按需查询目录下
+     * 未跟踪文件，使其可单独查看差异或删除。不置 busy——只读查询不该阻塞写操作。
+     */
+    fun toggleUntrackedDir(dir: String) {
+        if (dir in _state.value.untrackedDirFiles) {
+            _state.update { it.copy(untrackedDirFiles = it.untrackedDirFiles - dir) }
+            return
+        }
+        if (_state.value.untrackedDirLoading != null) return
+        _state.update { it.copy(untrackedDirLoading = dir) }
+        viewModelScope.launch {
+            val files = try {
+                repository.untrackedFilesIn(dir)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                FileLogger.e(TAG, "加载未跟踪目录失败: $dir", e)
+                emptyList()
+            }
+            _state.update {
+                it.copy(untrackedDirFiles = it.untrackedDirFiles + (dir to files), untrackedDirLoading = null)
+            }
+        }
+    }
     fun commit(message: String) = runAction(R.string.git_action_commit, { repository.commit(message) })
     /** 在当前工作区执行 `git init` 初始化仓库；成功后 runAction 末尾自动刷新（notARepo 翻 false）。 */
     fun initRepo() = runAction(R.string.git_action_init, { repository.initRepo() })
@@ -417,17 +481,26 @@ class GitViewModel @Inject constructor(
  * path 为文件路径。用 showFileContent("HEAD", path) 取版本库快照，用 worktreeFileContent(path) 取工作区当前内容。
  */
     fun loadWorktreeDiff(path: String) {
-        loadDiff(path, "HEAD", "工作区") { ref, p ->
-            if (ref == "工作区") repository.worktreeFileContent(p)
+        loadDiff(path, "HEAD", REF_WORKTREE) { ref, p ->
+            if (ref == REF_WORKTREE) repository.worktreeFileContent(p)
             else repository.showFileContent(ref, p)
         }
     }
 
     /** 加载某文件的暂存区差异（HEAD vs index）。 */
     fun loadStagedDiff(path: String) {
-        loadDiff(path, "HEAD", "暂存区") { ref, p ->
-            if (ref == "暂存区") repository.indexFileContent(p)
+        loadDiff(path, "HEAD", REF_INDEX) { ref, p ->
+            if (ref == REF_INDEX) repository.indexFileContent(p)
             else repository.showFileContent(ref, p)
+        }
+    }
+
+    /**
+     * 加载未跟踪文件的差异：版本库里没有任何版本，旧侧恒为空，整个文件按全新增呈现。
+     */
+    fun loadUntrackedDiff(path: String) {
+        loadDiff(path, REF_EMPTY, REF_WORKTREE) { ref, p ->
+            if (ref == REF_WORKTREE) repository.worktreeFileContent(p) else ""
         }
     }
 

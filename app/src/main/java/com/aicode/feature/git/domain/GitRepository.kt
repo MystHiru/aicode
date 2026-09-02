@@ -322,6 +322,59 @@ class GitRepository @Inject constructor(
     suspend fun commit(message: String) = gitChecked("commit", "-m", message)
 
     /**
+     * 回退单个文件的未暂存改动：把工作区还原成暂存区内容（`git checkout -- <path>`），
+     * 被删除的文件由此重新出现。用 `checkout` 而非 `restore`——后者需 git 2.23+，
+     * 远程 SSH 模式下服务器 git 可能更老。
+     */
+    suspend fun revertWorktree(path: String): String = gitChecked("checkout", "--", path)
+
+    /**
+     * 回退单个文件的全部改动（已暂存 + 未暂存），还原到上次提交：先 `reset` 让索引回到 HEAD，
+     * 再从索引还原工作区。文件在 HEAD 中不存在时（新增文件）reset 已让它退回未跟踪，
+     * 此时跳过 checkout——否则 git 会以 `pathspec did not match` 失败。
+     * 仓库尚无任何提交时无 HEAD 可比，只能 `rm --cached` 退回未跟踪。
+     */
+    suspend fun revertToHead(path: String): String {
+        if (!hasHead()) return gitChecked("rm", "-q", "--cached", "--", path)
+        gitChecked("reset", "-q", "HEAD", "--", path)
+        return if (existsInHead(path)) gitChecked("checkout", "--", path) else ""
+    }
+
+    /**
+     * 回退全部未暂存改动。pathspec `:/` 指仓库根，工作区是仓库子目录时也能覆盖全仓库改动
+     * （`--  .` 只作用于当前目录）。已暂存的内容不受影响。
+     */
+    suspend fun revertAllWorktree(): String = gitChecked("checkout", "--", ":/")
+
+    /**
+     * 删除未跟踪的文件或目录（`git clean -f -d`）。`-d` 覆盖 status 折叠成一行的新目录；
+     * 不带 `-x`，被 .gitignore 忽略的文件保持不动。这些文件从未进入版本库，删除后 git 无法恢复。
+     */
+    suspend fun deleteUntracked(path: String): String = gitChecked("clean", "-f", "-d", "--", path)
+
+    /**
+     * 某个未跟踪目录下的未跟踪文件清单。`git status` 默认把新目录折叠成 `dir/` 一行，
+     * 里面的文件不单独列出；UI 展开该目录时按需调用此方法，避免 `-uall` 在大目录下一次列出上千条。
+     */
+    suspend fun untrackedFilesIn(dir: String): List<String> {
+        val raw = git("ls-files", "--others", "--exclude-standard", "--", dir)
+        if (raw.isBlank() || raw.startsWith("fatal:")) return emptyList()
+        return raw.split('\n').mapNotNull { it.removeSuffix("\r").trim().ifBlank { null } }
+    }
+
+    /** 仓库是否已有提交（HEAD 可解析）。空仓库里 `reset HEAD` / `ls-tree HEAD` 都会失败。 */
+    private suspend fun hasHead(): Boolean =
+        runCatching { git("rev-parse", "--verify", "HEAD").trim() }
+            .getOrDefault("")
+            .let { it.isNotBlank() && !it.startsWith("fatal") }
+
+    /** 指定路径在 HEAD 提交中是否存在。 */
+    private suspend fun existsInHead(path: String): Boolean =
+        runCatching { git("ls-tree", "HEAD", "--", path).trim() }
+            .getOrDefault("")
+            .let { it.isNotBlank() && !it.startsWith("fatal") }
+
+    /**
      * 拉取：直接 `git pull`，凭据由容器 `credential.helper` 链自动注入——`store` 命中已有凭据秒过，
      * 未命中时自定义 helper 经文件 IPC 触发 app 弹窗回填，git 自动续跑（见 [CredentialRequestBridge]）。
      * 故不再在此预查 host 凭据：三端（UI/终端/AI）共用同一 helper 兜底，逻辑单一来源。remote 不存在
@@ -476,14 +529,25 @@ class GitRepository @Inject constructor(
 
     /**
      * 读取工作区当前文件内容。用于工作区改动 diff：与 `HEAD:<path>` 对比看出未暂存的改动。
-     * 文件不存在或读取失败返回空串。经容器内直接读文件而非 git show，因为工作区文件即当前内容。
+     * 文件不存在或读取失败返回空串。
+     *
+     * 本地模式工作区就在 app 私有目录，直接用 [java.io.File] 读最快；远程 SSH 模式下
+     * [WorkspaceRepository.currentPath] 是远端绝对路径，本地 File 读不到（会静默变空串，
+     * diff 显示成整文件删除），故退回在执行后端里 `cat` 取内容。
      */
-    suspend fun worktreeFileContent(path: String): String =
-        withContext(Dispatchers.IO) {
+    suspend fun worktreeFileContent(path: String): String {
+        val local = withContext(Dispatchers.IO) {
             runCatching {
-                java.io.File(workspaceRepository.currentPath(), path).takeIf { it.isFile }?.readText() ?: ""
-            }.getOrDefault("")
+                java.io.File(workspaceRepository.currentPath(), path).takeIf { it.isFile }?.readText()
+            }.getOrNull()
         }
+        if (local != null) return local
+        val result = engine.runCommandSyncUnbounded(
+            "cat -- ${shellQuote(path)}",
+            workspaceRepository.currentPath()
+        )
+        return if (result.exitCode == 0) result.output else ""
+    }
 
     /** 读取暂存区当前文件内容（index）。文件尚未暂存时返回空串。 */
     suspend fun indexFileContent(path: String): String {

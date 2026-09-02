@@ -1,8 +1,10 @@
 package com.aicode.feature.git.presentation.component
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.ScrollState
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,14 +22,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +47,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aicode.R
@@ -54,10 +61,17 @@ import com.aicode.feature.settings.presentation.component.SettingsGroup
 import com.aicode.feature.settings.presentation.component.settingsLightMode
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Check
+import compose.icons.feathericons.ChevronDown
+import compose.icons.feathericons.ChevronRight
+import compose.icons.feathericons.Copy
 import compose.icons.feathericons.DownloadCloud
+import compose.icons.feathericons.FileText
+import compose.icons.feathericons.Folder
 import compose.icons.feathericons.GitBranch
 import compose.icons.feathericons.Minus
 import compose.icons.feathericons.Plus
+import compose.icons.feathericons.RotateCcw
+import compose.icons.feathericons.Trash2
 import compose.icons.feathericons.UploadCloud
 
 @Composable
@@ -66,6 +80,8 @@ internal fun StatusTab(
     busy: Boolean,
     hasRemote: Boolean,
     hasIdentity: Boolean,
+    untrackedDirFiles: Map<String, List<String>>,
+    untrackedDirLoading: String?,
     scrollState: ScrollState,
     onStage: (String) -> Unit,
     onUnstage: (String) -> Unit,
@@ -75,12 +91,63 @@ internal fun StatusTab(
     onPull: () -> Unit,
     onPush: () -> Unit,
     onFileDiff: (String) -> Unit,
-    onStagedFileDiff: (String) -> Unit
+    onStagedFileDiff: (String) -> Unit,
+    onUntrackedDiff: (String) -> Unit,
+    onRevert: (String, Boolean) -> Unit,
+    onRevertAll: () -> Unit,
+    onDeleteUntracked: (String) -> Unit,
+    onToggleUntrackedDir: (String) -> Unit,
+    onCopyPath: (String) -> Unit
 ) {
     val s = status
     val clean = s == null || (s.staged.isEmpty() && s.unstaged.isEmpty() && s.untracked.isEmpty())
     val hasChanges = !clean
     var showUnstageAllConfirm by remember { mutableStateOf(false) }
+    var showRevertAllConfirm by remember { mutableStateOf(false) }
+    // 长按文件行弹出的操作菜单；null 表示未打开。
+    var actionSheet by remember { mutableStateOf<FileMenu?>(null) }
+    // 回退与删除都会丢数据，先经确认弹窗再执行。
+    var pendingRevert by remember { mutableStateOf<RevertTarget?>(null) }
+    var pendingDelete by remember { mutableStateOf<String?>(null) }
+
+    fun stagedMenu(file: GitFileChange) = FileMenu(
+        path = file.path,
+        actions = listOf(
+            FileAction.ViewDiff { onStagedFileDiff(file.path) },
+            FileAction.Revert { pendingRevert = RevertTarget(file.path, staged = true, deleted = false) },
+            FileAction.CopyPath { onCopyPath(file.path) }
+        )
+    )
+
+    fun unstagedMenu(file: GitFileChange): FileMenu {
+        val deleted = file.statusCode.firstOrNull() == 'D'
+        return FileMenu(
+            path = file.path,
+            actions = listOf(
+                FileAction.ViewDiff { onFileDiff(file.path) },
+                if (deleted) FileAction.RestoreFile { pendingRevert = RevertTarget(file.path, staged = false, deleted = true) }
+                else FileAction.Revert { pendingRevert = RevertTarget(file.path, staged = false, deleted = false) },
+                FileAction.CopyPath { onCopyPath(file.path) }
+            )
+        )
+    }
+
+    fun untrackedFileMenu(path: String) = FileMenu(
+        path = path,
+        actions = listOf(
+            FileAction.ViewDiff { onUntrackedDiff(path) },
+            FileAction.DeleteFile { pendingDelete = path },
+            FileAction.CopyPath { onCopyPath(path) }
+        )
+    )
+
+    fun untrackedDirMenu(path: String) = FileMenu(
+        path = path,
+        actions = listOf(
+            FileAction.DeleteDir { pendingDelete = path },
+            FileAction.CopyPath { onCopyPath(path) }
+        )
+    )
 
     Column(
         modifier = Modifier
@@ -190,13 +257,19 @@ internal fun StatusTab(
                             actionDesc = stringResource(R.string.git_unstage),
                             onAction = { onUnstage(f.path) },
                             enabled = !busy,
-                            onClick = { onStagedFileDiff(f.path) }
+                            onClick = { onStagedFileDiff(f.path) },
+                            onLongClick = { actionSheet = stagedMenu(f) }
                         )
                     }
                 }
             }
             if (ss.unstaged.isNotEmpty()) {
-                SectionHeader(stringResource(R.string.git_modified_count, ss.unstaged.size))
+                GroupHeaderWithAction(
+                    title = stringResource(R.string.git_modified_count, ss.unstaged.size),
+                    actionLabel = stringResource(R.string.git_action_revert_all),
+                    actionEnabled = !busy,
+                    onAction = { showRevertAllConfirm = true }
+                )
                 SettingsGroup {
                     ss.unstaged.forEachIndexed { index, f ->
                         if (index > 0) SettingsDivider()
@@ -206,7 +279,8 @@ internal fun StatusTab(
                             actionDesc = stringResource(R.string.git_stage),
                             onAction = { onStage(f.path) },
                             enabled = !busy,
-                            onClick = { onFileDiff(f.path) }
+                            onClick = { onFileDiff(f.path) },
+                            onLongClick = { actionSheet = unstagedMenu(f) }
                         )
                     }
                 }
@@ -216,17 +290,126 @@ internal fun StatusTab(
                 SettingsGroup {
                     ss.untracked.forEachIndexed { index, path ->
                         if (index > 0) SettingsDivider()
-                        FileRow(
-                            file = GitFileChange(path, "?", staged = false),
-                            actionIcon = FeatherIcons.Plus,
-                            actionDesc = stringResource(R.string.git_stage),
-                            onAction = { onStage(path) },
-                            enabled = !busy
-                        )
+                        // git status 默认把新目录折叠成 "dir/" 一行，里面的文件不单独列出，
+                        // 故目录项走单独的行样式，点击才按需展开其中的未跟踪文件。
+                        if (path.endsWith("/")) {
+                            val children = untrackedDirFiles[path]
+                            UntrackedDirRow(
+                                path = path,
+                                childCount = children?.size,
+                                expanded = children != null,
+                                loading = untrackedDirLoading == path,
+                                enabled = !busy,
+                                onClick = { onToggleUntrackedDir(path) },
+                                onLongClick = { actionSheet = untrackedDirMenu(path) },
+                                onStage = { onStage(path) }
+                            )
+                            children?.forEach { child ->
+                                SettingsDivider()
+                                FileRow(
+                                    file = GitFileChange(child, "?", staged = false),
+                                    actionIcon = FeatherIcons.Plus,
+                                    actionDesc = stringResource(R.string.git_stage),
+                                    onAction = { onStage(child) },
+                                    enabled = !busy,
+                                    indent = Spacing.lg,
+                                    onClick = { onUntrackedDiff(child) },
+                                    onLongClick = { actionSheet = untrackedFileMenu(child) }
+                                )
+                            }
+                        } else {
+                            FileRow(
+                                file = GitFileChange(path, "?", staged = false),
+                                actionIcon = FeatherIcons.Plus,
+                                actionDesc = stringResource(R.string.git_stage),
+                                onAction = { onStage(path) },
+                                enabled = !busy,
+                                onClick = { onUntrackedDiff(path) },
+                                onLongClick = { actionSheet = untrackedFileMenu(path) }
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+
+    actionSheet?.let { menu ->
+        FileActionSheet(menu = menu, onDismiss = { actionSheet = null })
+    }
+
+    pendingRevert?.let { target ->
+        val titleRes = if (target.deleted) R.string.git_action_restore_file else R.string.git_action_revert
+        AlertDialog(
+            onDismissRequest = { pendingRevert = null },
+            title = { Text(stringResource(titleRes)) },
+            text = {
+                Text(
+                    when {
+                        target.deleted -> stringResource(R.string.git_restore_file_confirm, target.path)
+                        target.staged -> stringResource(R.string.git_revert_confirm_head, target.path)
+                        else -> stringResource(R.string.git_revert_confirm_worktree, target.path)
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingRevert = null
+                    onRevert(target.path, target.staged)
+                }) {
+                    Text(
+                        text = stringResource(titleRes),
+                        color = if (target.deleted) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.error
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRevert = null }) { Text(stringResource(R.string.common_cancel)) }
+            }
+        )
+    }
+
+    pendingDelete?.let { path ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = {
+                Text(
+                    stringResource(
+                        if (path.endsWith("/")) R.string.git_action_delete_dir else R.string.git_action_delete_file
+                    )
+                )
+            },
+            text = { Text(stringResource(R.string.git_delete_untracked_confirm, path)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDelete = null
+                    onDeleteUntracked(path)
+                }) { Text(stringResource(R.string.common_delete), color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text(stringResource(R.string.common_cancel)) }
+            }
+        )
+    }
+
+    if (showRevertAllConfirm) {
+        AlertDialog(
+            onDismissRequest = { showRevertAllConfirm = false },
+            title = { Text(stringResource(R.string.git_action_revert_all)) },
+            text = { Text(stringResource(R.string.git_revert_all_confirm, status?.unstaged?.size ?: 0)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRevertAllConfirm = false
+                    onRevertAll()
+                }) {
+                    Text(stringResource(R.string.git_action_revert_all), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRevertAllConfirm = false }) { Text(stringResource(R.string.common_cancel)) }
+            }
+        )
     }
 
     if (showUnstageAllConfirm) {
@@ -375,7 +558,8 @@ private fun GroupHeaderWithAction(
     }
 }
 
-/** 分组内文件行：状态徽标 + 文件名/目录 + 行尾暂存操作；未暂存行点击打开 diff。 */
+/** 分组内文件行：状态徽标 + 文件名/目录 + 行尾暂存操作；点击看差异，长按开操作菜单。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileRow(
     file: GitFileChange,
@@ -383,7 +567,9 @@ private fun FileRow(
     actionDesc: String,
     onAction: () -> Unit,
     enabled: Boolean,
-    onClick: (() -> Unit)? = null
+    indent: Dp = 0.dp,
+    onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null
 ) {
     val fileName = file.path.substringAfterLast('/')
     val directory = file.path.substringBeforeLast('/', missingDelimiterValue = "")
@@ -391,8 +577,14 @@ private fun FileRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .let { if (onClick != null) it.clickable(onClick = onClick) else it }
-            .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
+            .let {
+                if (onClick == null && onLongClick == null) it
+                else it.combinedClickable(
+                    onClick = { onClick?.invoke() },
+                    onLongClick = onLongClick
+                )
+            }
+            .padding(start = Spacing.lg + indent, end = Spacing.lg, top = Spacing.sm, bottom = Spacing.sm),
         verticalAlignment = Alignment.CenterVertically
     ) {
         StatusChip(file.statusCode)
@@ -470,5 +662,159 @@ private fun ActionButton(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+    }
+}
+
+/**
+ * 未跟踪目录行（`git status` 把新目录折叠成 `dir/` 一行）：点击展开/收起其中的未跟踪文件，
+ * 长按开操作菜单，行尾「+」暂存整个目录。[childCount] 为 null 表示尚未展开。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun UntrackedDirRow(
+    path: String,
+    childCount: Int?,
+    expanded: Boolean,
+    loading: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onStage: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        StatusChip("?")
+        Spacer(Modifier.width(Spacing.md))
+        Icon(
+            FeatherIcons.Folder,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(Modifier.width(Spacing.sm))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = path,
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = if (childCount != null) stringResource(R.string.git_untracked_dir_file_count, childCount)
+                else stringResource(R.string.git_untracked_dir_expand_hint),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+        Spacer(Modifier.width(Spacing.sm))
+        if (loading) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+        } else {
+            Icon(
+                if (expanded) FeatherIcons.ChevronDown else FeatherIcons.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+        IconButton(onClick = onStage, enabled = enabled) {
+            Icon(
+                FeatherIcons.Plus,
+                contentDescription = stringResource(R.string.git_stage),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** 长按文件行弹出的菜单：标题路径 + 可执行的操作项。 */
+private data class FileMenu(val path: String, val actions: List<FileAction>)
+
+/**
+ * 待确认的回退目标。[staged] 为 true 表示连已暂存内容一起还原到上次提交；
+ * [deleted] 只影响文案——文件已被删时这个操作实际是把它取回而非丢改动。
+ */
+private data class RevertTarget(val path: String, val staged: Boolean, val deleted: Boolean)
+
+/** 文件行可执行的操作项，用于长按弹出的操作菜单。 */
+private sealed class FileAction(
+    @param:StringRes val labelRes: Int,
+    val icon: ImageVector,
+    val isDestructive: Boolean,
+    val onClick: () -> Unit
+) {
+    class ViewDiff(onClick: () -> Unit) : FileAction(R.string.git_action_view_diff, FeatherIcons.FileText, false, onClick)
+    class Revert(onClick: () -> Unit) : FileAction(R.string.git_action_revert, FeatherIcons.RotateCcw, true, onClick)
+    class RestoreFile(onClick: () -> Unit) : FileAction(R.string.git_action_restore_file, FeatherIcons.RotateCcw, false, onClick)
+    class DeleteFile(onClick: () -> Unit) : FileAction(R.string.git_action_delete_file, FeatherIcons.Trash2, true, onClick)
+    class DeleteDir(onClick: () -> Unit) : FileAction(R.string.git_action_delete_dir, FeatherIcons.Trash2, true, onClick)
+    class CopyPath(onClick: () -> Unit) : FileAction(R.string.git_action_copy_path, FeatherIcons.Copy, false, onClick)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FileActionSheet(menu: FileMenu, onDismiss: () -> Unit) {
+    val sheetState = rememberModalBottomSheetState()
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = Spacing.xl)
+        ) {
+            Text(
+                text = menu.path,
+                style = MaterialTheme.typography.titleSmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .padding(horizontal = Spacing.lg)
+                    .padding(bottom = Spacing.md)
+            )
+            menu.actions.forEach { action ->
+                val tint = if (action.isDestructive) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurface
+                Surface(
+                    onClick = {
+                        onDismiss()
+                        action.onClick()
+                    },
+                    color = Color.Transparent
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = Spacing.lg, vertical = Spacing.md),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = action.icon,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = tint
+                        )
+                        Spacer(Modifier.width(Spacing.lg))
+                        Text(
+                            text = stringResource(action.labelRes),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = tint
+                        )
+                    }
+                }
+            }
+        }
     }
 }
