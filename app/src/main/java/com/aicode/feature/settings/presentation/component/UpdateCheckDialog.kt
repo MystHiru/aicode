@@ -26,7 +26,7 @@ internal fun UpdateCheckDialog(
     state: UpdateCheckUiState,
     currentVersion: String,
     onDismiss: () -> Unit,
-    onOpenRelease: () -> Unit
+    onOpenRelease: (tag: String) -> Unit
 ) {
     when (state) {
         UpdateCheckUiState.Checking -> AlertDialog(
@@ -55,7 +55,11 @@ internal fun UpdateCheckDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             },
-            confirmButton = { TextButton(onClick = onOpenRelease) { Text(stringResource(R.string.about_download)) } },
+            confirmButton = {
+                TextButton(onClick = { onOpenRelease(state.latestTag) }) {
+                    Text(stringResource(R.string.about_download))
+                }
+            },
             dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.about_later)) } }
         )
         is UpdateCheckUiState.Error -> AlertDialog(
@@ -75,4 +79,15 @@ internal fun openUrl(context: android.content.Context, url: String) {
     }
 }
 
-internal const val GITHUB_RELEASES_URL = "https://github.com/jieapi/aicode/releases/latest"
+/**
+ * 指定版本 tag 的 GitHub Release 页面地址；tag 为空时回退到最新正式版页面。
+ *
+ * GitHub 的 `releases/latest` 只解析到最新的**正式** release（预发布不计入），最新版通道
+ * 检测到 RC 时跳过去会看到旧的稳定版，因此必须按 tag 直达对应版本页面。
+ */
+internal fun githubReleaseUrl(tag: String?): String = when {
+    tag.isNullOrBlank() -> "$GITHUB_RELEASES_URL/latest"
+    else -> "$GITHUB_RELEASES_URL/tag/${Uri.encode(tag)}"
+}
+
+private const val GITHUB_RELEASES_URL = "https://github.com/jieapi/aicode/releases"
