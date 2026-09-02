@@ -138,6 +138,14 @@ class LinuxContainerEngine @Inject constructor(
     companion object {
         private const val TAG = "LinuxContainerEngine"
 
+        /**
+         * 子进程 stdin 的重定向目标。命令执行链路从不向子进程写输入，若留 Java 默认的空管道，
+         * 按「stdin 是否可读」决定行为的程序（无路径参数的 rg、等确认的包管理器等）会把它当
+         * 待读输入，一直阻塞到命令超时；接空设备让它们立刻拿到 EOF 并走正常分支。
+         */
+        private val STDIN_FROM_DEV_NULL: ProcessBuilder.Redirect =
+            ProcessBuilder.Redirect.from(java.io.File("/dev/null"))
+
         /** 命令默认超时（毫秒）：未显式指定时套用，避免命令卡死时永久占用会话。 */
         const val DEFAULT_TIMEOUT_MS = 120_000L
 
@@ -454,6 +462,7 @@ class LinuxContainerEngine @Inject constructor(
 
         // Redirect stderr to stdout so we capture everything in one stream
         processBuilder.redirectErrorStream(true)
+        processBuilder.redirectInput(STDIN_FROM_DEV_NULL)
         return processBuilder.start()
     }
 
@@ -581,6 +590,7 @@ class LinuxContainerEngine @Inject constructor(
     fun startProotProcess(command: String, projectPath: String?): Process {
         val pb = buildProcessBuilder(buildProotInvocation(command, projectPath))
         pb.redirectErrorStream(true)
+        pb.redirectInput(STDIN_FROM_DEV_NULL)
         return pb.start()
     }
 
@@ -605,6 +615,7 @@ class LinuxContainerEngine @Inject constructor(
         val invocation = buildStdioInvocation(program, programArgs, projectPath, extraEnv, profile)
         val pb = buildProcessBuilder(invocation)
         // 刻意不 redirectErrorStream：stdout 留给 JSON-RPC，stderr 由调用方单独消费。
+        // 同样刻意不重定向 stdin：这里的 stdin 就是 JSON-RPC 的请求通道，接 /dev/null 会让 server 立刻收到 EOF 退出。
         return pb.start()
     }
 

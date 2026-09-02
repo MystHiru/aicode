@@ -148,7 +148,11 @@ class RemoteSshConnection @Inject constructor(
     fun startExecSession(command: String): Session.Command {
         val client = sshClient ?: throw IllegalStateException("SSH 未连接")
         val session = client.startSession()
-        return session.exec(command)
+        val cmd = session.exec(command)
+        // 立即给远端进程的 stdin 送 EOF：所有调用方只读输出。不关的话，远端按「stdin 是否可读」
+        // 决定行为的程序（无路径参数的 rg 等）会把 channel 当待读输入，一直等到命令超时。
+        runCatching { cmd.outputStream.close() }
+        return cmd
     }
 
     /** 开一个新的 Session，供调用方分配 PTY 并启动 shell。调用方负责关闭 Session。 */
