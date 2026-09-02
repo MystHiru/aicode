@@ -44,7 +44,9 @@ data class AgentMessageEntity(
     // 仅 ASSISTANT 行：Anthropic thinking / redacted_thinking 内容块的原样快照（JSON 数组文本）。
     // 文档要求这些块回传时不得修改且保持原序，故存原块而不拆字段（redacted 的 data 不可重建）。
     // 位置在末尾：备份 DTO 映射按位置参数，插到中间会错位。
-    val thinkingBlocksJson: String? = null
+    val thinkingBlocksJson: String? = null,
+    // 仅 ASSISTANT 行：本轮输入中命中服务端缓存的 token 数，UI 据此显示缓存命中率。同样只能追加在末尾。
+    val cachedInputTokens: Int = 0
 ) {
     fun toUIMessage(): AgentUIMessage {
         val roleEnum = MessageRole.valueOf(role)
@@ -64,7 +66,8 @@ data class AgentMessageEntity(
             isBackgroundNotification = roleEnum == MessageRole.USER &&
                 content.startsWith(BACKGROUND_NOTIFICATION_PREFIX),
             inputTokens = inputTokens,
-            outputTokens = outputTokens
+            outputTokens = outputTokens,
+            cachedInputTokens = cachedInputTokens
         )
     }
 

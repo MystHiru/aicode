@@ -65,14 +65,83 @@ import compose.icons.FeatherIcons
 import compose.icons.feathericons.Check
 import compose.icons.feathericons.ChevronDown
 import compose.icons.feathericons.ChevronUp
+import compose.icons.feathericons.Clock
 import compose.icons.feathericons.Copy
+import compose.icons.feathericons.Database
 import compose.icons.feathericons.MoreHorizontal
 import compose.icons.feathericons.RotateCcw
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /** 落库思考气泡保持展开的窗口（ms）：刚结束的思考不立即折叠回缩，防止高度骤变抽搐。 */
 private const val REASONING_FRESH_WINDOW_MS = 5_000L
+
+/**
+ * 每轮任务的总耗时（毫秒）：轮末助手消息落库时刻 − 该轮用户消息发出时刻，即用户按下发送
+ * 到本轮 AI 收工的挂钟时间（含工具执行与等待用户授权的时间）。返回「消息 id → 耗时」，
+ * 只有轮末的那条助手消息才有条目。
+ *
+ * 轮末判定：其后第一条消息是用户消息，或它就是列表末条且本轮已结束（[lastTurnFinished]，
+ * 由 agent 是否空闲给出）。仍在生成中的末条不给耗时，收工落库后自然出现。
+ *
+ * 上下文压缩插入的锚点/摘要落在轮内（压缩发生在请求前），若参与划分会把轮起点算到压缩
+ * 时刻上，故先剔除。
+ */
+internal fun computeTaskDurations(
+    messages: List<AgentUIMessage>,
+    lastTurnFinished: Boolean
+): Map<String, Long> {
+    val turnMessages = messages.filter {
+        !it.isCompactionMarker && !it.isContextSummary && !it.isCompactionFailure
+    }
+    if (turnMessages.isEmpty()) return emptyMap()
+    val durations = mutableMapOf<String, Long>()
+    var turnStart: Long? = null
+    turnMessages.forEachIndexed { index, message ->
+        when (message.role) {
+            MessageRole.USER -> turnStart = message.timestamp
+            MessageRole.ASSISTANT -> {
+                val start = turnStart ?: return@forEachIndexed
+                val isTurnEnd = if (index == turnMessages.lastIndex) {
+                    lastTurnFinished
+                } else {
+                    turnMessages[index + 1].role == MessageRole.USER
+                }
+                if (isTurnEnd && message.timestamp > start) {
+                    durations[message.id] = message.timestamp - start
+                }
+            }
+            MessageRole.TOOL -> Unit
+        }
+    }
+    return durations
+}
+
+/** 任务耗时格式化：不足 1 分钟显示 `12s`，不足 1 小时显示 `2:05`，更长显示 `1:02:05`。 */
+internal fun formatTaskDuration(millis: Long): String {
+    val totalSeconds = ((millis + 500) / 1000).coerceAtLeast(1)
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    val paddedSeconds = seconds.toString().padStart(2, '0')
+    return when {
+        hours > 0 -> "$hours:${minutes.toString().padStart(2, '0')}:$paddedSeconds"
+        minutes > 0 -> "$minutes:$paddedSeconds"
+        else -> "${seconds}s"
+    }
+}
+
+/**
+ * 单条消息的缓存命中率：命中缓存的输入 / 总输入，与设置页 Token 统计同口径。
+ * Anthropic 的 input_tokens 不含 cache_read，该口径会偏大，故封顶 100%。
+ * 无输入统计或本次未命中缓存时返回 null（不占位，避免把「渠道不报缓存数据」误示为 0% 命中）。
+ */
+internal fun formatCacheHitRate(inputTokens: Int, cachedInputTokens: Int): String? {
+    if (inputTokens <= 0 || cachedInputTokens <= 0) return null
+    val rate = (cachedInputTokens * 100.0 / inputTokens).coerceAtMost(100.0)
+    return "${rate.roundToInt()}%"
+}
 
 @Composable
 internal fun AgentMessageItem(
@@ -82,6 +151,8 @@ internal fun AgentMessageItem(
     onRewindClick: ((String) -> Unit)? = null,
     onMoreClick: ((AgentUIMessage) -> Unit)? = null,
     onToolToggle: (() -> Unit)? = null,
+    /** 本轮任务总耗时（ms）：仅轮末助手消息非空，见 [computeTaskDurations]。 */
+    taskDurationMs: Long? = null,
     /** 新消息入场动画延迟（ms）：null 表示历史消息直接显示；非 null 时首次组合延迟后淡入展开。 */
     entryDelayMs: Long? = null
 ) {
@@ -269,6 +340,40 @@ internal fun AgentMessageItem(
                             val outStr = formatTokenCount(message.outputTokens)
                             Text(
                                 text = "↑$inStr ↓$outStr",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        val cacheHitRate = if (message.role == MessageRole.ASSISTANT) {
+                            formatCacheHitRate(message.inputTokens, message.cachedInputTokens)
+                        } else null
+                        if (cacheHitRate != null) {
+                            Spacer(Modifier.width(Spacing.sm))
+                            Icon(
+                                FeatherIcons.Database,
+                                contentDescription = stringResource(R.string.chat_cache_hit_rate, cacheHitRate),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(Modifier.width(2.dp))
+                            Text(
+                                text = cacheHitRate,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (taskDurationMs != null) {
+                            val durationText = formatTaskDuration(taskDurationMs)
+                            Spacer(Modifier.width(Spacing.sm))
+                            Icon(
+                                FeatherIcons.Clock,
+                                contentDescription = stringResource(R.string.chat_task_duration, durationText),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(Modifier.width(2.dp))
+                            Text(
+                                text = durationText,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

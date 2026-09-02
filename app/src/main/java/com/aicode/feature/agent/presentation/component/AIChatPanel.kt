@@ -235,6 +235,10 @@ fun AIChatPanel(
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     val isBusy = agentState is AgentUIState.Loading || agentState is AgentUIState.Streaming
+    // 每轮任务的总耗时（用户发送 → 本轮 AI 收工），挂在轮末助手气泡下方
+    val taskDurations = remember(messages, isBusy) {
+        computeTaskDurations(messages, lastTurnFinished = !isBusy)
+    }
     val activeModel = activeProvider?.effectiveModel.orEmpty()
     val activeModelMetadata = modelMetadata[activeModel]
     val canUploadFiles = projectRoot.isNotBlank() && activeModelMetadata?.supportsTools == true
@@ -714,6 +718,7 @@ fun AIChatPanel(
                                         }
                                     }
                                 },
+                                taskDurationMs = taskDurations[message.id],
                                 entryDelayMs = messageEntryDelays[message.id]
                             )
                         }

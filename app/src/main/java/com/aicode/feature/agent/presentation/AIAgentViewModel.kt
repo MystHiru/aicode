@@ -1061,7 +1061,8 @@ class AIAgentViewModel @Inject constructor(
                             signature = event.signature.ifEmpty { null },
                             thinkingBlocksJson = event.thinkingBlocksJson.ifEmpty { null },
                             inputTokens = event.inputTokens,
-                            outputTokens = event.outputTokens
+                            outputTokens = event.outputTokens,
+                            cachedInputTokens = event.cachedInputTokens
                         )
                         if (event.inputTokens > 0 || event.outputTokens > 0) {
                             _llmCallEvents.tryEmit(LlmCallEvent(sessionId, event.inputTokens, event.outputTokens, event.cachedInputTokens))

@@ -95,6 +95,7 @@ class MessagePersistenceUseCase @Inject constructor(
         attachments: List<AgentAttachment> = emptyList(),
         inputTokens: Int = 0,
         outputTokens: Int = 0,
+        cachedInputTokens: Int = 0,
         isCompacted: Boolean = false
     ) {
         agentMessageDao.insert(
@@ -115,6 +116,7 @@ class MessagePersistenceUseCase @Inject constructor(
                 attachmentsJson = if (attachments.isNotEmpty()) json.encodeToString(attachments) else null,
                 inputTokens = inputTokens,
                 outputTokens = outputTokens,
+                cachedInputTokens = cachedInputTokens,
                 isCompacted = isCompacted
             )
         )

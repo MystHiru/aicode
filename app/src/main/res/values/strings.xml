@@ -445,6 +445,8 @@
     <!-- Chat Message Bubbles -->
     <string name="chat_copied">已复制</string>
     <string name="chat_copy">复制</string>
+    <string name="chat_task_duration">本轮总耗时 %1$s</string>
+    <string name="chat_cache_hit_rate">缓存命中率 %1$s</string>
     <string name="chat_bg_command_done">后台命令已完成</string>
     <string name="chat_bg_commands_done">%1$d 个后台任务已完成：%2$s</string>
     <string name="chat_bg_commands_partial_failed">%1$d 个后台任务结束，%2$d 个失败：%3$s</string>

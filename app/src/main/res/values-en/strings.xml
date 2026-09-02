@@ -445,6 +445,8 @@
     <!-- Chat Message Bubbles -->
     <string name="chat_copied">Copied</string>
     <string name="chat_copy">Copy</string>
+    <string name="chat_task_duration">Total time %1$s</string>
+    <string name="chat_cache_hit_rate">Cache hit rate %1$s</string>
     <string name="chat_bg_command_done">Background command completed</string>
     <string name="chat_bg_commands_done">%1$d background tasks completed: %2$s</string>
     <string name="chat_bg_commands_partial_failed">%1$d background tasks finished, %2$d failed: %3$s</string>
