@@ -12,9 +12,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.DrawerValue
@@ -22,22 +26,28 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Surface
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -51,6 +61,9 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.aicode.core.theme.AIEditorTheme
+import com.aicode.core.ui.VerticalSplitHandle
+import com.aicode.core.ui.drawerWidth
+import com.aicode.core.ui.isExpandedWidth
 import com.aicode.feature.agent.presentation.AIAgentViewModel
 import com.aicode.feature.agent.presentation.component.AIChatPanel
 import com.aicode.feature.agent.presentation.component.ChatDrawerContent
@@ -234,6 +247,11 @@ class MainActivity : ComponentActivity() {
 
 }
 
+/** 大屏右栏默认占宽比，以及拖拽分栏的上下限——两边都至少留 30% 宽度。 */
+private const val DEFAULT_PANE_SPLIT = 0.5f
+private const val MIN_PANE_SPLIT = 0.3f
+private const val MAX_PANE_SPLIT = 0.7f
+
 /**
  * 根导航容器。
  *
@@ -325,70 +343,104 @@ fun AppNavigation() {
         }
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        // 仅在聊天页启用手势滑出；其他页面禁止（但已打开时始终可关闭）。
-        gesturesEnabled = currentRoute == "chat" || drawerState.isOpen,
-        drawerContent = {
-            ModalDrawerSheet(
-                drawerShape = RectangleShape,
-                drawerContainerColor = settingsPageBackground(),
-                drawerTonalElevation = 0.dp,
-                modifier = Modifier.width(300.dp)
-            ) {
-                ChatDrawerContent(
-                    sessions = sessions,
-                    currentSessionId = currentSessionId,
-                    agentStates = agentStates,
-                    subSessionsByParent = subSessionsByParent,
-                    browseState = browseState,
-                    expandedPaths = expandedPaths,
-                    onToggleExpand = { agentViewModel.toggleExpand(it) },
-                    onOpenFile = { filePath ->
-                        scope.launch { drawerState.close() }
-                        navController.navigate("editor?path=${android.net.Uri.encode(filePath)}&drawer=true")
-                    },
-                    onRefreshBrowse = { agentViewModel.refreshBrowse() },
-                    onCreateFile = { parent, name ->
-                        agentViewModel.createBrowseFile(parent, name) { ok ->
-                            if (!ok) toastFileOpFailed(context, R.string.file_browser_create_failed)
-                        }
-                    },
-                    onCreateFolder = { parent, name ->
-                        agentViewModel.createBrowseFolder(parent, name) { ok ->
-                            if (!ok) toastFileOpFailed(context, R.string.file_browser_create_failed)
-                        }
-                    },
-                    onRenameEntry = { path, newName ->
-                        agentViewModel.renameBrowseEntry(path, newName) { ok ->
-                            if (!ok) toastFileOpFailed(context, R.string.file_browser_rename_failed)
-                        }
-                    },
-                    onDeleteEntry = { path ->
-                        agentViewModel.deleteBrowseEntry(path) { ok ->
-                            if (!ok) toastFileOpFailed(context, R.string.file_browser_delete_failed)
-                        }
-                    },
-                    onSelect = {
-                        agentViewModel.selectSession(it.id)
-                        scope.launch { drawerState.close() }
-                    },
-                    onDelete = { agentViewModel.deleteSession(it.id) },
-                    onRename = { session, title -> agentViewModel.renameSession(session.id, title) },
-                    onTogglePin = { agentViewModel.togglePinSession(it.id) },
-                    onExport = { session ->
-                        pendingExportSessionId = session.id
-                        val safeTitle = session.title.replace(Regex("[^\\w\\u4e00-\\u9fa5\\-]"), "_")
-                        sessionExportLauncher.launch("aicode-session-$safeTitle-${System.currentTimeMillis()}.tar.gz")
-                    },
-                    onNavigateToSettings = {
-                        scope.launch { drawerState.close() }
-                        navController.navigate("settings")
-                    }
-                )
-            }
-        }
+    // ── 大屏（平板横屏及以上）布局 ──
+    val expanded = isExpandedWidth()
+    // 常驻侧栏只在聊天页开：终端 / 编辑器 / 设置都是全屏页，被侧栏挤窄反而难用。
+    // 常驻侧栏只看窗口宽度：它只在聊天页展开，切到其他页会滑回去（见下方 sidebarWidth）。
+    val permanentDrawer = expanded
+
+    // 右栏工作台：大屏下编辑器 / 终端 / Git 与聊天并排，窄窗仍走全屏路由。
+    var paneKind by rememberSaveable { mutableStateOf(WorkbenchPaneKind.NONE) }
+    var paneEditorPath by rememberSaveable { mutableStateOf("") }
+    var paneEditorLine by rememberSaveable { mutableIntStateOf(0) }
+    var paneSplit by rememberSaveable { mutableFloatStateOf(DEFAULT_PANE_SPLIT) }
+
+    // 右栏打开时返回键先收起它。限定聊天页：其他页面右栏不渲染，不能在那里吞掉返回事件。
+    BackHandler(
+        enabled = expanded && currentRoute == "chat" &&
+            paneKind != WorkbenchPaneKind.NONE && !drawerState.isOpen
     ) {
+        paneKind = WorkbenchPaneKind.NONE
+    }
+
+    // 打开文件：大屏进右栏，窄窗跳全屏编辑器页。
+    val openFile: (String, Int, Boolean) -> Unit = { filePath, line, fromDrawer ->
+        if (expanded) {
+            paneEditorPath = filePath
+            paneEditorLine = line
+            paneKind = WorkbenchPaneKind.EDITOR
+            // 常驻侧栏不需要关；平板竖屏等仍用 modal 抽屉的情况下选完文件要收起。
+            if (!permanentDrawer) scope.launch { drawerState.close() }
+        } else {
+            scope.launch { drawerState.close() }
+            navController.navigate(
+                "editor?path=${android.net.Uri.encode(filePath)}&line=$line&drawer=$fromDrawer"
+            )
+        }
+    }
+
+    // 终端 / Git：大屏在右栏内开合切换，窄窗跳全屏页。
+    val openWorkbench: (WorkbenchPaneKind) -> Unit = { target ->
+        if (expanded) {
+            paneKind = if (paneKind == target) WorkbenchPaneKind.NONE else target
+        } else {
+            navController.navigate(if (target == WorkbenchPaneKind.TERMINAL) "terminal" else "git")
+        }
+    }
+
+    // 侧栏内容：modal 抽屉与大屏常驻栏共用同一份，不在两处重复几十行参数。
+    val drawerBody: @Composable () -> Unit = {
+        ChatDrawerContent(
+            sessions = sessions,
+            currentSessionId = currentSessionId,
+            agentStates = agentStates,
+            subSessionsByParent = subSessionsByParent,
+            browseState = browseState,
+            expandedPaths = expandedPaths,
+            onToggleExpand = { agentViewModel.toggleExpand(it) },
+            onOpenFile = { filePath -> openFile(filePath, 0, true) },
+            onRefreshBrowse = { agentViewModel.refreshBrowse() },
+            onCreateFile = { parent, name ->
+                agentViewModel.createBrowseFile(parent, name) { ok ->
+                    if (!ok) toastFileOpFailed(context, R.string.file_browser_create_failed)
+                }
+            },
+            onCreateFolder = { parent, name ->
+                agentViewModel.createBrowseFolder(parent, name) { ok ->
+                    if (!ok) toastFileOpFailed(context, R.string.file_browser_create_failed)
+                }
+            },
+            onRenameEntry = { path, newName ->
+                agentViewModel.renameBrowseEntry(path, newName) { ok ->
+                    if (!ok) toastFileOpFailed(context, R.string.file_browser_rename_failed)
+                }
+            },
+            onDeleteEntry = { path ->
+                agentViewModel.deleteBrowseEntry(path) { ok ->
+                    if (!ok) toastFileOpFailed(context, R.string.file_browser_delete_failed)
+                }
+            },
+            onSelect = {
+                agentViewModel.selectSession(it.id)
+                if (!permanentDrawer) scope.launch { drawerState.close() }
+            },
+            onDelete = { agentViewModel.deleteSession(it.id) },
+            onRename = { session, title -> agentViewModel.renameSession(session.id, title) },
+            onTogglePin = { agentViewModel.togglePinSession(it.id) },
+            onExport = { session ->
+                pendingExportSessionId = session.id
+                val safeTitle = session.title.replace(Regex("[^\\w\\u4e00-\\u9fa5\\-]"), "_")
+                sessionExportLauncher.launch("aicode-session-$safeTitle-${System.currentTimeMillis()}.tar.gz")
+            },
+            onNavigateToSettings = {
+                if (!permanentDrawer) scope.launch { drawerState.close() }
+                navController.navigate("settings")
+            }
+        )
+    }
+
+    // 页面主体（NavHost）：大屏放进 Row 的右侧，窄窗放进 modal 抽屉容器里。
+    val navBody: @Composable () -> Unit = {
         NavHost(
             navController = navController,
             startDestination = "chat",
@@ -401,24 +453,51 @@ fun AppNavigation() {
                 // 聊天区内覆盖 LocalUriHandler：Markdown 链接点击默认经此 handler 派发。
                 // 文件路径类链接（无 scheme 或 file://）拦下来跳编辑器，其余（http/https 等）仍走系统浏览器。
                 val defaultUriHandler = androidx.compose.ui.platform.LocalUriHandler.current
-                val fileUriHandler = remember(defaultUriHandler) {
+                val fileUriHandler = remember(defaultUriHandler, expanded) {
                     FileAwareUriHandler(defaultUriHandler) { filePath, line ->
-                        navController.navigate(
-                            "editor?path=${android.net.Uri.encode(filePath)}&line=$line"
-                        )
+                        openFile(filePath, line, false)
                     }
                 }
-                CompositionLocalProvider(
-                    androidx.compose.ui.platform.LocalUriHandler provides fileUriHandler
+                val paneOpen = expanded && paneKind != WorkbenchPaneKind.NONE
+                // 拖动把手时要把位移像素换算成分栏比例，所以记下容器实测宽度。
+                var rowWidthPx by remember { mutableIntStateOf(0) }
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onSizeChanged { rowWidthPx = it.width }
                 ) {
-                    AIChatPanel(
-                        viewModel = agentViewModel,
-                        settingsViewModel = settingsViewModel,
-                        workspaceViewModel = workspaceViewModel,
-                        drawerState = drawerState,
-                        onNavigateToTerminal = { navController.navigate("terminal") },
-                        onNavigateToGit = { navController.navigate("git") }
-                    )
+                    Box(modifier = Modifier.weight(if (paneOpen) paneSplit else 1f)) {
+                        CompositionLocalProvider(
+                            androidx.compose.ui.platform.LocalUriHandler provides fileUriHandler
+                        ) {
+                            AIChatPanel(
+                                viewModel = agentViewModel,
+                                settingsViewModel = settingsViewModel,
+                                workspaceViewModel = workspaceViewModel,
+                                onOpenDrawer = { scope.launch { drawerState.open() } },
+                                showMenuButton = !permanentDrawer,
+                                onNavigateToTerminal = { openWorkbench(WorkbenchPaneKind.TERMINAL) },
+                                onNavigateToGit = { openWorkbench(WorkbenchPaneKind.GIT) }
+                            )
+                        }
+                    }
+                    if (paneOpen) {
+                        VerticalSplitHandle(
+                            onDragDelta = { dx ->
+                                if (rowWidthPx > 0) {
+                                    paneSplit = (paneSplit + dx / rowWidthPx)
+                                        .coerceIn(MIN_PANE_SPLIT, MAX_PANE_SPLIT)
+                                }
+                            }
+                        )
+                        WorkbenchPaneContent(
+                            kind = paneKind,
+                            editorPath = paneEditorPath,
+                            editorLine = paneEditorLine,
+                            onClose = { paneKind = WorkbenchPaneKind.NONE },
+                            modifier = Modifier.weight(1f - paneSplit)
+                        )
+                    }
                 }
             }
             composable("settings") {
@@ -429,7 +508,8 @@ fun AppNavigation() {
                     viewModel = settingsViewModel,
                     onNavigateBack = { 
                         navController.popBackStack() 
-                        scope.launch { drawerState.open() }
+                        // 大屏返回聊天页后侧栏本就常驻，不再弹 modal 抽屉。
+                        if (!expanded) scope.launch { drawerState.open() }
                     },
                     onStopAllAndCloseTerminal = { agentViewModel.stopAllAndCloseTerminal() }
                 )
@@ -481,10 +561,62 @@ fun AppNavigation() {
                     initialLine = entry.arguments?.getInt("line") ?: 0,
                     onBack = {
                         navController.popBackStack()
-                        if (openDrawerOnBack) scope.launch { drawerState.open() }
+                        if (openDrawerOnBack && !expanded) scope.launch { drawerState.open() }
                     }
                 )
             }
+        }
+    }
+
+    if (expanded) {
+        // 大屏不套 ModalNavigationDrawer：侧栏常驻在左，抽屉那套 scrim / 手势 / 锚点在这里完全用不上。
+        // 侧栏只在聊天页展开：设置页自己就是「菜单 + 详情」两栏，外面再套一层会话侧栏就成了三栏。
+        // 宽度走 220ms 补间而不是直接增删，否则右侧区域宽度突变，切页时会明显闪一下。
+        val sidebarWidth by animateDpAsState(
+            targetValue = if (currentRoute == "chat") drawerWidth() else 0.dp,
+            animationSpec = tween(durationMillis = 220),
+            label = "sidebar-width"
+        )
+        Row(modifier = Modifier.fillMaxSize()) {
+            if (sidebarWidth > 0.dp) {
+                Box(
+                    modifier = Modifier
+                        .width(sidebarWidth)
+                        .fillMaxHeight()
+                        .clipToBounds()
+                ) {
+                    // 内容按完整宽度渲染再裁剪：收起过程中不去重排侧栏内部布局。
+                    Box(
+                        modifier = Modifier
+                            .width(drawerWidth())
+                            .fillMaxHeight()
+                    ) {
+                        drawerBody()
+                    }
+                }
+                VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+            Box(modifier = Modifier.weight(1f)) {
+                navBody()
+            }
+        }
+    } else {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            // 仅在聊天页启用手势滑出；其他页面禁止（但已打开时始终可关闭）。
+            gesturesEnabled = currentRoute == "chat" || drawerState.isOpen,
+            drawerContent = {
+                ModalDrawerSheet(
+                    drawerShape = RectangleShape,
+                    drawerContainerColor = settingsPageBackground(),
+                    drawerTonalElevation = 0.dp,
+                    modifier = Modifier.width(drawerWidth())
+                ) {
+                    drawerBody()
+                }
+            }
+        ) {
+            navBody()
         }
     }
 

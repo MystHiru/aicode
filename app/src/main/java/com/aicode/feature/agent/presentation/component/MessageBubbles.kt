@@ -57,6 +57,7 @@ import com.aicode.R
 import com.aicode.core.theme.Brand
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.ui.ContentWidth
 import com.aicode.feature.agent.presentation.AgentUIMessage
 import com.aicode.feature.agent.presentation.hasVisibleContent
 import com.aicode.feature.agent.presentation.MessageRole
@@ -111,8 +112,11 @@ internal fun AgentMessageItem(
 
     val isUser = message.role == MessageRole.USER
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
-    // 用户气泡随文字撑开，最大撑到与 AI 气泡同宽（屏宽 - 列表两侧 padding）
-    val maxUserBubbleWidth = remember(screenWidthDp) { (screenWidthDp.dp - Spacing.lg * 2) }
+    // 用户气泡随文字撑开，最大撑到与 AI 气泡同宽（消息列宽 - 列表两侧 padding）。
+    // 大屏下消息列已限宽居中，气泡上限跟着收窄，不能再拿整个屏宽算。
+    val maxUserBubbleWidth = remember(screenWidthDp) {
+        minOf(screenWidthDp.dp, ContentWidth.readable) - Spacing.lg * 2
+    }
     var copied by remember { mutableStateOf(false) }
     val clipboard = LocalClipboard.current
     val copyScope = rememberCoroutineScope()

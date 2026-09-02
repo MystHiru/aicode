@@ -4,11 +4,13 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -37,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -99,6 +102,17 @@ import com.aicode.feature.terminal.presentation.component.TerminalSettingsSheet
 
 /** 使用手册 Wiki 地址。 */
 private const val USER_GUIDE_WIKI_URL = "https://github.com/jieapi/aicode/wiki"
+
+/** 大屏设置页左侧常驻菜单宽度。 */
+private val SettingsMenuWidth = 320.dp
+
+/**
+ * 设置页走双栏所需的**自身**最小宽度。
+ *
+ * 不能直接拿窗口宽度判定：大屏下设置页左边还有常驻会话侧栏，按窗口算的话
+ * 小平板（约 840dp）上扇出三栏，详情区只剩 200dp 不到，根本没法用。
+ */
+private val SettingsTwoPaneMinWidth = 840.dp
 
 /** 设置页内部二级菜单分区。Menu 为首页菜单，其余为各自的二级页。 */
 internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
@@ -205,16 +219,25 @@ fun SettingsScreen(
     var showLanguageSheet by remember { mutableStateOf(false) }
     var showResetTokenStats by remember { mutableStateOf(false) }
 
-    // 处于二级页时，系统返回键先回到上一层；首页时交还给上层导航。
-    BackHandler(enabled = section != SettingsSection.Menu) {
-        when (section) {
-            SettingsSection.ProviderEditor -> section = SettingsSection.Providers
-            SettingsSection.Log -> section = logReturnSection
-            SettingsSection.SkillDetail -> section = SettingsSection.Skills
-            SettingsSection.SubAgentDetail -> section = SettingsSection.SubAgents
-            SettingsSection.ContainerDownloads -> section = SettingsSection.Container
-            else -> section = SettingsSection.Menu
-        }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    val expanded = maxWidth >= SettingsTwoPaneMinWidth
+
+    // 返回目标：null 表示没有上一层，返回动作交还上层导航（退出设置页）。
+    // 大屏左菜单常驻，一级分区页没有「上一层」——回菜单只会得到一个空占位。
+    // 返回键与顶栏返回箭头共用这一份判定，不再各写一套（之前两处不一致，镜像下载页返回会直接跳回菜单）。
+    val parentSection: SettingsSection? = when (section) {
+        SettingsSection.Menu -> null
+        SettingsSection.ProviderEditor -> SettingsSection.Providers
+        SettingsSection.Log -> logReturnSection.takeUnless { expanded && it == SettingsSection.Menu }
+        SettingsSection.SkillDetail -> SettingsSection.Skills
+        SettingsSection.SubAgentDetail -> SettingsSection.SubAgents
+        SettingsSection.ContainerDownloads -> SettingsSection.Container
+        else -> if (expanded) null else SettingsSection.Menu
+    }
+
+    // 有上一层时系统返回键先回上一层；没有则交还给上层导航。
+    BackHandler(enabled = parentSection != null) {
+        parentSection?.let { section = it }
     }
 
     // settingsViewModel 为 Activity 级共享实例，每次进入设置页重新扫描技能，反映磁盘增删改。
@@ -230,27 +253,80 @@ fun SettingsScreen(
         }
     }
 
-    // 提供商编辑为独立全屏页，直接渲染（不嵌套 Scaffold）
-    if (section == SettingsSection.ProviderEditor) {
-        ProviderEditorScreen(
-            viewModel = viewModel,
-            initialProvider = editingProvider,
-            onNavigateBack = { section = SettingsSection.Providers },
-            onSave = { provider ->
-                viewModel.saveProvider(provider)
+    // 菜单内容：窄窗当首页用，大屏当常驻左栏用，共用同一份。
+    val menuBody: @Composable () -> Unit = {
+        SettingsMenu(
+            themeMode = themeMode,
+            terminalSettings = terminalSettings,
+            currentLanguageDisplayName = currentLanguageDisplayName,
+            backgroundImagePath = backgroundImagePath,
+            backgroundAlpha = backgroundAlpha,
+            onOpenThemeSheet = { showThemeSheet = true },
+            onOpenTerminalSettingsSheet = { showTerminalSettingsSheet = true },
+            onOpenBackgroundSheet = { showBackgroundSheet = true },
+            onOpenLanguageSheet = { showLanguageSheet = true },
+            onOpenManual = {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(USER_GUIDE_WIKI_URL))
+                )
+            },
+            onOpen = {
+                if (it == SettingsSection.Log) {
+                    logReturnSection = SettingsSection.Menu
+                    viewModel.refreshLogs(filterServerName = null)
+                }
+                section = it
             }
         )
-        return
     }
 
-    if (section == SettingsSection.RemoteServers) {
-        com.aicode.feature.workspace.presentation.remote.RemoteServerScreen(
-            onNavigateBack = { section = SettingsSection.Menu }
-        )
-        return
-    }
+    Row(modifier = Modifier.fillMaxSize()) {
+        // 大屏：菜单常驻左栏，右栏只换详情，不再整页来回切。
+        if (expanded) {
+            Column(
+                modifier = Modifier
+                    .width(SettingsMenuWidth)
+                    .fillMaxHeight()
+                    .background(settingsPageBackground())
+            ) {
+                TopAppBar(
+                    title = { Text(stringResource(R.string.settings_title)) },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = settingsPageBackground(),
+                        titleContentColor = MaterialTheme.colorScheme.onBackground
+                    ),
+                    navigationIcon = {
+                        IconButton(onClick = onNavigateBack) {
+                            Icon(
+                                FeatherIcons.ArrowLeft,
+                                contentDescription = stringResource(R.string.common_back)
+                            )
+                        }
+                    }
+                )
+                menuBody()
+            }
+            VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
 
-    Scaffold(
+        Box(modifier = Modifier.weight(1f)) {
+        when {
+            // 这两页自带顶栏，不能嵌进下面的 Scaffold（会双层顶栏）：窄窗占整屏，大屏占右栏。
+            section == SettingsSection.ProviderEditor -> ProviderEditorScreen(
+                viewModel = viewModel,
+                initialProvider = editingProvider,
+                onNavigateBack = { section = SettingsSection.Providers },
+                onSave = { provider ->
+                    viewModel.saveProvider(provider)
+                }
+            )
+
+            section == SettingsSection.RemoteServers ->
+                com.aicode.feature.workspace.presentation.remote.RemoteServerScreen(
+                    onNavigateBack = { section = SettingsSection.Menu }
+                )
+
+            else -> Scaffold(
         containerColor = settingsPageBackground(),
         topBar = {
             TopAppBar(
@@ -260,6 +336,9 @@ fun SettingsScreen(
                             selectedSkill?.name ?: stringResource(section.titleRes)
                         } else if (section == SettingsSection.SubAgentDetail) {
                             selectedSubAgent?.name ?: stringResource(section.titleRes)
+                        } else if (expanded && section == SettingsSection.Menu) {
+                            // 大屏左栏顶部已经写着「设置」，右栏空态不再重复
+                            ""
                         } else {
                             stringResource(section.titleRes)
                         }
@@ -270,20 +349,14 @@ fun SettingsScreen(
                     titleContentColor = MaterialTheme.colorScheme.onBackground
                 ),
                 navigationIcon = {
-                    IconButton(onClick = {
-                        if (section == SettingsSection.Menu) {
-                            onNavigateBack()
-                        } else if (section == SettingsSection.Log) {
-                            section = logReturnSection
-                        } else if (section == SettingsSection.SkillDetail) {
-                            section = SettingsSection.Skills
-                        } else if (section == SettingsSection.SubAgentDetail) {
-                            section = SettingsSection.SubAgents
-                        } else {
-                            section = SettingsSection.Menu
+                    // 大屏一级分区页不给返回箭头：左栏菜单随时可切，退出设置的入口在左栏顶部。
+                    if (!expanded || parentSection != null) {
+                        IconButton(onClick = {
+                            val parent = parentSection
+                            if (parent != null) section = parent else onNavigateBack()
+                        }) {
+                            Icon(FeatherIcons.ArrowLeft, contentDescription = stringResource(R.string.common_back))
                         }
-                    }) {
-                        Icon(FeatherIcons.ArrowLeft, contentDescription = stringResource(R.string.common_back))
                     }
                 },
                 actions = {
@@ -377,29 +450,8 @@ fun SettingsScreen(
                 .padding(padding)
         ) {
             when (section) {
-                SettingsSection.Menu -> SettingsMenu(
-                    themeMode = themeMode,
-                    terminalSettings = terminalSettings,
-                    currentLanguageDisplayName = currentLanguageDisplayName,
-                    backgroundImagePath = backgroundImagePath,
-                    backgroundAlpha = backgroundAlpha,
-                    onOpenThemeSheet = { showThemeSheet = true },
-                    onOpenTerminalSettingsSheet = { showTerminalSettingsSheet = true },
-                    onOpenBackgroundSheet = { showBackgroundSheet = true },
-                    onOpenLanguageSheet = { showLanguageSheet = true },
-                    onOpenManual = {
-                        context.startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse(USER_GUIDE_WIKI_URL))
-                        )
-                    },
-                    onOpen = {
-                        if (it == SettingsSection.Log) {
-                            logReturnSection = SettingsSection.Menu
-                            viewModel.refreshLogs(filterServerName = null)
-                        }
-                        section = it
-                    }
-                )
+                // 大屏菜单已常驻左栏，右栏在没选中分区时给个占位提示
+                SettingsSection.Menu -> if (expanded) SettingsDetailPlaceholder() else menuBody()
                 SettingsSection.Providers -> ProvidersSection(
                     providers = providers,
                     onEdit = {
@@ -559,6 +611,9 @@ fun SettingsScreen(
             }
         }
     }
+        } // 详情区 when 结束
+        } // 右栏结束
+    } // Row 结束
 
     if (showMcpDialog) {
         McpServerEditDialog(
@@ -743,6 +798,22 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+    } // BoxWithConstraints 结束
+}
+
+/** 大屏右栏未选中分区时的占位提示。 */
+@Composable
+private fun SettingsDetailPlaceholder() {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = stringResource(R.string.settings_select_section_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.semanticColors.subtleText
+        )
     }
 }
 

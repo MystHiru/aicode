@@ -25,7 +25,8 @@ export default defineConfig({
           text: '入门',
           items: [
             { text: '快速上手', link: '/guide/quick-start' },
-            { text: '功能总览', link: '/guide/overview' }
+            { text: '功能总览', link: '/guide/overview' },
+            { text: '平板与大屏', link: '/guide/tablet' }
           ]
         },
         {

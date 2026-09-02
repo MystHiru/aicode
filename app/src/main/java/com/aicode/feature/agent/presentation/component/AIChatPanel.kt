@@ -26,11 +26,11 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.DrawerState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicode.R
 import com.aicode.core.theme.Spacing
+import com.aicode.core.ui.readableContentMaxWidth
 import com.aicode.feature.agent.domain.tool.question.UserQuestionAnswer
 import com.aicode.feature.agent.presentation.AgentUIMessage
 import com.aicode.feature.agent.presentation.AgentUIState
@@ -115,7 +116,8 @@ fun AIChatPanel(
     onNavigateToGit: () -> Unit = {},
     settingsViewModel: SettingsViewModel? = null,
     workspaceViewModel: WorkspaceViewModel? = null,
-    drawerState: DrawerState,
+    onOpenDrawer: () -> Unit,
+    showMenuButton: Boolean = true,
     currentFile: String? = null,
     selectedCode: String? = null,
     modifier: Modifier = Modifier
@@ -634,14 +636,15 @@ fun AIChatPanel(
                 outputTokens = sessionOutputTokens,
                 onOpenDrawer = {
                     keyboardController?.hide()
-                    scope.launch { drawerState.open() }
+                    onOpenDrawer()
                 },
                 onNewChat = { viewModel.newSession() },
                 onNavigateToTerminal = onNavigateToTerminal,
                 onNavigateToGit = onNavigateToGit,
                 currentMode = currentMode,
                 onToggleMode = { viewModel.setSessionMode(it) },
-                connectionState = connectionState?.takeIf { isRemote }
+                connectionState = connectionState?.takeIf { isRemote },
+                showMenuButton = showMenuButton
             )
         }
     ) { padding ->
@@ -649,6 +652,14 @@ fun AIChatPanel(
             modifier = modifier
                 .fillMaxSize()
                 .padding(padding)
+        ) {
+        // 大屏正文列限宽居中：铺满整个平板宽度会让一行文字过长、气泡横跨全屏，读起来很累。
+        // 窄窗下 readableContentMaxWidth() 返回 Dp.Unspecified，widthIn 不产生任何约束。
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .widthIn(max = readableContentMaxWidth())
+                .fillMaxSize()
         ) {
             // 内容层：消息列表延伸到屏幕底部，输入框悬浮其上，滚动时卡片可滑入输入框后面
             Column(modifier = Modifier.fillMaxSize()) {
@@ -921,6 +932,7 @@ fun AIChatPanel(
                     }
                 )
             }
+        }
         }
     }
     }

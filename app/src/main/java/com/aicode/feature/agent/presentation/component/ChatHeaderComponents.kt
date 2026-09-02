@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -51,7 +52,8 @@ internal fun ChatHeader(
     onNavigateToGit: () -> Unit,
     currentMode: AgentMode,
     onToggleMode: (AgentMode) -> Unit,
-    connectionState: com.aicode.feature.agent.domain.container.ConnectionState? = null
+    connectionState: com.aicode.feature.agent.domain.container.ConnectionState? = null,
+    showMenuButton: Boolean = true
 ) {
     Surface(
         color = MaterialTheme.colorScheme.background
@@ -67,11 +69,16 @@ internal fun ChatHeader(
                     .padding(horizontal = Spacing.sm, vertical = Spacing.sm),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onOpenDrawer) {
-                    Icon(
-                        FeatherIcons.Menu,
-                        contentDescription = stringResource(R.string.chat_open_sidebar),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                // 大屏常驻侧栏时隐掉汉堡键：侧栏已经摆在左边，再给个开关反而困惑。
+                if (showMenuButton) {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(
+                            FeatherIcons.Menu,
+                            contentDescription = stringResource(R.string.chat_open_sidebar),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else {
+                    Spacer(modifier = Modifier.width(Spacing.sm))
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(

@@ -74,6 +74,7 @@ import compose.icons.feathericons.Code
 import compose.icons.feathericons.Eye
 import compose.icons.feathericons.Save
 import compose.icons.feathericons.Settings
+import compose.icons.feathericons.X
 import io.github.rosemoe.sora.event.ContentChangeEvent
 import io.github.rosemoe.sora.event.SelectionChangeEvent
 import io.github.rosemoe.sora.langs.textmate.TextMateColorScheme
@@ -93,6 +94,7 @@ fun CodeEditorScreen(
     path: String,
     onBack: () -> Unit,
     initialLine: Int = 0,
+    embedded: Boolean = false,
     viewModel: CodeEditorViewModel = hiltViewModel()
 ) {
     LaunchedEffect(path) { viewModel.load(path) }
@@ -182,8 +184,10 @@ fun CodeEditorScreen(
                     navigationIcon = {
                         IconButton(onClick = { handleBack() }) {
                             Icon(
-                                FeatherIcons.ArrowLeft,
-                                contentDescription = stringResource(R.string.common_back)
+                                if (embedded) FeatherIcons.X else FeatherIcons.ArrowLeft,
+                                contentDescription = stringResource(
+                                    if (embedded) R.string.common_close else R.string.common_back
+                                )
                             )
                         }
                     },

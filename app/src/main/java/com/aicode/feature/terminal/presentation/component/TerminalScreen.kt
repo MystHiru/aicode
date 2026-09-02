@@ -89,7 +89,8 @@ import kotlinx.coroutines.flow.first
 @Composable
 fun TerminalScreen(
     viewModel: TerminalViewModel,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    embedded: Boolean = false
 ) {
     val prepareState by viewModel.prepareState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -112,7 +113,12 @@ fun TerminalScreen(
                 ),
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(FeatherIcons.ArrowLeft, contentDescription = stringResource(R.string.common_back))
+                        Icon(
+                            if (embedded) FeatherIcons.X else FeatherIcons.ArrowLeft,
+                            contentDescription = stringResource(
+                                if (embedded) R.string.common_close else R.string.common_back
+                            )
+                        )
                     }
                 },
                 actions = {

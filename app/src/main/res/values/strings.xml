@@ -4,6 +4,7 @@
 
     <!-- 设置页菜单标题 -->
     <string name="settings_title">设置</string>
+    <string name="settings_select_section_hint">从左侧选择一个设置项</string>
     <string name="settings_providers">AI 提供商</string>
     <string name="settings_provider_editor">提供商</string>
     <string name="settings_default_models">默认模型</string>
@@ -164,6 +165,7 @@
     <string name="common_copy_success">已复制到剪贴板</string>
     <string name="common_allow">允许</string>
     <string name="common_close">关闭</string>
+    <string name="workbench_split_handle">拖动调整分栏宽度</string>
     <string name="common_other">其他</string>
     <string name="common_switch">切换</string>
     <string name="common_create">创建</string>

@@ -4,6 +4,7 @@
 
     <!-- Settings menu titles -->
     <string name="settings_title">Settings</string>
+    <string name="settings_select_section_hint">Pick a setting from the list</string>
     <string name="settings_providers">AI Providers</string>
     <string name="settings_provider_editor">Provider</string>
     <string name="settings_default_models">Default Models</string>
@@ -164,6 +165,7 @@
     <string name="common_copy_success">Copied to clipboard</string>
     <string name="common_allow">Allow</string>
     <string name="common_close">Close</string>
+    <string name="workbench_split_handle">Drag to resize panes</string>
     <string name="common_other">Other</string>
     <string name="common_switch">Switch</string>
     <string name="common_create">Create</string>
