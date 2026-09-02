@@ -2,7 +2,6 @@ package com.aicode.feature.settings.presentation.component
 
 import android.content.ClipData
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,7 +13,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,6 +21,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -30,7 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,8 +38,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.res.stringResource
@@ -64,10 +61,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.ui.platform.LocalContext
 import compose.icons.feathericons.ChevronRight
-import compose.icons.feathericons.Terminal
 import compose.icons.feathericons.AlertCircle
-import compose.icons.feathericons.ArrowDown
-import compose.icons.feathericons.ArrowUp
 import compose.icons.feathericons.Check
 import compose.icons.feathericons.Copy
 import compose.icons.feathericons.Plus
@@ -77,54 +71,26 @@ import kotlinx.coroutines.launch
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
 private fun ModelMetadataTags(metadata: ModelMetadata?) {
+    val pillText = MaterialTheme.colorScheme.onSurfaceVariant
+    val pillBg = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
     FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         metadata?.let {
             if (it.supportsVision) {
-                ModelTag(text = "Image")
+                McpPill(text = "Image", textColor = pillText, backgroundColor = pillBg)
             }
             if (it.supportsTools) {
-                ModelTag(text = "Tools")
+                McpPill(text = "Tools", textColor = pillText, backgroundColor = pillBg)
             }
             val input = it.inputTokens?.takeIf { tokens -> tokens > 0 }
                 ?: it.contextTokens.takeIf { tokens -> tokens > 0 }
             if (input != null) {
-                ModelTag(icon = FeatherIcons.ArrowUp, text = formatTokenLimit(input))
+                McpPill(text = "↑ ${formatTokenLimit(input)}", textColor = pillText, backgroundColor = pillBg)
             }
             it.outputTokens?.takeIf { tokens -> tokens > 0 }?.let { output ->
-                ModelTag(icon = FeatherIcons.ArrowDown, text = formatTokenLimit(output))
-            }
-        }
-    }
-}
-
-@Composable
-private fun ModelTag(text: String? = null, icon: androidx.compose.ui.graphics.vector.ImageVector? = null) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(50),
-        modifier = Modifier.padding(end = 4.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (icon != null) {
-                Icon(
-                    icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(12.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (icon != null && text != null) Spacer(Modifier.width(4.dp))
-            if (text != null) {
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                McpPill(text = "↓ ${formatTokenLimit(output)}", textColor = pillText, backgroundColor = pillBg)
             }
         }
     }
@@ -138,103 +104,134 @@ internal fun ProviderModelRow(
     result: ModelTestResult?,
     onTest: () -> Unit,
     onRemove: () -> Unit,
-    onEdit: () -> Unit = {}
+    onEdit: () -> Unit = {},
+    showDivider: Boolean = false,
+    dragHandle: (@Composable () -> Unit)? = null
 ) {
     var showDetail by remember { mutableStateOf(false) }
-
-    val light = MaterialTheme.colorScheme.background.luminance() > 0.5f
 
     SwipeToDeleteRow(
         onDelete = onRemove,
         onClick = onEdit
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Spacing.lg, vertical = Spacing.sm)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.lg, vertical = 12.dp)
             ) {
-                ModelLogoIcon(modelName = model, size = 24.dp)
-                Spacer(Modifier.width(Spacing.md))
-
-                // Center Content (Name & Tags)
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        model,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    ModelMetadataTags(metadata)
-                }
-
-                Spacer(Modifier.width(Spacing.sm))
-
-                // Right Action: 测试 (固定宽高 56dp × 36dp，防止状态切换引起高度塌陷导致 UI 上移)
-                Box(
-                    modifier = Modifier
-                        .width(56.dp)
-                        .height(36.dp),
-                    contentAlignment = Alignment.Center
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (testing) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        TextButton(
-                            onClick = onTest,
-                            contentPadding = PaddingValues(horizontal = Spacing.xs, vertical = 0.dp),
-                            modifier = Modifier.height(32.dp)
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = RoundedCornerShape(Radius.sm)
+                            )
+                    ) {
+                        ModelLogoIcon(
+                            modelName = model,
+                            size = 22.dp,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                    Spacer(Modifier.width(Spacing.md))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            model,
+                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (metadata.hasVisibleTags()) {
+                            Spacer(Modifier.height(6.dp))
+                            ModelMetadataTags(metadata)
+                        }
+                    }
+
+                    Spacer(Modifier.width(Spacing.sm))
+
+                    CompositionLocalProvider(
+                        LocalMinimumInteractiveComponentSize provides 0.dp
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(56.dp)
+                                .height(36.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Text(stringResource(R.string.provider_test), style = MaterialTheme.typography.labelMedium)
+                            if (testing) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            } else {
+                                TextButton(
+                                    onClick = onTest,
+                                    contentPadding = PaddingValues(horizontal = Spacing.xs, vertical = 0.dp),
+                                    modifier = Modifier
+                                        .width(56.dp)
+                                        .height(32.dp)
+                                ) {
+                                    Text(
+                                        text = stringResource(R.string.provider_test),
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            }
+                        }
+
+                        if (dragHandle != null) {
+                            Spacer(Modifier.width(Spacing.xs))
+                            dragHandle()
                         }
                     }
                 }
-            }
 
-            // Test Result (无论成功还是失败，均可点击展开详细调试信息)
-            result?.let { r ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .padding(top = Spacing.xs, start = 36.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .clickable { showDetail = true }
-                        .padding(horizontal = 4.dp, vertical = 2.dp)
-                ) {
-                    Icon(
-                        imageVector = if (r.success) FeatherIcons.Check else FeatherIcons.AlertCircle,
-                        contentDescription = null,
-                        tint = if (r.success) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(Modifier.width(Spacing.xs))
-                    val displayMsg = if (r.success) {
-                        r.message
-                    } else {
-                        val codeMatch = Regex("""(?i)(HTTP\s*\d{3}|code[:\s]+[a-zA-Z0-9_]+)""").find(r.message)
-                        if (codeMatch != null) codeMatch.value
-                        else r.message.lines().firstOrNull()?.let { if (it.length > 20) it.take(20) + "..." else it } ?: "Error"
+                result?.let { r ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .padding(top = Spacing.xs, start = 52.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable { showDetail = true }
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (r.success) FeatherIcons.Check else FeatherIcons.AlertCircle,
+                            contentDescription = null,
+                            tint = if (r.success) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(Spacing.xs))
+                        val displayMsg = if (r.success) {
+                            r.message
+                        } else {
+                            val codeMatch = Regex("""(?i)(HTTP\s*\d{3}|code[:\s]+[a-zA-Z0-9_]+)""").find(r.message)
+                            if (codeMatch != null) codeMatch.value
+                            else r.message.lines().firstOrNull()?.let { if (it.length > 20) it.take(20) + "..." else it } ?: "Error"
+                        }
+                        Text(
+                            text = displayMsg,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (r.success) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Icon(
+                            imageVector = FeatherIcons.ChevronRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.size(12.dp)
+                        )
                     }
-                    Text(
-                        text = displayMsg,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (r.success) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Icon(
-                        imageVector = FeatherIcons.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier.size(12.dp)
-                    )
                 }
+            }
+            if (showDivider) {
+                SettingsDivider()
             }
         }
     }
@@ -537,6 +534,13 @@ internal fun ModelTestDetailBottomSheet(
     }
 }
 
+private fun ModelMetadata?.hasVisibleTags(): Boolean {
+    if (this == null) return false
+    if (supportsVision || supportsTools) return true
+    val input = inputTokens?.takeIf { it > 0 } ?: contextTokens.takeIf { it > 0 }
+    return input != null || (outputTokens != null && outputTokens > 0)
+}
+
 private fun formatTokenLimit(tokens: Int): String =
     when {
         tokens >= 1_000_000 && tokens % 1_000_000 == 0 -> "${tokens / 1_000_000}M"
@@ -567,8 +571,10 @@ internal fun FetchModelRow(
         Spacer(Modifier.width(Spacing.md))
         Column(modifier = Modifier.weight(1f)) {
             Text(model, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
-            Spacer(Modifier.height(4.dp))
-            ModelMetadataTags(metadata)
+            if (metadata.hasVisibleTags()) {
+                Spacer(Modifier.height(4.dp))
+                ModelMetadataTags(metadata)
+            }
         }
         IconButton(onClick = onAdd, modifier = Modifier.size(32.dp)) {
             Icon(FeatherIcons.Plus, contentDescription = stringResource(R.string.common_add), tint = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -11,7 +11,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.WindowInsets
@@ -67,7 +72,6 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.DisposableEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -92,6 +96,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.zIndex
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.unit.Dp
@@ -132,6 +140,7 @@ import compose.icons.feathericons.Eye
 import compose.icons.feathericons.EyeOff
 import compose.icons.feathericons.FileText
 import compose.icons.feathericons.Folder
+import compose.icons.feathericons.Menu
 import compose.icons.feathericons.Minus
 import compose.icons.feathericons.Play
 import compose.icons.feathericons.Plus
@@ -144,6 +153,8 @@ import com.aicode.feature.settings.domain.model.ProviderBalanceResult
 import com.aicode.feature.settings.domain.model.ProviderBalanceState
 import androidx.compose.ui.res.stringResource
 import com.aicode.R
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -198,10 +209,11 @@ fun ProviderEditorScreen(
 
     // 两个 tab 的滚动状态提升到页面层，聚合出「是否正在滚动」供底部 tab栏滚动弱化（同 Git 页面）。
     val configScrollState = rememberScrollState()
-    val modelsScrollState = rememberScrollState()
+    val modelsListState = rememberLazyListState()
+    var modelsOrderDirty by remember { mutableStateOf(false) }
     val tabsScrolling by remember {
         derivedStateOf {
-            configScrollState.isScrollInProgress || modelsScrollState.isScrollInProgress
+            configScrollState.isScrollInProgress || modelsListState.isScrollInProgress
         }
     }
 
@@ -211,7 +223,9 @@ fun ProviderEditorScreen(
     val proxyTestState by viewModel.proxyTestState.collectAsStateWithLifecycle()
     val balanceTestState by viewModel.balanceTestState.collectAsStateWithLifecycle()
     val modelMetadata by viewModel.modelMetadata.collectAsStateWithLifecycle()
-    val modelSnapshot = models.toList()
+    val modelIdSet by remember {
+        derivedStateOf { models.toSet() }
+    }
 
     DisposableEffect(Unit) {
         viewModel.resetFetchState()
@@ -224,11 +238,11 @@ fun ProviderEditorScreen(
         }
     }
 
-    LaunchedEffect(type, modelSnapshot) {
-        viewModel.resolveModelMetadata(providerId, type, modelSnapshot)
+    LaunchedEffect(type, modelIdSet) {
+        viewModel.resolveModelMetadata(providerId, type, models.toList())
     }
 
-    LaunchedEffect(providerId, modelSnapshot) {
+    LaunchedEffect(providerId) {
         customMetadata = customMetadataStore.all()
     }
 
@@ -279,7 +293,14 @@ fun ProviderEditorScreen(
         onSave(currentConfig())
     }
 
+    val modelsReorderableState = rememberReorderableLazyListState(modelsListState) { from, to ->
+        if (from.index !in models.indices || to.index !in models.indices || from.index == to.index) return@rememberReorderableLazyListState
+        models.add(to.index, models.removeAt(from.index))
+        modelsOrderDirty = true
+    }
+
     fun saveAndNavigateBack() {
+        modelsOrderDirty = false
         saveCurrent()
         onNavigateBack()
     }
@@ -578,16 +599,12 @@ fun ProviderEditorScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .verticalScroll(modelsScrollState)
                         .padding(horizontal = Spacing.lg)
-                        .padding(bottom = 70.dp),
-                    verticalArrangement = Arrangement.spacedBy(Spacing.sm)
                 ) {
-                    // ── 模型管理 ──
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = Spacing.md, end = Spacing.xs, top = Spacing.sm),
+                            .padding(start = Spacing.md, end = Spacing.xs, top = Spacing.sm, bottom = Spacing.sm),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
@@ -613,7 +630,8 @@ fun ProviderEditorScreen(
                     if (models.isEmpty()) {
                         Box(
                             modifier = Modifier
-                                .fillMaxSize()
+                                .weight(1f)
+                                .fillMaxWidth()
                                 .padding(vertical = Spacing.xl),
                             contentAlignment = Alignment.Center
                         ) {
@@ -634,30 +652,102 @@ fun ProviderEditorScreen(
                             }
                         }
                     } else {
-                        SettingsGroup {
-                            models.forEachIndexed { index, model ->
-                                if (index > 0) {
-                                    SettingsDivider()
-                                }
-                                ProviderModelRow(
-                                    model = model,
-                                    metadata = mergeModelMetadata(model, modelMetadata[model], customMetadata["$providerId:$model"]),
-                                    testing = model in testing,
-                                    result = testResults[model],
-                                    onTest = { viewModel.testModel(currentConfig(), model) },
-                                    onEdit = {
-                                        editingModel = model
-                                        showAddModelSheet = true
-                                    },
-                                    onRemove = {
-                                        models.remove(model)
-                                        scope.launch {
-                                            customMetadataStore.remove(providerId, model)
-                                            customMetadata = customMetadataStore.all()
-                                        }
-                                        saveCurrent()
+                        LazyColumn(
+                            state = modelsListState,
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(bottom = 70.dp)
+                        ) {
+                            itemsIndexed(
+                                items = models,
+                                key = { _, model -> model }
+                            ) { index, model ->
+                                ReorderableItem(
+                                    state = modelsReorderableState,
+                                    key = model
+                                ) { isDragging ->
+                                    val isFirst = index == 0
+                                    val isLast = index == models.lastIndex
+                                    val shape = if (isDragging) {
+                                        RoundedCornerShape(Radius.lg)
+                                    } else {
+                                        RoundedCornerShape(
+                                            topStart = if (isFirst) Radius.lg else 0.dp,
+                                            topEnd = if (isFirst) Radius.lg else 0.dp,
+                                            bottomStart = if (isLast) Radius.lg else 0.dp,
+                                            bottomEnd = if (isLast) Radius.lg else 0.dp
+                                        )
                                     }
-                                )
+                                    val dragScale by animateFloatAsState(
+                                        targetValue = if (isDragging) 0.95f else 1f,
+                                        animationSpec = tween(durationMillis = if (isDragging) 120 else 220),
+                                        label = "modelDragScale"
+                                    )
+                                    val dragElevation by animateDpAsState(
+                                        targetValue = if (isDragging) 8.dp else 0.dp,
+                                        animationSpec = tween(durationMillis = if (isDragging) 120 else 220),
+                                        label = "modelDragElevation"
+                                    )
+                                    Surface(
+                                        shape = shape,
+                                        color = MaterialTheme.semanticColors.cardSurface,
+                                        shadowElevation = dragElevation,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .zIndex(if (isDragging) 1f else 0f)
+                                            .graphicsLayer {
+                                                scaleX = dragScale
+                                                scaleY = dragScale
+                                            }
+                                    ) {
+                                        ProviderModelRow(
+                                            model = model,
+                                            metadata = mergeModelMetadata(model, modelMetadata[model], customMetadata["$providerId:$model"]),
+                                            testing = model in testing,
+                                            result = testResults[model],
+                                            onTest = { viewModel.testModel(currentConfig(), model) },
+                                            onEdit = {
+                                                editingModel = model
+                                                showAddModelSheet = true
+                                            },
+                                            onRemove = {
+                                                models.remove(model)
+                                                scope.launch {
+                                                    customMetadataStore.remove(providerId, model)
+                                                    customMetadata = customMetadataStore.all()
+                                                }
+                                                saveCurrent()
+                                            },
+                                            showDivider = !isLast && !isDragging,
+                                            dragHandle = {
+                                                val haptic = LocalHapticFeedback.current
+                                                IconButton(
+                                                    onClick = {},
+                                                    modifier = Modifier
+                                                        .size(32.dp)
+                                                        .longPressDraggableHandle(
+                                                            onDragStarted = {
+                                                                haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                                                            },
+                                                            onDragStopped = {
+                                                                haptic.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                                                                if (modelsOrderDirty) {
+                                                                    modelsOrderDirty = false
+                                                                    saveCurrent()
+                                                                }
+                                                            }
+                                                        )
+                                                ) {
+                                                    Icon(
+                                                        imageVector = FeatherIcons.Menu,
+                                                        contentDescription = stringResource(R.string.provider_sort_drag_handle),
+                                                        tint = MaterialTheme.semanticColors.subtleText,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
