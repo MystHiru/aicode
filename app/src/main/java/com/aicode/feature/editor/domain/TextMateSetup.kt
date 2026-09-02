@@ -60,10 +60,15 @@ object TextMateSetup {
     /**
      * 给出 TextMate scopeName，仅覆盖 assets/textmate/languages.json 里实际打包的语法。
      * 返回 null 表示不高亮、按纯文本显示。
+     *
+     * 必须在 [ensureInitialized] 之后调用：扩展名映射与 languages.json 是两份独立清单，
+     * 未打包的语法要在这里挡掉——TextMateLanguage.create 对未注册 scope 抛 IllegalArgumentException，
+     * 会直接崩在编辑器构造上。
      */
     fun scopeNameFor(path: String): String? {
         val fileName = path.substringAfterLast('/')
-        return scopeByExtension(fileName.substringAfterLast('.', "").lowercase())
+        val scope = scopeByExtension(fileName.substringAfterLast('.', "").lowercase()) ?: return null
+        return scope.takeIf { GrammarRegistry.getInstance().findGrammar(it) != null }
     }
 
     private fun scopeByExtension(ext: String): String? = when (ext) {
@@ -81,7 +86,6 @@ object TextMateSetup {
         "rs" -> "source.rust"
         "c", "h" -> "source.c"
         "cpp", "cc", "cxx", "hpp", "hh", "hxx" -> "source.cpp"
-        "cs" -> "source.cs"
         "css" -> "source.css"
         "php" -> "source.php"
         "lua" -> "source.lua"
