@@ -645,7 +645,9 @@ fun SettingsScreen(
                 SettingsSection.TokenStats -> TokenStatsSection(
                     state = tokenStats,
                     onSelectPeriod = { viewModel.setTokenStatsPeriod(it) },
-                    onSelectPage = { viewModel.setTokenStatsPage(it) }
+                    onSelectPage = { viewModel.setTokenStatsPage(it) },
+                    onSelectProviderPage = { viewModel.setProviderStatsPage(it) },
+                    onSelectModelPage = { viewModel.setModelStatsPage(it) }
                 )
                 SettingsSection.ProviderEditor -> {} // 已在上方 early return 处理
                 SettingsSection.RemoteServers -> {} // 已在上方 early return 处理

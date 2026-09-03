@@ -78,7 +78,9 @@ private val CANCELLED_COLOR = TokenStatsPalette.Cancelled
 internal fun TokenStatsSection(
     state: TokenStatsUiState,
     onSelectPeriod: (TokenStatsPeriod) -> Unit,
-    onSelectPage: (Int) -> Unit
+    onSelectPage: (Int) -> Unit,
+    onSelectProviderPage: (Int) -> Unit = {},
+    onSelectModelPage: (Int) -> Unit = {}
 ) {
     val context = LocalContext.current
     Column(
@@ -186,6 +188,15 @@ internal fun TokenStatsSection(
                     if (index > 0) SettingsDivider()
                     ProviderStatsRow(p)
                 }
+                if (state.providersTotal > STATS_PAGE_SIZE) {
+                    SettingsDivider()
+                    StatsPaginationBar(
+                        page = state.providersPage,
+                        total = state.providersTotal,
+                        pageSize = STATS_PAGE_SIZE,
+                        onSelectPage = onSelectProviderPage
+                    )
+                }
             }
         }
 
@@ -198,6 +209,15 @@ internal fun TokenStatsSection(
                 state.models.forEachIndexed { index, m ->
                     if (index > 0) SettingsDivider()
                     ModelStatsRow(m)
+                }
+                if (state.modelsTotal > STATS_PAGE_SIZE) {
+                    SettingsDivider()
+                    StatsPaginationBar(
+                        page = state.modelsPage,
+                        total = state.modelsTotal,
+                        pageSize = STATS_PAGE_SIZE,
+                        onSelectPage = onSelectModelPage
+                    )
                 }
             }
         }
@@ -387,7 +407,13 @@ private fun ProviderStatsRow(p: ProviderCallStats) {
                 color = MaterialTheme.colorScheme.onSurface
             )
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
+        if (p.retryCount > 0) {
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
+                StatChip(stringResource(R.string.settings_token_stats_retries, p.retryCount))
+            }
+            Spacer(Modifier.height(4.dp))
+        }
         // 消耗占比进度条（输入 + 输出两段）
         Row(modifier = Modifier.fillMaxWidth()) {
             Box(
@@ -427,7 +453,7 @@ private fun ModelStatsRow(m: ModelCallStats) {
                 modifier = Modifier.weight(1f)
             )
             Text(
-                text = "↓${formatTokenCount(m.outputTokens.toInt())}",
+                text = "↑${formatTokenCount(m.inputTokens.toInt())} ↓${formatTokenCount(m.outputTokens.toInt())}",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -437,6 +463,26 @@ private fun ModelStatsRow(m: ModelCallStats) {
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
             StatChip(stringResource(R.string.settings_token_stats_calls_suffix2, m.calls))
             StatChip(stringResource(R.string.settings_token_stats_success_rate, successRate))
+            if (m.retryCount > 0) {
+                StatChip(stringResource(R.string.settings_token_stats_retries, m.retryCount))
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        // 消耗占比进度条（输入 + 输出两段）
+        Row(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .weight((m.inputTokens + 1f).toFloat())
+                    .height(6.dp)
+                    .background(INPUT_COLOR, RoundedCornerShape(3.dp))
+            )
+            Spacer(Modifier.width(2.dp))
+            Box(
+                modifier = Modifier
+                    .weight((m.outputTokens + 1f).toFloat())
+                    .height(6.dp)
+                    .background(OUTPUT_COLOR, RoundedCornerShape(3.dp))
+            )
         }
     }
 }
@@ -450,7 +496,38 @@ private fun StatChip(text: String) {
     )
 }
 
-private val CALLS_PAGE_SIZE = 10
+private const val STATS_PAGE_SIZE = 5
+private const val CALLS_PAGE_SIZE = 10
+
+@Composable
+private fun StatsPaginationBar(
+    page: Int,
+    total: Int,
+    pageSize: Int,
+    onSelectPage: (Int) -> Unit
+) {
+    val pageCount = if (total == 0) 1 else (total - 1) / pageSize + 1
+    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Spacing.sm, vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TextButton(onClick = { onSelectPage(page - 1) }, enabled = page > 0) {
+            Text(stringResource(R.string.common_prev))
+        }
+        Text(
+            text = stringResource(R.string.settings_token_stats_page, page + 1, pageCount),
+            style = MaterialTheme.typography.bodySmall,
+            color = mutedColor
+        )
+        TextButton(onClick = { onSelectPage(page + 1) }, enabled = page < pageCount - 1) {
+            Text(stringResource(R.string.common_next))
+        }
+    }
+}
 
 private val COL_MODEL_W = 150.dp
 private val COL_PROVIDER_W = 100.dp
@@ -495,25 +572,12 @@ private fun CallRecordsTable(
                 }
             }
         }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Spacing.sm, vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TextButton(onClick = { onSelectPage(page - 1) }, enabled = page > 0) {
-                Text(stringResource(R.string.common_prev))
-            }
-            Text(
-                text = stringResource(R.string.settings_token_stats_page, page + 1, pageCount),
-                style = MaterialTheme.typography.bodySmall,
-                color = mutedColor
-            )
-            TextButton(onClick = { onSelectPage(page + 1) }, enabled = page < pageCount - 1) {
-                Text(stringResource(R.string.common_next))
-            }
-        }
+        StatsPaginationBar(
+            page = page,
+            total = total,
+            pageSize = CALLS_PAGE_SIZE,
+            onSelectPage = onSelectPage
+        )
     }
 }
 

@@ -42,6 +42,8 @@ data class LlmCallRecordEntity(
     val errorMessage: String? = null,
     /** 模型结束原因：end_turn / tool_use / max_tokens / stop / length。 */
     val stopReason: String? = null,
+    /** 本次交互底层发生网络重试的次数（0 表示首试成功或非重试类失败）。 */
+    val retryCount: Int = 0,
     /** 请求发出时间（epoch 毫秒）。 */
     val createdAt: Long
 )

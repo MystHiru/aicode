@@ -60,6 +60,7 @@
     <string name="settings_token_stats_col_status">状态</string>
     <string name="settings_token_stats_col_cost">费用</string>
     <string name="settings_token_stats_page">第 %1$d / %2$d 页</string>
+    <string name="settings_token_stats_retries">重试 %1$d 次</string>
     <string name="settings_token_stats_reset">重置</string>
     <string name="settings_token_stats_reset_title">重置 Token 统计</string>
     <string name="settings_token_stats_reset_confirm">将清空全部调用记录，此操作不可恢复。确定重置？</string>

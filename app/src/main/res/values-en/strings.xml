@@ -60,6 +60,7 @@
     <string name="settings_token_stats_col_status">Status</string>
     <string name="settings_token_stats_col_cost">Cost</string>
     <string name="settings_token_stats_page">Page %1$d of %2$d</string>
+    <string name="settings_token_stats_retries">%1$d retries</string>
     <string name="settings_token_stats_reset">Reset</string>
     <string name="settings_token_stats_reset_title">Reset token stats</string>
     <string name="settings_token_stats_reset_confirm">All call records will be permanently deleted. Reset?</string>

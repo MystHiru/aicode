@@ -168,10 +168,25 @@ data class TokenStatsUiState(
     val callsPage: Int = 0,
     /** 当前周期调用总数，供分页显示总页数。 */
     val callsTotal: Int = 0,
+    /** 渠道当前页（0 起）。 */
+    val providersPage: Int = 0,
+    /** 渠道总数。 */
+    val providersTotal: Int = 0,
+    /** 模型当前页（0 起）。 */
+    val modelsPage: Int = 0,
+    /** 模型总数。 */
+    val modelsTotal: Int = 0,
     /** 当前周期总费用（USD，按 models.dev 单价估算）。 */
     val totalCostUsd: Double = 0.0,
     /** 调用明细分页内每条记录的费用（key=记录 id，null=模型无单价）。 */
     val recentCallCosts: Map<Long, Double?> = emptyMap()
+)
+
+private data class ModelStatsPaging(
+    val paged: List<com.aicode.feature.agent.data.local.dao.ModelCallStats>,
+    val page: Int,
+    val total: Int,
+    val allModels: List<com.aicode.feature.agent.data.local.dao.ModelCallStats>
 )
 
 /** 技能列表页的 UI 状态：技能 + 来源作用域 + 启停状态。 */
@@ -267,6 +282,7 @@ class SettingsViewModel @Inject constructor(
     private companion object {
         const val MAX_LOG_LINES = 1200
         const val CALLS_PAGE_SIZE = 10
+        const val STATS_PAGE_SIZE = 5
         /** 缓存读价缺失时按输入价的折扣估算。 */
         const val CACHE_READ_DISCOUNT = 0.1
         /** 缓存写入单价缺失时相对输入价的倍率（Anthropic 官方为 1.25×）。 */
@@ -520,6 +536,12 @@ class SettingsViewModel @Inject constructor(
     /** Token 统计：调用明细分页页码（0 起）。 */
     private val _tokenStatsPage = MutableStateFlow(0)
 
+    /** Token 统计：渠道分页页码（0 起）。 */
+    private val _providerStatsPage = MutableStateFlow(0)
+
+    /** Token 统计：模型分页页码（0 起）。 */
+    private val _modelStatsPage = MutableStateFlow(0)
+
     /** 工作区已配置的远程连接通道，供容器镜像 SSH 模式下拉复用。 */
     val remoteConnections: StateFlow<List<RemoteConnection>> = remoteRepository.getConnections()
         .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
@@ -716,27 +738,50 @@ class SettingsViewModel @Inject constructor(
                             llmCallRecordDao.getDayStats(start, tz)
                         },
                         llmCallRecordDao.getSummary(start),
-                        llmCallRecordDao.getProviderStats(start),
-                        llmCallRecordDao.getModelStats(start),
+                        combine(llmCallRecordDao.getProviderStats(start), _providerStatsPage) { list, page ->
+                            val total = list.size
+                            val lastPage = if (total == 0) 0 else (total - 1) / STATS_PAGE_SIZE
+                            val safePage = page.coerceIn(0, lastPage)
+                            val paged = list.drop(safePage * STATS_PAGE_SIZE).take(STATS_PAGE_SIZE)
+                            Triple(paged, safePage, total)
+                        },
+                        combine(llmCallRecordDao.getModelStats(start), _modelStatsPage) { list, page ->
+                            val total = list.size
+                            val lastPage = if (total == 0) 0 else (total - 1) / STATS_PAGE_SIZE
+                            val safePage = page.coerceIn(0, lastPage)
+                            val paged = list.drop(safePage * STATS_PAGE_SIZE).take(STATS_PAGE_SIZE)
+                            ModelStatsPaging(paged, safePage, total, list)
+                        },
                         // 明细分页：页号或总数变化时重查当前页，其余聚合不重复计算
                         combine(_tokenStatsPage, llmCallRecordDao.getCallsCount(start)) { page, total -> page to total }
                             .flatMapLatest { (page, total) ->
                                 llmCallRecordDao.getRecentCalls(start, CALLS_PAGE_SIZE, page * CALLS_PAGE_SIZE)
                                     .map { calls -> Triple(calls, total, page) }
                             }
-                    ) { rawTrend, summary, providers, models, (calls, total, page) ->
+                    ) { rawTrend, summary, (pProviders, pPage, pTotal), modelPaging, (calls, total, page) ->
                         val trend = padTrend(period, rawTrend, tz)
                         val costs = withContext(Dispatchers.IO) {
                             val perCall = calls.associate {
                                 it.record.id to callCostUsd(it.record.providerId, it.record.model, it.record.inputTokens.toLong(), it.record.cachedInputTokens.toLong(), it.record.outputTokens.toLong(), it.record.cacheCreationTokens.toLong())
                             }
-                            val periodTotal = models.sumOf { m ->
+                            val periodTotal = modelPaging.allModels.sumOf { m ->
                                 callCostUsd(null, m.model, m.inputTokens, m.cachedInputTokens, m.outputTokens, m.cacheCreationTokens) ?: 0.0
                             }
                             perCall to periodTotal
                         }
                         TokenStatsUiState(
-                            period, summary, trend, providers, models, calls, page, total,
+                            period = period,
+                            summary = summary,
+                            trend = trend,
+                            providers = pProviders,
+                            models = modelPaging.paged,
+                            recentCalls = calls,
+                            callsPage = page,
+                            callsTotal = total,
+                            providersPage = pPage,
+                            providersTotal = pTotal,
+                            modelsPage = modelPaging.page,
+                            modelsTotal = modelPaging.total,
                             totalCostUsd = costs.second,
                             recentCallCosts = costs.first
                         )
@@ -1365,8 +1410,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setTokenStatsPeriod(period: TokenStatsPeriod) {
         _tokenStatsPeriod.value = period
-        // 切周期后明细回到第一页
+        // 切周期后明细与统计切片回到第一页
         _tokenStatsPage.value = 0
+        _providerStatsPage.value = 0
+        _modelStatsPage.value = 0
     }
 
     /**
@@ -1401,11 +1448,27 @@ class SettingsViewModel @Inject constructor(
         _tokenStatsPage.value = page.coerceIn(0, lastPage)
     }
 
+    /** 渠道统计翻页；越界时钳制到合法范围。 */
+    fun setProviderStatsPage(page: Int) {
+        val total = _tokenStats.value.providersTotal
+        val lastPage = if (total == 0) 0 else (total - 1) / STATS_PAGE_SIZE
+        _providerStatsPage.value = page.coerceIn(0, lastPage)
+    }
+
+    /** 模型统计翻页；越界时钳制到合法范围。 */
+    fun setModelStatsPage(page: Int) {
+        val total = _tokenStats.value.modelsTotal
+        val lastPage = if (total == 0) 0 else (total - 1) / STATS_PAGE_SIZE
+        _modelStatsPage.value = page.coerceIn(0, lastPage)
+    }
+
     /** 清空全部调用记录（Token 统计页右上角重置）；Room Flow 自动把各聚合刷新为空。 */
     fun resetTokenStats() {
         viewModelScope.launch {
             llmCallRecordDao.deleteAll()
             _tokenStatsPage.value = 0
+            _providerStatsPage.value = 0
+            _modelStatsPage.value = 0
         }
     }
 

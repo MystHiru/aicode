@@ -484,6 +484,7 @@ class StatefulAgentWorkflow @Inject constructor(
                         var lastReasoningDeltaSentAt = 0L
                         var pendingTextDelta: String? = null
                         var pendingReasoningDelta: String? = null
+                        var retryAttempts = 0
                         suspend fun flushPendingTextDelta() {
                             val text = pendingTextDelta ?: return
                             pendingTextDelta = null
@@ -523,6 +524,7 @@ class StatefulAgentWorkflow @Inject constructor(
                                         }
                                     }
                                     is AIStreamChunk.Retrying -> {
+                                        retryAttempts = maxOf(retryAttempts, chunk.attempt)
                                         acc.setLength(0)
                                         reasoningAcc.setLength(0)
                                         pendingTextDelta = null
@@ -603,6 +605,7 @@ class StatefulAgentWorkflow @Inject constructor(
                                         },
                                         errorMessage = callError,
                                         stopReason = usage?.stopReason,
+                                        retryCount = retryAttempts,
                                         createdAt = callStartWall
                                     )
                                 )
@@ -823,11 +826,49 @@ class StatefulAgentWorkflow @Inject constructor(
         val provider = resolveTitleFallbackProvider(sessionId) ?: getEffectiveProvider(sessionId)
         val prompt = promptProvider.resolvePrompt(TITLE_GENERATOR_FILE)
             .replace(LEADING_COMMENT, "")
-        val response = provider.complete(
-            systemPrompt = prompt,
-            messages = listOf(AgentMessage.UserMessage(content = request)),
-            tools = emptyList()
-        )
+        val callStartWall = System.currentTimeMillis()
+        val callStartElapsed = SystemClock.elapsedRealtime()
+        var callCompleted = false
+        var callError: String? = null
+        var usage: AIResponse? = null
+        val response = try {
+            val resp = provider.complete(
+                systemPrompt = prompt,
+                messages = listOf(AgentMessage.UserMessage(content = request)),
+                tools = emptyList()
+            )
+            usage = resp
+            callCompleted = true
+            resp
+        } catch (e: CancellationException) {
+            callError = "cancelled"
+            throw e
+        } catch (e: Exception) {
+            callError = e.message ?: e.javaClass.simpleName
+            throw e
+        } finally {
+            val durationMillis = (SystemClock.elapsedRealtime() - callStartElapsed).toInt()
+            runCatching {
+                llmCallRecordDao.insert(
+                    LlmCallRecordEntity(
+                        sessionId = sessionId,
+                        providerId = provider.providerId.ifBlank { null },
+                        model = provider.model,
+                        kind = "title",
+                        inputTokens = usage?.inputTokens ?: 0,
+                        outputTokens = usage?.outputTokens ?: 0,
+                        cachedInputTokens = usage?.cachedInputTokens ?: 0,
+                        cacheCreationTokens = usage?.cacheCreationTokens ?: 0,
+                        ttfbMillis = null,
+                        durationMillis = durationMillis,
+                        status = if (callCompleted) "success" else "error",
+                        errorMessage = callError,
+                        stopReason = usage?.stopReason,
+                        createdAt = callStartWall
+                    )
+                )
+            }
+        }
         response.content.trim().take(TITLE_MAX_CHARS).ifBlank { null }
     }.onFailure { e ->
         FileLogger.w(TAG, "生成会话标题失败", e)

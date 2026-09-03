@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
 import com.aicode.core.util.FileLogger
+import com.aicode.feature.agent.data.local.dao.LlmCallRecordDao
+import com.aicode.feature.agent.data.local.entity.LlmCallRecordEntity
 import com.aicode.feature.agent.data.remote.anthropic.AnthropicApi
 import com.aicode.feature.agent.data.remote.gemini.GeminiApi
 import com.aicode.feature.agent.data.remote.openai.OpenAIApi
@@ -11,6 +13,7 @@ import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.model.AgentImage
 import com.aicode.feature.agent.domain.model.AgentMessage
 import com.aicode.feature.agent.domain.provider.AIProvider
+import com.aicode.feature.agent.domain.provider.AIResponse
 import com.aicode.feature.agent.domain.provider.AnthropicAdapter
 import com.aicode.feature.agent.domain.provider.fixedTemperature
 import com.aicode.feature.agent.domain.provider.GeminiAdapter
@@ -55,6 +58,7 @@ class ViewImageTool @Inject constructor(
     private val visionModelSettingsRepository: VisionModelSettingsRepository,
     private val modelMetadataService: ModelMetadataService,
     private val sessionUseCase: SessionUseCase,
+    private val llmCallRecordDao: LlmCallRecordDao,
     private val openAIApi: OpenAIApi,
     private val anthropicApi: AnthropicApi,
     private val geminiApi: GeminiApi
@@ -163,7 +167,8 @@ class ViewImageTool @Inject constructor(
         )
         return try {
             visionSessionStore.save(id, messages)
-            val response = resolveVisionProvider(sessionId).complete("", messages, emptyList())
+            val provider = resolveVisionProvider(sessionId)
+            val response = callVisionProvider(provider, messages, sessionId)
             val content = response.content.ifBlank { "（识图模型未返回内容）" }
             visionSessionStore.save(id, messages + AgentMessage.AssistantMessage(content = content))
             successResult(id, content)
@@ -184,7 +189,8 @@ class ViewImageTool @Inject constructor(
             ?: return ToolResult.Error("识图会话不存在或已过期: $id", "SESSION_NOT_FOUND")
         val messages = history + AgentMessage.UserMessage(content = prompt)
         return try {
-            val response = resolveVisionProvider(sessionId).complete("", messages, emptyList())
+            val provider = resolveVisionProvider(sessionId)
+            val response = callVisionProvider(provider, messages, sessionId)
             val content = response.content.ifBlank { "（识图模型未返回内容）" }
             visionSessionStore.save(id, messages + AgentMessage.AssistantMessage(content = content))
             successResult(id, content)
@@ -193,6 +199,52 @@ class ViewImageTool @Inject constructor(
         } catch (e: Exception) {
             FileLogger.e(TAG, "识图失败", e)
             ToolResult.Error(e.message ?: "识图调用失败", "VISION_CALL_FAILED")
+        }
+    }
+
+    private suspend fun callVisionProvider(
+        provider: AIProvider,
+        messages: List<AgentMessage>,
+        sessionId: String?
+    ): AIResponse {
+        val callStartWall = System.currentTimeMillis()
+        val callStartElapsed = android.os.SystemClock.elapsedRealtime()
+        var callCompleted = false
+        var callError: String? = null
+        var usage: AIResponse? = null
+        return try {
+            val response = provider.complete("", messages, emptyList())
+            usage = response
+            callCompleted = true
+            response
+        } catch (e: CancellationException) {
+            callError = "cancelled"
+            throw e
+        } catch (e: Exception) {
+            callError = e.message ?: e.javaClass.simpleName
+            throw e
+        } finally {
+            val durationMillis = (android.os.SystemClock.elapsedRealtime() - callStartElapsed).toInt()
+            runCatching {
+                llmCallRecordDao.insert(
+                    LlmCallRecordEntity(
+                        sessionId = sessionId,
+                        providerId = provider.providerId.ifBlank { null },
+                        model = provider.model,
+                        kind = "vision",
+                        inputTokens = usage?.inputTokens ?: 0,
+                        outputTokens = usage?.outputTokens ?: 0,
+                        cachedInputTokens = usage?.cachedInputTokens ?: 0,
+                        cacheCreationTokens = usage?.cacheCreationTokens ?: 0,
+                        ttfbMillis = null,
+                        durationMillis = durationMillis,
+                        status = if (callCompleted) "success" else "error",
+                        errorMessage = callError,
+                        stopReason = usage?.stopReason,
+                        createdAt = callStartWall
+                    )
+                )
+            }
         }
     }
 
