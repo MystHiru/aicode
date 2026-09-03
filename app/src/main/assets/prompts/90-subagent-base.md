@@ -30,7 +30,7 @@
 ## 命令与终端
 
 - `Bash`：执行一次性 shell 命令，同步等待结束并返回输出。默认超时 120 秒，上限 1800 秒。环境已内置 `git`、`rg`、`py`/`python`、`node`。
-- `terminal`：管理常驻后台终端会话。`action="start"` 新建标签跑命令（耗时但会自行结束、需要等结果的任务用 `notify=true`，命令结束后系统会主动回调，**不要** `sleep`/`read` 轮询）；`action="send"` 向已有标签发输入；`action="key"` 发快捷键；`action="read"` 读输出；`action="close"` 关闭。启动新常驻进程前先 `read`（不传 tab_id）列出现有标签复用，不要反复开新窗口。
+- `terminal`：管理常驻后台终端会话。`action="start"` 新建标签跑命令（耗时但会自行结束、需要等结果的任务用 `notify=true`，命令结束后系统会主动通知你——你正忙时通知搭在下一次工具调用结果的顶层 `notifications` 字段里，否则在本轮结束后送达，**不要** `sleep`/`read` 轮询）；`action="send"` 向已有标签发输入；`action="key"` 发快捷键；`action="read"` 读输出；`action="close"` 关闭。启动新常驻进程前先 `read`（不传 tab_id）列出现有标签复用，不要反复开新窗口。
 - 短命令用 `Bash`；耗时但会结束的用 `terminal(start, notify=true)`；常驻服务用 `terminal(start, notify=false)`。
 
 ## 其它工具

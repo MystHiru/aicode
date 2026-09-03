@@ -113,7 +113,7 @@ class TerminalSessionTool @Inject constructor(
         "notify" to ToolParameter(
             name = "notify",
             type = ParameterType.BOOLEAN,
-            description = "start 可选：命令结束后是否由系统主动通知 AI（默认 false）。true=编译/测试等会自行结束的任务——start 只捕获约 5 秒初始输出即返回，结束后系统注入一条后台任务完成通知（user 消息）并自动触发新一轮，勿 sleep/read 轮询；false=dev server 等常驻服务，结束后不通知、标签保活可复用。",
+            description = "start 可选：命令结束后是否由系统主动通知 AI（默认 false）。true=编译/测试等会自行结束的任务——start 只捕获约 5 秒初始输出即返回，结束后系统送来一条后台任务完成通知（你正忙时搭在下一次工具调用结果的顶层 notifications 字段里当轮送达，空闲时作为系统消息自动触发新一轮），勿 sleep/read 轮询；false=dev server 等常驻服务，结束后不通知、标签保活可复用。",
             required = false
         ),
         "tab_id" to ToolParameter(

@@ -111,7 +111,8 @@ enum class MessageRole {
 }
 
 /**
- * 后台任务完成通知的固定前缀。既是 [handleBackgroundCommandFinished] 生成通知时的起首文本，
+ * 后台任务完成通知的固定前缀。既是
+ * [com.aicode.feature.agent.domain.notification.AgentNotificationFormatter] 生成通知消息时的起首文本，
  * 也是 UI 层识别此类消息（不渲染为普通用户气泡）的依据。改这里需同步两边。
  */
 const val BACKGROUND_NOTIFICATION_PREFIX = "[系统通知 - 非用户输入]"

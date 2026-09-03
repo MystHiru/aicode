@@ -426,7 +426,9 @@ private fun BackgroundNotificationBar(message: AgentUIMessage) {
         summaries.size <= 1 -> summaries.firstOrNull() ?: stringResource(R.string.chat_bg_command_done)
         else -> {
             val failedCount = statuses.count { it != "completed" }
-            val namePart = summaries.joinToString("、") { s -> s.removePrefix("后台任务「").substringBefore("」") }
+            val namePart = summaries.joinToString("、") { s ->
+                s.removePrefix("后台任务「").removePrefix("子代理「").substringBefore("」")
+            }
             if (failedCount > 0) {
                 stringResource(R.string.chat_bg_commands_partial_failed, summaries.size, failedCount, namePart)
             } else {
