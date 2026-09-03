@@ -6,8 +6,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -41,6 +39,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -65,37 +65,69 @@ import compose.icons.feathericons.AlertCircle
 import compose.icons.feathericons.Check
 import compose.icons.feathericons.Copy
 import compose.icons.feathericons.Plus
-import compose.icons.feathericons.X
 import kotlinx.coroutines.launch
 
+private val ModelLogoSize = 40.dp
+private val ModelTestButtonWidth = 56.dp
+private val ModelContentStart = ModelLogoSize + Spacing.md
+private val ModelTestAreaWidth = ModelTestButtonWidth + Spacing.sm
+
+/** 模型能力标签。Image / Tools 各自独立，token 上下限合并进同一个胶囊。 */
 @Composable
-@OptIn(ExperimentalLayoutApi::class)
-private fun ModelMetadataTags(metadata: ModelMetadata?) {
-    val pillText = MaterialTheme.colorScheme.onSurfaceVariant
-    val pillBg = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+private fun ModelMetadataTags(
+    metadata: ModelMetadata?,
+    modifier: Modifier = Modifier
+) {
+    metadata ?: return
+    val input = metadata.inputTokens?.takeIf { it > 0 } ?: metadata.contextTokens.takeIf { it > 0 }
+    val output = metadata.outputTokens?.takeIf { it > 0 }
+    val tokens = listOfNotNull(
+        input?.let { "↑${formatTokenLimit(it)}" },
+        output?.let { "↓${formatTokenLimit(it)}" }
+    )
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        metadata?.let {
-            if (it.supportsVision) {
-                McpPill(text = "Image", textColor = pillText, backgroundColor = pillBg)
-            }
-            if (it.supportsTools) {
-                McpPill(text = "Tools", textColor = pillText, backgroundColor = pillBg)
-            }
-            val input = it.inputTokens?.takeIf { tokens -> tokens > 0 }
-                ?: it.contextTokens.takeIf { tokens -> tokens > 0 }
-            if (input != null) {
-                McpPill(text = "↑ ${formatTokenLimit(input)}", textColor = pillText, backgroundColor = pillBg)
-            }
-            it.outputTokens?.takeIf { tokens -> tokens > 0 }?.let { output ->
-                McpPill(text = "↓ ${formatTokenLimit(output)}", textColor = pillText, backgroundColor = pillBg)
-            }
+        if (metadata.supportsVision) {
+            ModelTagPill(texts = listOf("Image"))
+        }
+        if (metadata.supportsTools) {
+            ModelTagPill(texts = listOf("Tools"))
+        }
+        if (tokens.isNotEmpty()) {
+            ModelTagPill(texts = tokens)
         }
     }
 }
 
+/** 胶囊标签。多段文本用固定间距并排，不用空格字符撑间距。 */
+@Composable
+private fun ModelTagPill(texts: List<String>) {
+    Row(
+        modifier = Modifier
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                RoundedCornerShape(Radius.pill)
+            )
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        texts.forEach { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/** 模型行。logo 与「测试」相对名称+标签整块垂直居中，对齐提供商列表。 */
 @Composable
 internal fun ProviderModelRow(
     model: String,
@@ -106,9 +138,10 @@ internal fun ProviderModelRow(
     onRemove: () -> Unit,
     onEdit: () -> Unit = {},
     showDivider: Boolean = false,
-    dragHandle: (@Composable () -> Unit)? = null
+    dragModifier: Modifier = Modifier
 ) {
     var showDetail by remember { mutableStateOf(false) }
+    val sortDescription = stringResource(R.string.provider_sort_long_press)
 
     SwipeToDeleteRow(
         onDelete = onRemove,
@@ -120,48 +153,54 @@ internal fun ProviderModelRow(
                     .fillMaxWidth()
                     .padding(horizontal = Spacing.lg, vertical = 12.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .background(
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                shape = RoundedCornerShape(Radius.sm)
-                            )
-                    ) {
-                        ModelLogoIcon(
-                            modelName = model,
-                            size = 22.dp,
-                            modifier = Modifier.align(Alignment.Center)
-                        )
-                    }
-                    Spacer(Modifier.width(Spacing.md))
-
-                    Column(modifier = Modifier.weight(1f)) {
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
                         Text(
                             model,
-                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(start = ModelContentStart, end = ModelTestAreaWidth)
                         )
                         if (metadata.hasVisibleTags()) {
-                            Spacer(Modifier.height(6.dp))
-                            ModelMetadataTags(metadata)
+                            Spacer(Modifier.height(Spacing.xs))
+                            ModelMetadataTags(
+                                metadata = metadata,
+                                modifier = Modifier.padding(start = ModelContentStart)
+                            )
                         }
                     }
-
-                    Spacer(Modifier.width(Spacing.sm))
-
+                    Row(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .padding(end = ModelTestAreaWidth)
+                            .then(dragModifier)
+                            .semantics {
+                                contentDescription = sortDescription
+                            },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(ModelLogoSize)
+                                .background(
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    shape = RoundedCornerShape(Radius.sm)
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            ModelLogoIcon(modelName = model, size = 22.dp)
+                        }
+                        Spacer(Modifier.width(Spacing.md))
+                    }
                     CompositionLocalProvider(
                         LocalMinimumInteractiveComponentSize provides 0.dp
                     ) {
                         Box(
                             modifier = Modifier
-                                .width(56.dp)
+                                .align(Alignment.CenterEnd)
+                                .width(ModelTestButtonWidth)
                                 .height(36.dp),
                             contentAlignment = Alignment.Center
                         ) {
@@ -172,7 +211,7 @@ internal fun ProviderModelRow(
                                     onClick = onTest,
                                     contentPadding = PaddingValues(horizontal = Spacing.xs, vertical = 0.dp),
                                     modifier = Modifier
-                                        .width(56.dp)
+                                        .width(ModelTestButtonWidth)
                                         .height(32.dp)
                                 ) {
                                     Text(
@@ -182,19 +221,13 @@ internal fun ProviderModelRow(
                                 }
                             }
                         }
-
-                        if (dragHandle != null) {
-                            Spacer(Modifier.width(Spacing.xs))
-                            dragHandle()
-                        }
                     }
                 }
-
                 result?.let { r ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
-                            .padding(top = Spacing.xs, start = 52.dp)
+                            .padding(top = Spacing.xs, start = ModelContentStart)
                             .clip(RoundedCornerShape(4.dp))
                             .clickable { showDetail = true }
                             .padding(horizontal = 4.dp, vertical = 2.dp)
@@ -553,7 +586,6 @@ private fun formatTokenLimit(tokens: Int): String =
 private fun String.trimDecimal(): String =
     replace(Regex("(\\.\\d)\\d+"), "$1").removeSuffix(".0")
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun FetchModelRow(
     model: String,
