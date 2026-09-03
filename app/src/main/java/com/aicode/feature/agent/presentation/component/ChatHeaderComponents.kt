@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -26,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -53,7 +55,9 @@ internal fun ChatHeader(
     currentMode: AgentMode,
     onToggleMode: (AgentMode) -> Unit,
     connectionState: com.aicode.feature.agent.domain.container.ConnectionState? = null,
-    showMenuButton: Boolean = true
+    showMenuButton: Boolean = true,
+    terminalActive: Boolean = false,
+    gitActive: Boolean = false
 ) {
     Surface(
         color = MaterialTheme.colorScheme.background
@@ -110,18 +114,18 @@ internal fun ChatHeader(
                         contentDescription = stringResource(R.string.chat_new_session),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                IconButton(onClick = onNavigateToGit) {
-                    Icon(
-                        FeatherIcons.GitBranch,
-                        contentDescription = stringResource(R.string.chat_open_git),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                IconButton(onClick = onNavigateToTerminal) {
-                    Icon(
-                        FeatherIcons.Terminal,
-                        contentDescription = stringResource(R.string.chat_open_terminal),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                WorkbenchIconButton(
+                    icon = FeatherIcons.GitBranch,
+                    contentDescription = stringResource(R.string.chat_open_git),
+                    active = gitActive,
+                    onClick = onNavigateToGit
+                )
+                WorkbenchIconButton(
+                    icon = FeatherIcons.Terminal,
+                    contentDescription = stringResource(R.string.chat_open_terminal),
+                    active = terminalActive,
+                    onClick = onNavigateToTerminal
+                )
             }
             // 远程模式：左边 SSH 连接状态，右边 token 累计统计
             if (connectionState != null) {
@@ -139,6 +143,42 @@ internal fun ChatHeader(
                     )
                 }
             }
+        }
+    }
+}
+
+/** 顶栏工作台入口按钮：大屏右栏开着对应内容时高亮，否则看不出点一下是开还是关。 */
+@Composable
+private fun WorkbenchIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    active: Boolean,
+    onClick: () -> Unit
+) {
+    IconButton(onClick = onClick) {
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .then(
+                    if (active) {
+                        Modifier
+                            .clip(RoundedCornerShape(Radius.sm))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                    } else {
+                        Modifier
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                icon,
+                contentDescription = contentDescription,
+                tint = if (active) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
         }
     }
 }

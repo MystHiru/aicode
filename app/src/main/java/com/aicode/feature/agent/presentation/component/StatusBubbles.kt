@@ -551,8 +551,7 @@ internal fun ReasoningBubble(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = REASONING_COLLAPSE_LINE_LIMIT,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.heightIn(min = (REASONING_COLLAPSE_LINE_LIMIT * 18).dp)
+                        overflow = TextOverflow.Ellipsis
                     )
                     val hidden = lineCount - REASONING_COLLAPSE_LINE_LIMIT
                     Row(

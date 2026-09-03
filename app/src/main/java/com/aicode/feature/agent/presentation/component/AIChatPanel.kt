@@ -7,10 +7,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.DragInteraction
@@ -23,7 +25,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -57,7 +58,6 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -123,6 +123,9 @@ fun AIChatPanel(
     workspaceViewModel: WorkspaceViewModel? = null,
     onOpenDrawer: () -> Unit,
     showMenuButton: Boolean = true,
+    /** 大屏右栏当前开的是终端 / Git 时，顶栏对应图标高亮。 */
+    terminalActive: Boolean = false,
+    gitActive: Boolean = false,
     currentFile: String? = null,
     selectedCode: String? = null,
     modifier: Modifier = Modifier
@@ -191,21 +194,15 @@ fun AIChatPanel(
     var messageForMenu by remember { mutableStateOf<AgentUIMessage?>(null) }
     var editingMessage by remember { mutableStateOf<AgentUIMessage?>(null) }
     val listState = rememberLazyListState()
-    // 滚动方向追踪：记录最近一次滚动方向。向下滚后即使停住也保持显示回底按钮，
-    // 向上滚或已到底时隐藏（可见性条件见底部 ScrollToBottomButton）。
-    var scrollingDown by remember { mutableStateOf(false) }
-    var lastScrollPos by remember { mutableStateOf(0 to 0) }
-    LaunchedEffect(listState) {
-        snapshotFlow {
-            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
-        }.collect { pos ->
-            val (lastIndex, lastOffset) = lastScrollPos
-            val (index, offset) = pos
-            if (index != lastIndex || offset != lastOffset) {
-                scrollingDown = index > lastIndex || (index == lastIndex && offset > lastOffset)
-                lastScrollPos = pos
-            }
+    // 消息未就绪时的加载提示：本地读库通常几十毫秒，立刻显示反而闪一下，等一小会儿还没就绪才提示。
+    var showMessagesLoading by remember(currentSessionId) { mutableStateOf(false) }
+    LaunchedEffect(currentSessionId, messagesReady) {
+        if (messagesReady) {
+            showMessagesLoading = false
+            return@LaunchedEffect
         }
+        delay(MESSAGES_LOADING_HINT_DELAY_MS)
+        showMessagesLoading = true
     }
     // 贴底滚动留白：首帧测量前用兜底值（约输入框 + 间距），实测悬浮层高度后改为动态值，
     // 横幅/面板/输入框任何形态下最后一条消息都停在悬浮层上方不被遮挡。
@@ -218,7 +215,6 @@ fun AIChatPanel(
     val markdownCache = remember { MarkdownRenderCache() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val focusManager = LocalFocusManager.current
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     val isBusy = agentState is AgentUIState.Loading || agentState is AgentUIState.Streaming
@@ -470,6 +466,20 @@ fun AIChatPanel(
         }
     }
 
+    // 回底按钮的显示门槛：只用「不在底部」会让流式增长的那一两帧（校准循环还没把视口拉回）
+    // 也算离底，按钮跟着闪。要求离底超过半个视口，用户真的翻上去看历史时才出现。
+    val isFarFromBottom by remember(inputBarReservePx) {
+        derivedStateOf {
+            if (!listState.canScrollForward) return@derivedStateOf false
+            val layout = listState.layoutInfo
+            val lastVisible = layout.visibleItemsInfo.lastOrNull()
+                ?: return@derivedStateOf false
+            if (lastVisible.index < layout.totalItemsCount - 1) return@derivedStateOf true
+            val safeBottom = layout.viewportEndOffset - inputBarReservePx
+            (lastVisible.offset + lastVisible.size) - safeBottom > layout.viewportEndOffset / 2
+        }
+    }
+
     // 用户开始拖拽：停止跟随。松手时若已到底则恢复跟随（旧逻辑）。
     // 额外：流式输出时内容持续增长，用户可能松手后又被「顶」离底部——
     // 用 snapshotFlow { isAtBottom } 持续监测，只要滑到底部就恢复跟随，
@@ -649,7 +659,9 @@ fun AIChatPanel(
                 currentMode = currentMode,
                 onToggleMode = { viewModel.setSessionMode(it) },
                 connectionState = connectionState?.takeIf { isRemote },
-                showMenuButton = showMenuButton
+                showMenuButton = showMenuButton,
+                terminalActive = terminalActive,
+                gitActive = gitActive
             )
         }
     ) { padding ->
@@ -673,6 +685,15 @@ fun AIChatPanel(
                     // 远程模式连接未就绪时显示连接状态占位，避免空白或旧工作区记录闪烁
                     if (isRemote && connectionState != null && connectionState != com.aicode.feature.agent.domain.container.ConnectionState.CONNECTED) {
                         RemoteConnectingPlaceholder(state = connectionState)
+                    } else if (showMessagesLoading) {
+                        // 本地模式读库偏慢时的占位：以前这里什么都不画，切会话会先闪一下空白。
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 } else if (messages.isEmpty()) {
                     WelcomeState(modifier = Modifier.fillMaxSize())
@@ -774,12 +795,16 @@ fun AIChatPanel(
             ) {
             StatusBanner(state = agentState)
 
+            // 三个面板都用「最后一次非空值」渲染：退出动画期间源状态已置空，直接在 content 里
+            // 解引用会淡出一个空面板，看起来是瞬间消失而不是淡出。位移也一并补上——只淡入的话
+            // 面板在 Column 里占的高度是瞬间生效的，输入框会先跳一格再看到面板浮现。
+            val permissionForPanel = rememberLastNonNull(pendingPermission)
             AnimatedVisibility(
                 visible = pendingPermission != null,
-                enter = fadeIn(),
-                exit = fadeOut()
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
             ) {
-                pendingPermission?.let { request ->
+                permissionForPanel?.let { request ->
                     ToolPermissionPanel(
                         request = request,
                         onChoice = { choice -> viewModel.resolveToolPermission(request.id, choice) },
@@ -789,12 +814,13 @@ fun AIChatPanel(
                 }
             }
 
+            val questionForPanel = rememberLastNonNull(pendingQuestion)
             AnimatedVisibility(
                 visible = pendingQuestion != null,
-                enter = fadeIn(),
-                exit = fadeOut()
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
             ) {
-                pendingQuestion?.let { question ->
+                questionForPanel?.let { question ->
                     AskUserQuestionPanel(
                         question = question,
                         onConfirm = { answer -> viewModel.resolveUserQuestion(question.id, answer) },
@@ -805,12 +831,13 @@ fun AIChatPanel(
             }
 
             val planApproval by viewModel.pendingPlanApproval.collectAsStateWithLifecycle()
+            val planForPanel = rememberLastNonNull(planApproval)
             AnimatedVisibility(
                 visible = planApproval != null,
-                enter = fadeIn(),
-                exit = fadeOut()
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
             ) {
-                planApproval?.let { state ->
+                planForPanel?.let { state ->
                     PlanApprovalPanel(
                         state = state,
                         onApprove = { viewModel.approvePlanAndBuild() },
@@ -879,10 +906,10 @@ fun AIChatPanel(
             )
             } // 悬浮层结束
 
-            // 滚动到底部按钮：悬浮在输入框右上角上方（悬浮层高度 + 间距定位），向下滚动后
-            // 保持显示（停着也显示），向上滚/已到底不显示；滚动时跟随输入框淡出。
+            // 滚动到底部按钮：悬浮在输入框右上角上方（悬浮层高度 + 间距定位），离底超过半屏时
+            // 显示，不看滚动方向——往上翻历史后停住恰恰是最需要一键回底的时刻；滚动时跟随输入框淡出。
             androidx.compose.animation.AnimatedVisibility(
-                visible = scrollingDown && !isAtBottom,
+                visible = isFarFromBottom,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(end = Spacing.lg)

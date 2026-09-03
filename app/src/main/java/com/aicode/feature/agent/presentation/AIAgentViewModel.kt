@@ -186,10 +186,30 @@ class AIAgentViewModel @Inject constructor(
     private val _messageLimit = MutableStateFlow<Map<String, Int>>(emptyMap())
     private val defaultLimit = 30
 
-    private val _inputDraft = MutableStateFlow("")
-    val inputDraft: StateFlow<String> = _inputDraft.asStateFlow()
-    fun updateInputDraft(text: String) { _inputDraft.value = text }
-    fun clearInputDraft() { _inputDraft.value = "" }
+    /**
+     * 各会话各自的输入草稿（内存态）。以前是全局单一一份，在 A 打了半截话切到 B
+     * 那半截话会跟着跑过去。
+     */
+    private val _inputDrafts = MutableStateFlow<Map<String, String>>(emptyMap())
+    val inputDraft: StateFlow<String> = _currentSessionId
+        .flatMapLatest { id ->
+            if (id == null) flowOf("") else _inputDrafts.map { it[id].orEmpty() }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    fun updateInputDraft(text: String) {
+        val id = _currentSessionId.value ?: return
+        _inputDrafts.value = if (text.isEmpty()) {
+            _inputDrafts.value - id
+        } else {
+            _inputDrafts.value + (id to text)
+        }
+    }
+
+    fun clearInputDraft() {
+        val id = _currentSessionId.value ?: return
+        _inputDrafts.value = _inputDrafts.value - id
+    }
 
     fun loadMoreMessages() {
         val sid = _currentSessionId.value ?: return
@@ -1531,6 +1551,7 @@ class AIAgentViewModel @Inject constructor(
             _runningTools.value = _runningTools.value - sid
             _retryStates.value = _retryStates.value - sid
             _queuedRequests.value = _queuedRequests.value - sid
+            _inputDrafts.value = _inputDrafts.value - sid
             agentNotificationCenter.clear(sid)
         }
 

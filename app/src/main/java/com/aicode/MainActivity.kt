@@ -38,6 +38,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -97,7 +98,6 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
-import androidx.compose.ui.res.stringResource
 import com.aicode.R
 
 @AndroidEntryPoint
@@ -314,11 +314,6 @@ fun AppNavigation() {
         settingsViewModel.checkUpdate(manual = false)
     }
 
-    // 抽屉每次打开时刷一次文件列表：本地模式兼顾 inotify 漏事件，远程模式则完全靠它。
-    androidx.compose.runtime.LaunchedEffect(drawerState.isOpen) {
-        if (drawerState.isOpen) agentViewModel.refreshBrowse()
-    }
-
     // 侧边栏打开时，系统返回键先收起侧边栏。
     BackHandler(enabled = drawerState.isOpen) {
         scope.launch { drawerState.close() }
@@ -373,6 +368,15 @@ fun AppNavigation() {
     // 常驻侧栏只在聊天页开：终端 / 编辑器 / 设置都是全屏页，被侧栏挤窄反而难用。
     // 常驻侧栏只看窗口宽度：它只在聊天页展开，切到其他页会滑回去（见下方 sidebarWidth）。
     val permanentDrawer = expanded
+
+    // 侧栏出现时刷一次文件列表：本地模式兼顾 inotify 漏事件，远程模式无 inotify 则完全靠它。
+    // 不能直接盯 drawerState.isOpen：大屏常驻侧栏不走 ModalNavigationDrawer，drawerState 永远是 Closed，
+    // 那样大屏远程模式下文件树只能靠手动刷新按钮。改取「侧栏可见」：窄窗看抽屉开没开，
+    // 大屏看是否停在聊天页（侧栏只在聊天页展开）。
+    val sidebarVisible = if (permanentDrawer) currentRoute == "chat" else drawerState.isOpen
+    LaunchedEffect(sidebarVisible) {
+        if (sidebarVisible) agentViewModel.refreshBrowse()
+    }
 
     // 右栏工作台：大屏下编辑器 / 终端 / Git 与聊天并排，窄窗仍走全屏路由。
     var paneKind by rememberSaveable { mutableStateOf(WorkbenchPaneKind.NONE) }
@@ -505,7 +509,9 @@ fun AppNavigation() {
                                 onOpenDrawer = { scope.launch { drawerState.open() } },
                                 showMenuButton = !permanentDrawer,
                                 onNavigateToTerminal = { openWorkbench(WorkbenchPaneKind.TERMINAL) },
-                                onNavigateToGit = { openWorkbench(WorkbenchPaneKind.GIT) }
+                                onNavigateToGit = { openWorkbench(WorkbenchPaneKind.GIT) },
+                                terminalActive = paneOpen && paneKind == WorkbenchPaneKind.TERMINAL,
+                                gitActive = paneOpen && paneKind == WorkbenchPaneKind.GIT
                             )
                         }
                     }
@@ -606,6 +612,9 @@ fun AppNavigation() {
             animationSpec = tween(durationMillis = PAGE_MOTION_MS),
             label = "sidebar-width"
         )
+        // 侧栏完全收起后整棵子树离开组合，要拿 SaveableStateHolder 接住内部状态，
+        // 否则每次从设置页回来 tab 都跳回「会话」、文件树滚动位置也丢。
+        val sidebarStateHolder = rememberSaveableStateHolder()
         Row(modifier = Modifier.fillMaxSize()) {
             if (sidebarWidth > 0.dp) {
                 Box(
@@ -620,7 +629,9 @@ fun AppNavigation() {
                             .width(drawerWidth())
                             .fillMaxHeight()
                     ) {
-                        drawerBody()
+                        sidebarStateHolder.SaveableStateProvider("chat-sidebar") {
+                            drawerBody()
+                        }
                     }
                 }
                 VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
