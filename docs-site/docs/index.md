@@ -1,10 +1,17 @@
 ---
 layout: home
+title: AiCode - 手机端 AI 编程工具与内置 Linux 终端
+titleTemplate: false
+description: AiCode 是一款开源的 Android 端 AI 编程与移动工作站。内置 Linux 容器与终端环境，AI Agent 可直接读写代码并执行构建，支持 MCP 协议、Git 版本控制与远程 SSH 开发。
+head:
+  - - meta
+    - name: keywords
+      content: AiCode, Android AI 编程, 手机编程, 移动端开发, Linux 终端, PRoot, Termux, AI Agent, MCP 协议, 手机代码编辑器, Git 客户端, 移动工作站, 手机跑终端, 远程 SSH 开发
 
 hero:
   name: AiCode
-  text: 手机上的 AI 编程环境
-  tagline: 内置 Linux 容器与终端，AI 可以直接读写文件、执行命令、跑构建；也能挂远程 SSH 服务器，把手机变成移动工作站。
+  text: 手机上的 AI 编程工具与移动工作站
+  tagline: 内置 Linux 容器与终端环境，AI Agent 可自主读写文件、执行 Shell 命令与运行构建；支持远程 SSH 模式与完整模型生态，随时随地开启移动开发。
   image:
     src: /logo.png
     alt: AiCode

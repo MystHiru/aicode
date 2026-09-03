@@ -47,8 +47,8 @@ AiCode 的系统提示词可以自己改。默认提示词随 App 内置、升�
 - `prompts/` 目录每次启动都会被内置版本全量覆盖，所以默认提示词会随 App 升级自动更新。
 - `prompts.custom/` 目录 App 永远不会自动写入或删除，你的自定义在升级后完整保留。
 
-::: danger 别直接改 prompts/
-你在 `prompts/` 里改的内容下次升级就被覆盖没了。要持久生效，必须放在 `prompts.custom/`。
+::: danger 请勿直接修改 prompts/ 目录
+`prompts/` 目录中的内容在每次启动时都会被全量重置，手动修改的内容在 App 升级或重启后会被覆盖。如需持久自定义，请务必保存在 `prompts.custom/` 目录中。
 :::
 
 ## 片段说明
@@ -66,6 +66,7 @@ AiCode 的系统提示词可以自己改。默认提示词随 App 内置、升�
 | `70-skills-and-mcp.md` | 技能与 MCP 说明 |
 | `80-plan-mode.md` | PLAN 模式提醒 |
 | `81-auto-mode.md` | AUTO 模式提醒 |
+| `90-subagent-base.md` | 子代理基础运行规范 |
 | `agent/compact-summary.md` | 长对话上下文压缩的提示词 |
 | `agent/title-generator.md` | 会话标题生成的提示词 |
 

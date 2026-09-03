@@ -4,14 +4,28 @@ export default defineConfig({
   srcDir: './docs',
   lang: 'zh-Hans',
   title: 'AiCode',
-  description: 'Android 端 AI 编程工具 · 内置 Linux 终端 · AI Agent · MCP 协议 · Git 集成',
+  titleTemplate: ':title | AiCode - 手机端 AI 编程工具与终端',
+  description: 'AiCode 是一款开源的 Android 端 AI 编程与移动工作站工具。内置 Linux 容器与终端环境，AI Agent 可自主读写文件、执行 Shell 命令与运行构建，深度集成 MCP 协议、Git 版本控制与远程 SSH 开发。',
   cleanUrls: true,
   lastUpdated: true,
   sitemap: {
     hostname: 'https://aicode.murk.top'
   },
   head: [
-    ['meta', { name: 'theme-color', content: '#3c8772' }]
+    ['link', { rel: 'icon', href: '/logo.png', type: 'image/png' }],
+    ['meta', { name: 'theme-color', content: '#3c8772' }],
+    ['meta', { name: 'keywords', content: 'AiCode, Android AI 编程, 手机编程, 移动端开发, Linux 终端, PRoot, Termux, AI Agent, MCP 协议, 手机代码编辑器, Git 客户端, 移动工作站, 手机跑终端, 远程 SSH 开发' }],
+    ['meta', { name: 'author', content: 'AiCode Team' }],
+    ['meta', { property: 'og:type', content: 'website' }],
+    ['meta', { property: 'og:site_name', content: 'AiCode' }],
+    ['meta', { property: 'og:title', content: 'AiCode - 手机端 AI 编程工具与内置 Linux 终端' }],
+    ['meta', { property: 'og:description', content: 'Android 端全功能 AI 编程工具：内置 Linux 容器与终端、AI Agent 自动修改代码与执行命令、MCP 工具扩展、Git 版本管理与远程 SSH 连接。' }],
+    ['meta', { property: 'og:image', content: 'https://aicode.murk.top/logo.png' }],
+    ['meta', { property: 'og:url', content: 'https://aicode.murk.top/' }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    ['meta', { name: 'twitter:title', content: 'AiCode - 手机端 AI 编程工具与内置 Linux 终端' }],
+    ['meta', { name: 'twitter:description', content: 'Android 端全功能 AI 编程工具：内置 Linux 容器与终端、AI Agent 自动修改代码与执行命令、MCP 工具扩展、Git 版本管理与远程 SSH 连接。' }],
+    ['meta', { name: 'twitter:image', content: 'https://aicode.murk.top/logo.png' }]
   ],
   themeConfig: {
     nav: [
@@ -25,23 +39,25 @@ export default defineConfig({
           text: '入门',
           items: [
             { text: '快速上手', link: '/guide/quick-start' },
-            { text: '功能总览', link: '/guide/overview' },
-            { text: '平板与大屏', link: '/guide/tablet' }
+            { text: '功能总览', link: '/guide/overview' }
           ]
         },
         {
-          text: '对话与会话',
+          text: '核心工作流',
           items: [
             { text: '聊天界面导览', link: '/guide/chat' },
-            { text: '三种模式', link: '/guide/modes' },
-            { text: '检查点与撤销', link: '/guide/checkpoint' }
+            { text: '三种模式（Build / Plan / Auto）', link: '/guide/modes' },
+            { text: '检查点与撤销', link: '/guide/checkpoint' },
+            { text: '文件浏览与代码编辑', link: '/guide/files' },
+            { text: 'Git 版本管理', link: '/guide/git' },
+            { text: '平板与大屏适配', link: '/guide/tablet' }
           ]
         },
         {
           text: '模型与用量',
           items: [
             { text: 'AI 提供商与模型', link: '/guide/providers' },
-            { text: '默认模型', link: '/guide/default-models' },
+            { text: '默认与专用模型', link: '/guide/default-models' },
             { text: 'Token 统计与费用', link: '/guide/token-stats' }
           ]
         },
@@ -62,13 +78,6 @@ export default defineConfig({
             { text: '技能', link: '/guide/skills' },
             { text: '子代理', link: '/guide/subagent' },
             { text: '自定义提示词', link: '/guide/custom-prompts' }
-          ]
-        },
-        {
-          text: '文件与版本',
-          items: [
-            { text: '文件浏览与代码编辑', link: '/guide/files' },
-            { text: 'Git 版本管理', link: '/guide/git' }
           ]
         },
         {
