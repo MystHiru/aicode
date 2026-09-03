@@ -506,6 +506,7 @@ internal fun SendButton(
 internal fun ToolPermissionPanel(
     request: PendingToolPermission,
     onChoice: (PermissionChoice) -> Unit,
+    sessionTitle: String = "",
     forceCollapse: Boolean = false
 ) {
     var expanded by remember { mutableStateOf(true) }
@@ -554,6 +555,17 @@ internal fun ToolPermissionPanel(
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
+                )
+            }
+
+            if (sessionTitle.isNotBlank()) {
+                Spacer(Modifier.height(Spacing.xs))
+                Text(
+                    text = stringResource(R.string.chat_perm_session_label, sessionTitle),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 

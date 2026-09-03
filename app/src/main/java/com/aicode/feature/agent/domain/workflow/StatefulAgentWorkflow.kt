@@ -606,7 +606,7 @@ class StatefulAgentWorkflow @Inject constructor(
                     is AgentSideEffect.RequestPermission -> {
                         val tool = toolRegistry.getTool(effect.toolCall.name)
                         val argsPreview = JsonObject(effect.toolCall.arguments).toString().take(500)
-                        val checkResult = requestPermissionIfNeeded(tool, effect.toolCall.id, effect.toolCall.arguments, argsPreview, currentContext.mode)
+                        val checkResult = requestPermissionIfNeeded(tool, effect.toolCall.id, effect.toolCall.arguments, argsPreview, currentContext.mode, currentContext.sessionId)
 
                         if (!checkResult.approved) {
                             val rawResult = ToolResult.Error(checkResult.denyReason, checkResult.errorCode).toTransportString()
@@ -932,7 +932,8 @@ class StatefulAgentWorkflow @Inject constructor(
         callId: String,
         arguments: Map<String, kotlinx.serialization.json.JsonElement>,
         argsPreview: String,
-        mode: com.aicode.feature.agent.domain.model.AgentMode
+        mode: com.aicode.feature.agent.domain.model.AgentMode,
+        sessionId: String?
     ): PermissionCheckResult {
         if (tool == null) {
             return PermissionCheckResult(true)
@@ -965,7 +966,8 @@ class StatefulAgentWorkflow @Inject constructor(
                 val request = tool.buildPermissionRequest(callId, arguments, argsPreview)
                     .copy(
                         rememberablePatterns = eval.rememberablePatterns,
-                        rememberDisabledReason = eval.rememberDisabledReason
+                        rememberDisabledReason = eval.rememberDisabledReason,
+                        sessionId = sessionId.orEmpty()
                     )
                 when (permissionManager.awaitApproval(request)) {
                     PermissionChoice.REJECT -> PermissionCheckResult(false, "用户拒绝执行该工具", "USER_REJECTED")

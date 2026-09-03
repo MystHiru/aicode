@@ -437,7 +437,9 @@
     <string name="chat_perm_always_tool_desc">「始终允许」将在本项目记住：该工具的全部调用</string>
     <string name="chat_perm_always_prefix">「始终允许」将在本项目记住：</string>
     <string name="chat_perm_deny">拒绝</string>
-    <string name="chat_perm_always_allow">始终允许</string>    <string name="chat_plan_completed">计划已完成</string>
+    <string name="chat_perm_always_allow">始终允许</string>
+    <string name="chat_perm_session_label">会话「%1$s」</string>
+    <string name="chat_plan_completed">计划已完成</string>
     <string name="chat_continue_feedback">继续反馈</string>
     <string name="chat_approve_and_implement">批准并实施</string>
 

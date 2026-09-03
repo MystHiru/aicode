@@ -437,7 +437,9 @@
     <string name="chat_perm_always_tool_desc">"Always allow" will remember all calls of this tool for this project</string>
     <string name="chat_perm_always_prefix">"Always allow" will remember for this project:</string>
     <string name="chat_perm_deny">Deny</string>
-    <string name="chat_perm_always_allow">Always Allow</string>    <string name="chat_plan_completed">Plan completed</string>
+    <string name="chat_perm_always_allow">Always Allow</string>
+    <string name="chat_perm_session_label">Session "%1$s"</string>
+    <string name="chat_plan_completed">Plan completed</string>
     <string name="chat_continue_feedback">Continue feedback</string>
     <string name="chat_approve_and_implement">Approve and implement</string>
 

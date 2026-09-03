@@ -526,6 +526,22 @@ class AIAgentViewModel @Inject constructor(
 
     val pendingToolPermission = toolPermissionManager.pendingRequest
 
+    /** 当前展示的授权弹窗所属会话标题（多会话并行时供弹窗标注归属）。会话不存在时回退空串。 */
+    val pendingToolPermissionSessionTitle: StateFlow<String> = combine(
+        toolPermissionManager.pendingRequest,
+        sessions,
+        subSessionsByParent
+    ) { req, roots, subs ->
+        val sid = req?.sessionId.orEmpty()
+        if (sid.isBlank()) return@combine ""
+        val title = roots.firstOrNull { it.id == sid }?.title
+            ?: subs.values.asSequence().flatten().firstOrNull { it.id == sid }?.title
+        title.orEmpty()
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    /** 正在等待用户授权的会话 id 集合，供侧边栏会话行点亮橙色指示灯。 */
+    val awaitingPermissionSessionIds: StateFlow<Set<String>> = toolPermissionManager.awaitingSessionIds
+
     val pendingUserQuestion = askUserQuestionManager.pendingQuestion
 
     private val _queuedRequests = MutableStateFlow<Map<String, List<QueuedRequest>>>(emptyMap())
@@ -1269,7 +1285,7 @@ class AIAgentViewModel @Inject constructor(
         val runningTools = _runningTools.value[sessionId]?.values?.toList() ?: emptyList()
         val streamingText = _streamingTexts.value[sessionId]
         val streamingReasoning = _streamingReasonings.value[sessionId]
-        val pendingPermission = toolPermissionManager.pendingRequest.value
+        val pendingPermission = toolPermissionManager.pendingForSession(sessionId)
         val stoppedText = context.getString(R.string.agent_stopped_by_user)
         val pendingNotifs = pendingMergedNotifications[sessionId]?.size ?: 0
         FileLogger.d(TAG, "stopAgent: sid=$sessionId runningTools=${runningTools.size} pendingPerm=${pendingPermission?.id} pendingNotifs=$pendingNotifs state=${_agentStates.value[sessionId]}")
