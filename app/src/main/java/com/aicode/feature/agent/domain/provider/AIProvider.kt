@@ -11,8 +11,10 @@ data class AIResponse(
     /**
      * 模型停止的原因。Anthropic: "end_turn" / "tool_use" / "max_tokens" / "refusal" /
      * "model_context_window_exceeded" / "pause_turn"；OpenAI: "stop" / "tool_calls" / "length"；
-     * Gemini（generateContent 的 finishReason，全大写）: "STOP" / "MAX_TOKENS" / "SAFETY" 等。
-     * 当值为 "max_tokens" / "length" / "MAX_TOKENS" 时表示输出因 token 上限被截断，Agent 循环应自动续写。
+     * Gemini（generateContent 的 finishReason，全大写）: "STOP" / "MAX_TOKENS" / "SAFETY" 等；
+     * Gemini（Interactions 的 status，小写）: "completed" / "requires_action" / "failed" /
+     * "budget_exceeded"（`incomplete` 已由 [interactionStopReason] 归一为 "length"）。
+     * 当值命中 [TRUNCATION_STOP_REASONS] 时表示输出因 token 上限被截断，Agent 循环应自动续写。
      */
     val stopReason: String? = null,
     /**
@@ -29,6 +31,8 @@ data class AIResponse(
      * - Anthropic：thinking / redacted_thinking 内容块数组（redacted 的 `data` 不可重建，合并多块会被 400）。
      * - Gemini（generateContent）：model 轮的 `parts` 数组，因为 `thoughtSignature` 是挂在任意 part
      *   （常在 functionCall part 或最后一个 part）上的元数据，只有整块原样回传才能保住推理连续性。
+     * - Gemini（Interactions）：模型产出的 `steps` 数组（thought / model_output / function_call）。
+     *   官方要求无状态模式下把这些 step 原样回传，thought 上的 `signature` 与 function_call 都不可重建。
      * 其他 provider 为 null。
      */
     val thinkingBlocksJson: String? = null,
@@ -49,12 +53,17 @@ data class AIResponse(
         get() = stopReason in ABORT_STOP_REASONS
 
     companion object {
-        /** 输出被 token 上限截断（Anthropic / OpenAI / Gemini 三家的写法）。 */
+        /**
+         * 输出被 token 上限截断（Anthropic / OpenAI / Gemini 三家的写法）。
+         * Gemini Interactions 的 `incomplete` 由 [interactionStopReason] 归一到 `length` 后命中，
+         * 不直接收录 `incomplete`——Responses API 的同名状态还涵盖 content_filter 等非截断原因。
+         */
         val TRUNCATION_STOP_REASONS = setOf("max_tokens", "length", "MAX_TOKENS")
 
         /**
          * 需要向用户解释而非静默完成的 stop_reason。
-         * 前两个是 Anthropic；大写那组是 Gemini 的 finishReason（安全拦截 / 禁止内容 / 黑名单 / 敏感信息）。
+         * 前两个是 Anthropic；大写那组是 Gemini generateContent 的 finishReason（安全拦截 /
+         * 禁止内容 / 黑名单 / 敏感信息）；最后两个是 Gemini Interactions 的 status。
          */
         val ABORT_STOP_REASONS = setOf(
             "refusal",
@@ -62,7 +71,9 @@ data class AIResponse(
             "SAFETY",
             "PROHIBITED_CONTENT",
             "BLOCKLIST",
-            "SPII"
+            "SPII",
+            "failed",
+            "budget_exceeded"
         )
     }
 }
@@ -86,6 +97,11 @@ interface AIProvider {
     var apiKey: String
     var baseUrl: String
     var useFullUrl: Boolean
+
+    /**
+     * 切到该提供商的新版端点：OpenAI 走 Responses API（`v1/responses`），
+     * Gemini 走 Interactions API（`v1beta/interactions`）。Anthropic 忽略。
+     */
     var useResponseApi: Boolean
     var model: String
 

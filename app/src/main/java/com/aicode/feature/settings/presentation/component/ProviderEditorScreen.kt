@@ -431,13 +431,20 @@ fun ProviderEditorScreen(
                             checked = useFullUrl,
                             onCheckedChange = { useFullUrl = it }
                         )
-                        if (type == ProviderType.OPENAI) {
+                        // 新版端点开关：OpenAI 是 Responses API，Gemini 是 Interactions API，
+                        // 共用 useResponseApi 一个字段（语义一致：切到该家的新版统一端点）。
+                        if (type == ProviderType.OPENAI || type == ProviderType.GEMINI) {
                             SettingsDivider()
                             ProviderSwitchRow(
-                                title = stringResource(R.string.provider_response_api),
+                                title = stringResource(
+                                    if (type == ProviderType.GEMINI) R.string.provider_interactions_api
+                                    else R.string.provider_response_api
+                                ),
                                 checked = useResponseApi,
                                 onCheckedChange = { useResponseApi = it }
                             )
+                        }
+                        if (type == ProviderType.OPENAI) {
                             SettingsDivider()
                             ProviderSwitchRow(
                                 title = stringResource(R.string.provider_cache_openai_chat_title),

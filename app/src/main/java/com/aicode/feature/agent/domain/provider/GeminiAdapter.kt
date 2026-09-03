@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.serialization.json.Json
@@ -45,12 +46,25 @@ class GeminiAdapter @Inject constructor(
     private fun extraHeaders(): Map<String, String> =
         if (userAgent.isNotBlank()) mapOf("User-Agent" to userAgent) else emptyMap()
 
+    /**
+     * Interactions API 的目标端点。与 generateContent 的两点不同：
+     * 模型名在请求体里（故没有「baseUrl 末尾是模型名」那种特例），流式与非流式**同一个端点**，
+     * 靠 `?alt=sse` + 请求体 `stream: true` 切换。useFullUrl 时直接用用户填的完整 baseUrl。
+     */
+    private fun resolveInteractionsUrl(stream: Boolean): String {
+        if (useFullUrl) return baseUrl
+        val url = joinUrl(baseUrl, "v1beta/interactions")
+        return if (stream) "$url?alt=sse" else url
+    }
+
     override suspend fun complete(
         systemPrompt: String,
         messages: List<AgentMessage>,
         tools: List<AgentTool>,
         reasoningEffort: String?
     ): AIResponse {
+        if (useResponseApi) return completeViaInteractions(systemPrompt, messages, tools, reasoningEffort)
+
         val request = buildRequestBody(systemPrompt, messages, tools, reasoningEffort)
 
         val url = if (useFullUrl) {
@@ -125,6 +139,11 @@ class GeminiAdapter @Inject constructor(
         tools: List<AgentTool>,
         reasoningEffort: String?
     ): Flow<AIStreamChunk> = flow {
+        if (useResponseApi) {
+            streamViaInteractions(systemPrompt, messages, tools, reasoningEffort)
+            return@flow
+        }
+
         val request = buildRequestBody(systemPrompt, messages, tools, reasoningEffort)
 
         val url = if (useFullUrl) {
@@ -250,6 +269,197 @@ class GeminiAdapter @Inject constructor(
             AILogger.logResponseStream(logSessionId, "Gemini", rawSse.toString())
         }
     }.flowOn(Dispatchers.IO)
+
+    /**
+     * Interactions 请求体。与 generateContent 的差异集中在四处：
+     * - `system_instruction` 是**顶层字符串**，不再是 `{role, parts}` 对象；
+     * - 历史是扁平的 step 序列（见 [buildInteractionsInput]），模型名进请求体；
+     * - 工具声明扁平，不再套 `functionDeclarations`；
+     * - 思考只有 `thinking_level`（2.5 系那套 `thinkingBudget` 在这里不存在）。
+     *
+     * 固定发 `store=false` 走无状态：本地 messages 列表才是唯一事实源，上下文压缩、重新生成、
+     * 失败重试都依赖客户端持有全部历史，服务端状态会与这些直接冲突。
+     * 不发 `temperature`——Interactions 的 GenerationConfig 里没有这个字段。
+     */
+    private fun buildInteractionsRequest(
+        systemPrompt: String,
+        messages: List<AgentMessage>,
+        tools: List<AgentTool>,
+        reasoningEffort: String?,
+        stream: Boolean
+    ): Map<String, Any?> {
+        val request = mutableMapOf<String, Any?>(
+            "model" to model,
+            "input" to buildInteractionsInput(messages),
+            "store" to false
+        )
+        if (systemPrompt.isNotBlank()) request["system_instruction"] = systemPrompt
+        buildInteractionsTools(tools)?.let { request["tools"] = it }
+        if (stream) request["stream"] = true
+
+        val generationConfig = mutableMapOf<String, Any>()
+        maxOutputTokens?.takeIf { it > 0 }?.let { generationConfig["max_output_tokens"] = it }
+        interactionsThinkingLevel(reasoningEffort)?.let {
+            generationConfig["thinking_level"] = it
+            // 不显式要摘要就只能拿到思考签名、拿不到可展示的思考文本，UI 的思考区会一直空着。
+            // 与 thinking_level 绑在一起发：不思考的模型（gemma / 图像 / 音乐）不该收到这两个字段。
+            generationConfig["thinking_summaries"] = "auto"
+        }
+        if (generationConfig.isNotEmpty()) request["generation_config"] = generationConfig
+        return request
+    }
+
+    /** 思考强度 → `thinking_level`，仅支持 minimal/low/medium/high；xhigh/max 归一到 high。 */
+    private fun interactionsThinkingLevel(reasoningEffort: String?): String? = when (reasoningEffort) {
+        null -> null
+        "xhigh", "max" -> "high"
+        else -> reasoningEffort
+    }
+
+    /**
+     * Interactions 的非流式请求。结果从 `steps` 时间线解析（见 [parseInteractionSteps]），
+     * 结束原因不再是 `finishReason` 而是 interaction 的 `status`：`incomplete` 表示撞了输出上限、
+     * `requires_action` 表示有工具待执行，取值归一见 [interactionStopReason]。
+     */
+    private suspend fun completeViaInteractions(
+        systemPrompt: String,
+        messages: List<AgentMessage>,
+        tools: List<AgentTool>,
+        reasoningEffort: String?
+    ): AIResponse {
+        val url = resolveInteractionsUrl(stream = false)
+        val request = buildInteractionsRequest(systemPrompt, messages, tools, reasoningEffort, stream = false)
+        AILogger.logRequest(logSessionId, "Gemini", model, "POST", url, request)
+
+        val response = try {
+            retryStaircase {
+                api.createInteraction(url = url, apiKey = apiKey, extraHeaders = extraHeaders(), request = request)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val enriched = e.enrichWithHttpErrorBody()
+            AILogger.logError(logSessionId, "Gemini", enriched)
+            throw enriched
+        }
+        AILogger.logResponse(logSessionId, "Gemini", response)
+
+        val parsed = parseInteractionSteps(response.get("steps")?.takeIf { it.isJsonArray }?.asJsonArray)
+        val usage = parseInteractionsUsage(response.get("usage")?.takeIf { it.isJsonObject }?.asJsonObject)
+        val status = response.get("status")?.takeIf { it.isJsonPrimitive }?.asString
+        // status=failed 时正文通常为空，理由只在 errors 里，取出来交给上层展示。
+        val errorDetail = response.get("errors")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject
+            ?.get("message")?.takeIf { it.isJsonPrimitive }?.asString
+
+        return AIResponse(
+            content = parsed.text,
+            toolCalls = parsed.toolCalls,
+            stopReason = interactionStopReason(status),
+            stopDetail = errorDetail,
+            reasoning = parsed.reasoning.takeIf { it.isNotEmpty() },
+            thinkingBlocksJson = parsed.stepsSnapshotJson,
+            inputTokens = usage.inputTokens,
+            outputTokens = usage.outputTokens,
+            cachedInputTokens = usage.cachedInputTokens
+        )
+    }
+
+    /**
+     * Interactions 的流式请求。与 generateContent 的 candidates 分片不同，这里是语义事件流
+     * （见 [GeminiInteractionsStreamAccumulator]），且没有 `[DONE]`：结束按 interaction 的
+     * status 到终态判定，读到流尾仍未终止才算被截断。
+     */
+    private suspend fun FlowCollector<AIStreamChunk>.streamViaInteractions(
+        systemPrompt: String,
+        messages: List<AgentMessage>,
+        tools: List<AgentTool>,
+        reasoningEffort: String?
+    ) {
+        val url = resolveInteractionsUrl(stream = true)
+        val request = buildInteractionsRequest(systemPrompt, messages, tools, reasoningEffort, stream = true)
+        AILogger.logRequest(logSessionId, "Gemini", model, "POST", url, request)
+        // 累积原始 SSE，整轮结束（或失败）后整体落盘，避免高频写盘。
+        val rawSse = StringBuilder()
+        try {
+            streamWithStaircaseRetry(
+                attemptOnce = { onContent ->
+                    val acc = GeminiInteractionsStreamAccumulator()
+
+                    val body = api.streamInteraction(
+                        url = url,
+                        apiKey = apiKey,
+                        extraHeaders = extraHeaders(),
+                        request = request
+                    )
+
+                    body.use { rb ->
+                        // 首字节超时 watchdog：60s 内未收到首个内容块则关闭流，触发可重试的 IOException。
+                        val firstByteReceived = java.util.concurrent.atomic.AtomicBoolean(false)
+                        val watchdog = launchFirstByteWatchdog({ rb.close() }) { firstByteReceived.get() }
+                        val closeHandle = coroutineContext[Job]?.invokeOnCompletion {
+                            runCatching { rb.close() }
+                        }
+                        try {
+                            val reader = rb.charStream().buffered()
+                            while (!acc.terminated) {
+                                coroutineContext.ensureActive()
+                                val line = reader.readLine()
+                                    ?: throw IOException("SSE 流被中断：interaction 未到终态（疑似网络断开）")
+                                if (!line.startsWith("data:")) continue
+                                val data = line.removePrefix("data:").trim()
+                                if (data.isEmpty()) continue
+                                rawSse.append(line).append('\n')
+                                if (data == "[DONE]") break
+                                val obj = runCatching { JsonParser.parseString(data).asJsonObject }.getOrNull() ?: continue
+                                // 单个事件的字段类型异常不应废掉整条流，只跳过该事件；
+                                // 但 StreamApiException（error 事件）与取消信号必须放行。
+                                val delta = try {
+                                    acc.accept(obj)
+                                } catch (e: StreamApiException) {
+                                    throw e
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    coroutineContext.ensureActive()
+                                    null
+                                }
+                                when (delta) {
+                                    is InteractionsDelta.Text -> {
+                                        if (firstByteReceived.compareAndSet(false, true)) watchdog.cancel()
+                                        onContent()
+                                        emit(AIStreamChunk.TextDelta(delta.text))
+                                    }
+                                    // 思考增量仅用于 UI 展示，不计入正文；收到即说明连接已活。
+                                    is InteractionsDelta.Reasoning -> {
+                                        if (firstByteReceived.compareAndSet(false, true)) watchdog.cancel()
+                                        onContent()
+                                        emit(AIStreamChunk.ReasoningDelta(delta.text))
+                                    }
+                                    null -> {}
+                                }
+                            }
+                        } finally {
+                            watchdog.cancel()
+                            closeHandle?.dispose()
+                        }
+                    }
+
+                    emit(AIStreamChunk.Final(acc.toResponse()))
+                },
+                onRetry = { attempt, max, error -> emit(AIStreamChunk.Retrying(attempt, max, error)) }
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            coroutineContext.ensureActive()
+            val enriched = e.enrichWithHttpErrorBody()
+            AILogger.logError(logSessionId, "Gemini", enriched)
+            throw enriched
+        } finally {
+            AILogger.logResponseStream(logSessionId, "Gemini", rawSse.toString())
+        }
+    }
 
     /**
      * generateContent / streamGenerateContent 共用的请求体。

@@ -801,6 +801,7 @@
     <string name="provider_user_agent">User-Agent</string>
     <string name="provider_user_agent_hint">Leave blank for default, e.g. MyApp/1.0</string>
     <string name="provider_response_api">Response API (new)</string>
+    <string name="provider_interactions_api">Interactions API (new)</string>
     <string name="provider_models_count">Models (%1$s)</string>
     <string name="provider_models_count_tag">%1$d models</string>
     <string name="provider_fetch_models">Fetch Models</string>
