@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
@@ -62,6 +63,7 @@ import com.aicode.R
 import com.aicode.core.theme.Brand
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.rememberImeBottomInset
 import com.aicode.feature.agent.domain.command.SlashCommandHandler
 import com.aicode.feature.agent.domain.model.AgentMode
@@ -301,9 +303,13 @@ internal fun ChatInputBar(
                         val modeColor = when (currentMode) {
                             AgentMode.PLAN -> MaterialTheme.colorScheme.primaryContainer
                             AgentMode.AUTO -> MaterialTheme.colorScheme.error
-                            AgentMode.BUILD -> MaterialTheme.colorScheme.tertiary
+                            AgentMode.BUILD -> MaterialTheme.semanticColors.success
                         }
-                        val modeTextColor = if (currentMode == AgentMode.PLAN) MaterialTheme.colorScheme.onPrimaryContainer else Color.White
+                        val modeTextColor = when (currentMode) {
+                            AgentMode.PLAN -> MaterialTheme.colorScheme.onPrimaryContainer
+                            AgentMode.AUTO -> MaterialTheme.colorScheme.onError
+                            AgentMode.BUILD -> MaterialTheme.semanticColors.onSuccess
+                        }
                         Surface(
                             shape = RoundedCornerShape(16.dp),
                             color = modeColor,
@@ -436,10 +442,15 @@ internal fun SendButton(
     val buttonColor = when {
         showStop -> MaterialTheme.colorScheme.error
         isBusy -> Brand.Orange
-        canSend -> MaterialTheme.colorScheme.tertiary
+        canSend -> MaterialTheme.semanticColors.success
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
-    val iconTint = if (clickable) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+    // 前景色相对按钮底色而非主题：深色主题下的亮绿底用主题 onSurface（近白）会看不清。
+    val iconTint = when {
+        !clickable -> MaterialTheme.colorScheme.onSurfaceVariant
+        buttonColor.luminance() > 0.5f -> Color(0xFF1C1C1E)
+        else -> Color.White
+    }
     val arcColor = buttonColor.copy(alpha = 0.85f)
     val clampedProgress = tokenProgress.coerceIn(0f, 1f)
     Box(

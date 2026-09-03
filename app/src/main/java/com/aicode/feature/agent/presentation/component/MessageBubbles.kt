@@ -57,6 +57,7 @@ import com.aicode.R
 import com.aicode.core.theme.Brand
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.ContentWidth
 import com.aicode.feature.agent.presentation.AgentUIMessage
 import com.aicode.feature.agent.presentation.hasVisibleContent
@@ -420,7 +421,7 @@ private fun BackgroundNotificationBar(message: AgentUIMessage) {
     val summaries = Regex("<summary>(.*?)</summary>")
         .findAll(content).map { it.groupValues.getOrNull(1)?.trim() }.filterNotNull().toList()
     val isSuccess = statuses.all { it == "completed" }
-    val dotColor = if (isSuccess) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error
+    val dotColor = if (isSuccess) MaterialTheme.semanticColors.success else MaterialTheme.colorScheme.error
     val label = when {
         summaries.size <= 1 -> summaries.firstOrNull() ?: stringResource(R.string.chat_bg_command_done)
         else -> {

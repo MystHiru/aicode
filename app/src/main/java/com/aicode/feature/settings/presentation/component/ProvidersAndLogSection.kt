@@ -172,7 +172,7 @@ fun ProviderItem(
     dragHandle: (@Composable () -> Unit)? = null
 ) {
     // 状态色与 MCP 行一致：启用用主题 tertiary（绿调），停用用 outline（灰）。
-    val statusColor = if (provider.isEnabled) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outline
+    val statusColor = if (provider.isEnabled) MaterialTheme.semanticColors.success else MaterialTheme.colorScheme.outline
 
     SwipeToDeleteRow(
         onDelete = onDelete,

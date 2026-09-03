@@ -202,7 +202,7 @@ internal fun ProviderModelRow(
                         Icon(
                             imageVector = if (r.success) FeatherIcons.Check else FeatherIcons.AlertCircle,
                             contentDescription = null,
-                            tint = if (r.success) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
+                            tint = if (r.success) MaterialTheme.semanticColors.success else MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(Modifier.width(Spacing.xs))
@@ -216,7 +216,7 @@ internal fun ProviderModelRow(
                         Text(
                             text = displayMsg,
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (r.success) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
+                            color = if (r.success) MaterialTheme.semanticColors.success else MaterialTheme.colorScheme.error,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -331,13 +331,13 @@ internal fun ModelTestDetailBottomSheet(
                         Spacer(Modifier.width(Spacing.sm))
                         Surface(
                             shape = RoundedCornerShape(4.dp),
-                            color = if (result.success) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
+                            color = if (result.success) MaterialTheme.semanticColors.success.copy(alpha = 0.15f)
                             else MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
                         ) {
                             Text(
                                 text = if (result.success) "200 OK · ${result.latencyMs}ms" else "${if (result.responseCode > 0) "HTTP ${result.responseCode}" else "Failed"} · ${result.latencyMs}ms",
                                 style = MaterialTheme.typography.labelSmall.copy(
-                                    color = if (result.success) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
+                                    color = if (result.success) MaterialTheme.semanticColors.success else MaterialTheme.colorScheme.error,
                                     fontWeight = FontWeight.SemiBold
                                 ),
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
