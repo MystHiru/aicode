@@ -428,6 +428,12 @@ fun AIChatPanel(
     // 流式结束过渡：streamingText 清空后保留最后文本一小段（落库消息通常在此窗口内接管），
     // 避免尾巴 item 高度骤减导致视口被 clamp 上移、露出历史消息（结束瞬间“闪回”看到用户消息）。
     var tailStreamingText by remember { mutableStateOf<String?>(null) }
+    // 会话切换时立即丢掉尾巴：保留窗口只用于同一会话内「流式结束 → 落库消息接管」的交接，
+    // 跳会话留着会让新会话底部先闪一下上一个会话的流式气泡。必须声明在下面那个 effect 之前：
+    // 两者同帧重启时按声明顺序执行，清空得先跑，否则会把新会话刚填上的尾巴又抹掉。
+    LaunchedEffect(currentSessionId) {
+        tailStreamingText = null
+    }
     LaunchedEffect(streamingText) {
         val st = streamingText
         if (st != null && st.hasVisibleContent()) {
@@ -445,21 +451,25 @@ fun AIChatPanel(
     // 还没被上面的 LaunchedEffect 回填，此刻若传空文本，打字机会把恢复出的进度判成换轮从头重打。
     val typewriterRenderText = rememberTypewriterStreamingText(
         text = streamingText ?: tailStreamingText ?: "",
-        active = streamingText != null
+        active = streamingText != null,
+        sessionKey = currentSessionId
     )
     // 思考过程同样走打字机：与回复文本共用同一速率自适应逻辑。
     // 正文开始输出（streamingText 非空）即视为思考结束：思考打字机立即补全，
     // 避免思考还没打完、正文已开始导致两者叠着慢慢打。
     val typewriterReasoningText = rememberTypewriterStreamingText(
         text = streamingReasoning ?: "",
-        active = streamingReasoning != null && streamingText == null
+        active = streamingReasoning != null && streamingText == null,
+        sessionKey = currentSessionId
     )
 
     // 自动滚动跟随
     var positionedSession by remember { mutableStateOf<String?>(null) }
     var followBottom by remember { mutableStateOf(true) }
 
-    val isAtBottom by remember {
+    // key 必须带上 inputBarReservePx：闭包捕获的是创建时的值，用无 key 的 remember 会让
+    // 判定永远停在首帧的兜底留白（156dp）上，面板展开把悬浮层顶高后仍按旧安全区算。
+    val isAtBottom by remember(inputBarReservePx) {
         derivedStateOf {
             if (!listState.canScrollForward) return@derivedStateOf true
             val layout = listState.layoutInfo
@@ -745,7 +755,7 @@ fun AIChatPanel(
                             Column {
                                 if (showReasoning) {
                                     // 流式实时：短文本默认展开边想边看，过长（超 REASONING_COLLAPSE_LINE_LIMIT）时由气泡内部自动折叠，不刷屏
-                                    ReasoningBubble(text = typewriterReasoningText, initiallyExpanded = true, cache = markdownCache, showTimer = true, preRendered = true)
+                                    ReasoningBubble(text = typewriterReasoningText, initiallyExpanded = true, cache = markdownCache, showTimer = true, preRendered = true, sessionKey = currentSessionId)
                                 }
                                 when (tailKind) {
                                     TailKind.THINKING -> ThinkingBubble()
