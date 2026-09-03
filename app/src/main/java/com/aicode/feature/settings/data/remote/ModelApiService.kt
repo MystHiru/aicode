@@ -180,17 +180,24 @@ class ModelApiService @Inject constructor(
                     u to """{"model":${model.jsonStr()},"max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"""
                 }
                 ProviderType.GEMINI -> {
-                    val u = if (useFullUrl) {
-                        baseUrl
+                    // Interactions 的请求体是 `input`（step 序列或纯字符串），必须同时切到
+                    // v1beta/interactions 端点；仍打到 generateContent 会被以缺 `contents` 拒绝。
+                    if (useResponseApi) {
+                        val u = if (useFullUrl) baseUrl else joinUrl(baseUrl, "v1beta/interactions")
+                        u to """{"model":${model.jsonStr()},"input":"hi","store":false}"""
                     } else {
-                        val path = if (baseUrl.trimEnd('/').endsWith(model)) {
-                            baseUrl.trimEnd('/') + ":generateContent"
+                        val u = if (useFullUrl) {
+                            baseUrl
                         } else {
-                            joinUrl(baseUrl, "v1beta/models/$model:generateContent")
+                            val path = if (baseUrl.trimEnd('/').endsWith(model)) {
+                                baseUrl.trimEnd('/') + ":generateContent"
+                            } else {
+                                joinUrl(baseUrl, "v1beta/models/$model:generateContent")
+                            }
+                            path
                         }
-                        path
+                        u to """{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}"""
                     }
-                    u to """{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}"""
                 }
                 else -> {
                     // Responses API 的请求体是 `input` 格式，必须同时切到 v1/responses 端点；

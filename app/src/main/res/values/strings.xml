@@ -801,6 +801,7 @@
     <string name="provider_user_agent">User-Agent</string>
     <string name="provider_user_agent_hint">留空使用默认，如 MyApp/1.0</string>
     <string name="provider_response_api">Response API (新版)</string>
+    <string name="provider_interactions_api">Interactions API (新版)</string>
     <string name="provider_models_count">模型（%1$s）</string>
     <string name="provider_models_count_tag">%1$d 个模型</string>
     <string name="provider_fetch_models">拉取模型</string>

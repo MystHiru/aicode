@@ -52,11 +52,21 @@ AiCode 自己不提供模型，你需要接入至少一个模型服务才能开�
 
 App 重启后会回到第一个 Key，冷却记录清空。
 
-## Response API（仅 OpenAI 类型）
+## 新版端点（OpenAI / Gemini）
 
-默认关闭。打开后这个提供商的对话会改走 OpenAI 的 Responses 协议，文本流、思考过程、工具调用、图片输入、用量统计和超长自动续写都支持。
+两家都在旧接口之外推出了新的统一端点。开关在编辑页的「选项」里，默认关闭，名字随提供商类型变：
 
-**只在服务端确实支持时才开**。OpenAI 官方和 DeepSeek 官方地址可以，多数中转站不支持，开了会直接报 400。如果你同时开了「完整 URL」，那么填的地址必须指向 responses 端点，不能还指着 `/chat/completions`。
+- **OpenAI 类型**显示「Response API」，打开后改走 OpenAI 的 Responses 协议。
+- **Gemini 类型**显示「Interactions API」，打开后改走 Gemini 的 Interactions 协议。
+
+两条新链路都支持文本流、思考过程、工具调用、图片输入、用量统计和超长自动续写，用起来和原来没有区别。
+
+**只在服务端确实支持时才开**。OpenAI 官方和 DeepSeek 官方地址支持 Responses，Gemini 官方地址支持 Interactions；多数中转站两个都不支持，开了会直接报错。如果你同时开了「完整 URL」，那么填的地址必须指向对应的新端点（`responses` / `interactions`），不能还指着 `/chat/completions` 或 `:generateContent`。
+
+Gemini 走 Interactions 时另有两点不同：
+
+- 对话历史仍由 App 在本地保存、每轮完整发出，不使用 Google 的服务端会话存储，所以对话内容不会留在服务端。
+- 思考强度只有「最低 / 低 / 中 / 高」四档，选了更高的档位会按「高」发送。
 
 ## 其它选项
 

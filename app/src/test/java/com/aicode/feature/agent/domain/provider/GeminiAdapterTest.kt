@@ -19,6 +19,7 @@ class GeminiAdapterTest {
     /** 捕获上送的请求体，并返回可配置的响应 JSON。 */
     private class FakeApi(var responseJson: String) : GeminiApi {
         var lastRequest: Map<*, *>? = null
+        var lastUrl: String? = null
 
         override suspend fun generateContent(
             url: String,
@@ -26,11 +27,30 @@ class GeminiAdapterTest {
             extraHeaders: Map<String, String>,
             request: Any
         ): JsonObject {
+            lastUrl = url
             lastRequest = request as Map<*, *>
             return JsonParser.parseString(responseJson).asJsonObject
         }
 
         override suspend fun streamGenerateContent(
+            url: String,
+            apiKey: String,
+            extraHeaders: Map<String, String>,
+            request: Any
+        ): ResponseBody = throw UnsupportedOperationException("本测试只覆盖非流式路径")
+
+        override suspend fun createInteraction(
+            url: String,
+            apiKey: String,
+            extraHeaders: Map<String, String>,
+            request: Any
+        ): JsonObject {
+            lastUrl = url
+            lastRequest = request as Map<*, *>
+            return JsonParser.parseString(responseJson).asJsonObject
+        }
+
+        override suspend fun streamInteraction(
             url: String,
             apiKey: String,
             extraHeaders: Map<String, String>,
@@ -267,5 +287,111 @@ class GeminiAdapterTest {
         val parts = toolTurn["parts"] as List<Map<*, *>>
         val functionResponse = parts.single()["functionResponse"] as Map<*, *>
         assertFalse(functionResponse.containsKey("id"))
+    }
+
+    // ── Interactions API（useResponseApi = true）─────────────────────────────
+
+    private fun interactionsAdapter(api: FakeApi, maxOutput: Int? = null): GeminiAdapter =
+        adapter(api, maxOutput).apply {
+            useResponseApi = true
+            baseUrl = "https://generativelanguage.googleapis.com/"
+        }
+
+    private fun interactionResponse(status: String = "completed") = """
+        {
+          "id": "int_1",
+          "status": "$status",
+          "steps": [{"type": "model_output", "content": [{"type": "text", "text": "ok"}]}],
+          "usage": {
+            "total_input_tokens": 10,
+            "total_output_tokens": 20,
+            "total_thought_tokens": 30,
+            "total_cached_tokens": 4
+          }
+        }
+    """.trimIndent()
+
+    @Test
+    fun interactions_posts_to_the_shared_endpoint_with_model_in_body() = runBlocking {
+        val api = FakeApi(interactionResponse())
+        interactionsAdapter(api).complete("sys", listOf(user("hi")))
+
+        // 模型名在请求体里，端点不再带 `models/{model}:generateContent`
+        assertEquals("https://generativelanguage.googleapis.com/v1beta/interactions", api.lastUrl)
+        assertEquals("gemini-1.5-flash", api.lastRequest?.get("model"))
+    }
+
+    @Test
+    fun interactions_is_stateless_with_string_system_instruction() = runBlocking {
+        val api = FakeApi(interactionResponse())
+        interactionsAdapter(api).complete("你是助手", listOf(user("hi")))
+
+        // 本地 messages 才是唯一事实源，服务端状态会与上下文压缩/重新生成冲突
+        assertEquals(false, api.lastRequest?.get("store"))
+        assertFalse(api.lastRequest!!.containsKey("previous_interaction_id"))
+        // system_instruction 是顶层字符串，不再是 {role, parts} 对象
+        assertEquals("你是助手", api.lastRequest?.get("system_instruction"))
+    }
+
+    @Test
+    fun interactions_generation_config_uses_thinking_level_not_budget() = runBlocking {
+        val api = FakeApi(interactionResponse())
+        interactionsAdapter(api, maxOutput = 64000).complete("sys", listOf(user("hi")), reasoningEffort = "max")
+
+        @Suppress("UNCHECKED_CAST")
+        val config = api.lastRequest?.get("generation_config") as Map<*, *>
+        assertEquals(64000, config["max_output_tokens"])
+        // thinkingBudget 在 Interactions 里不存在；xhigh/max 归一到 high
+        assertEquals("high", config["thinking_level"])
+        assertFalse(config.containsKey("thinkingConfig"))
+        // 不显式要摘要就拿不到可展示的思考文本
+        assertEquals("auto", config["thinking_summaries"])
+        // Interactions 的 GenerationConfig 里没有 temperature 字段
+        assertFalse(config.containsKey("temperature"))
+    }
+
+    @Test
+    fun interactions_omits_thinking_fields_for_non_thinking_models() = runBlocking {
+        val api = FakeApi(interactionResponse())
+        // 不思考的模型（gemma / 图像 / 音乐）上层不会给思考强度，这两个字段一并不发
+        interactionsAdapter(api, maxOutput = 8192).complete("sys", listOf(user("hi")))
+
+        @Suppress("UNCHECKED_CAST")
+        val config = api.lastRequest?.get("generation_config") as Map<*, *>
+        assertFalse(config.containsKey("thinking_level"))
+        assertFalse(config.containsKey("thinking_summaries"))
+        assertEquals(8192, config["max_output_tokens"])
+    }
+
+    @Test
+    fun interactions_output_tokens_include_thought_tokens() = runBlocking {
+        val api = FakeApi(interactionResponse())
+        val result = interactionsAdapter(api).complete("sys", listOf(user("hi")))
+
+        assertEquals(10, result.inputTokens)
+        // total_output_tokens 不含思考，两者相加才是真实输出量
+        assertEquals(50, result.outputTokens)
+        assertEquals(4, result.cachedInputTokens)
+        assertEquals("ok", result.content)
+    }
+
+    @Test
+    fun interactions_incomplete_status_triggers_continuation() = runBlocking {
+        val api = FakeApi(interactionResponse(status = "incomplete"))
+        val result = interactionsAdapter(api).complete("sys", listOf(user("hi")))
+
+        // 撞输出上限的语义从 finishReason=MAX_TOKENS 变成 status=incomplete
+        assertTrue(result.isTruncated)
+    }
+
+    @Test
+    fun interactions_full_url_is_used_verbatim() = runBlocking {
+        val api = FakeApi(interactionResponse())
+        interactionsAdapter(api).apply {
+            useFullUrl = true
+            baseUrl = "https://gw.example.com/gemini/interactions"
+        }.complete("sys", listOf(user("hi")))
+
+        assertEquals("https://gw.example.com/gemini/interactions", api.lastUrl)
     }
 }
