@@ -149,6 +149,8 @@ class MainActivity : ComponentActivity() {
 
     @Suppress("DEPRECATION") // 全局更新 application resources locale，createConfigurationContext 无法替代
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 从冷启动闪屏主题恢复为应用主主题
+        setTheme(R.style.Theme_AICode)
         // 绘制到系统状态栏/导航栏之下，让应用背景与系统栏融为一体（消除割裂的色块）。
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)

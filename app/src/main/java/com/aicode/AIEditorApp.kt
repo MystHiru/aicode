@@ -153,7 +153,11 @@ class AIEditorApp : Application(), Configuration.Provider {
         // 把提供商级代理注册表挂到 AppProxy（applyGlobal 已在 attachBaseContext 完成），
         // 此后按目标 host 分派 provider 专属代理；无 provider 配置时回退全局代理。
         AppProxy.registerProviderProxyRegistry(providerProxyRegistry)
-        registerBouncyCastle()
+        // 注册完整版 BouncyCastle 放后台 IO 协程，避免在主线程加载大量密码学类阻塞首屏；
+        // 远程 SSH 连接在 appScope 中执行，使用前完成注册即可。
+        appScope.launch(Dispatchers.IO) {
+            registerBouncyCastle()
+        }
         createNotificationChannels()
         // 主线程启动凭据请求监听（FileObserver 必须主线程创建与 startWatching），
         // 监听容器内 credential helper 写来的 cred-req-* → 全局弹窗回填 → 回喂 git 续跑。
