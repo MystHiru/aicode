@@ -10,8 +10,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -62,9 +60,12 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.aicode.core.theme.AIEditorTheme
 import com.aicode.core.theme.AppThemePreset
+import com.aicode.core.ui.PAGE_MOTION_MS
 import com.aicode.core.ui.VerticalSplitHandle
 import com.aicode.core.ui.drawerWidth
 import com.aicode.core.ui.isExpandedWidth
+import com.aicode.core.ui.pageEnter
+import com.aicode.core.ui.pageExit
 import com.aicode.feature.agent.presentation.AIAgentViewModel
 import com.aicode.feature.agent.presentation.component.AIChatPanel
 import com.aicode.feature.agent.presentation.component.ChatDrawerContent
@@ -264,11 +265,12 @@ private const val MAX_PANE_SPLIT = 0.7f
  *
  * [ModalNavigationDrawer] 放在 [NavHost] **外面**，使 Drawer 的生命周期独立于页面切换。
  *
- * NavHost 禁用了全部过渡动画（enterTransition / exitTransition = None）——
- * Terminal 页面的 [AndroidView] 不参与 Compose 的 graphicsLayer alpha 动画，
- * 如果保留默认 fadeIn/fadeOut，过渡期间新旧 composable 共存，TerminalView 以满不透明度
- * 覆盖在新页面之上；过渡结束后原生 View 被移除触发 View 层级重布局，恰与 Drawer 打开动画
- * 叠加导致渲染管线中断——表现为「退出终端后立即点侧边栏白屏」。
+ * 页面过渡统一走 [pageEnter] / [pageExit]。
+ *
+ * **注意**：终端页承载的是原生 TerminalView，历史上启用过渡曾导致「退出终端后立即点侧边栏白屏」——
+ * 当时过渡期间新旧页面共存，旧页 dispose 把 softInputMode 切回 adjustResize 触发窗口重布局，
+ * 与 Drawer 打开动画叠加后渲染管线中断。该路径已由 onCreate 统一设置 softInputMode 与
+ * `rememberImeBottomInset` 的空 onDispose 兜住；若白屏复现，先把终端路由的过渡降级为 None 排除嫌疑。
  *
  * ViewModel 提升到这一层创建，以便 Drawer 内容和 AIChatPanel 共享同一实例。
  */
@@ -451,10 +453,12 @@ fun AppNavigation() {
         NavHost(
             navController = navController,
             startDestination = "chat",
-            enterTransition = { EnterTransition.None },
-            exitTransition = { ExitTransition.None },
-            popEnterTransition = { EnterTransition.None },
-            popExitTransition = { ExitTransition.None }
+            // 过渡期间退场页会向左移出自身区域，大屏下不夹住会画到左侧常驻会话侧栏上。
+            modifier = Modifier.fillMaxSize().clipToBounds(),
+            enterTransition = { pageEnter(forward = true) },
+            exitTransition = { pageExit(forward = true) },
+            popEnterTransition = { pageEnter(forward = false) },
+            popExitTransition = { pageExit(forward = false) }
         ) {
             composable("chat") {
                 // 聊天区内覆盖 LocalUriHandler：Markdown 链接点击默认经此 handler 派发。
@@ -578,10 +582,11 @@ fun AppNavigation() {
     if (expanded) {
         // 大屏不套 ModalNavigationDrawer：侧栏常驻在左，抽屉那套 scrim / 手势 / 锚点在这里完全用不上。
         // 侧栏只在聊天页展开：设置页自己就是「菜单 + 详情」两栏，外面再套一层会话侧栏就成了三栏。
-        // 宽度走 220ms 补间而不是直接增删，否则右侧区域宽度突变，切页时会明显闪一下。
+        // 宽度走补间而不是直接增删，否则右侧区域宽度突变，切页时会明显闪一下；
+        // 时长与页面过渡取同一个值，两段动画同时收尾。
         val sidebarWidth by animateDpAsState(
             targetValue = if (currentRoute == "chat") drawerWidth() else 0.dp,
-            animationSpec = tween(durationMillis = 220),
+            animationSpec = tween(durationMillis = PAGE_MOTION_MS),
             label = "sidebar-width"
         )
         Row(modifier = Modifier.fillMaxSize()) {
