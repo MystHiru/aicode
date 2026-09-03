@@ -1,6 +1,7 @@
 package com.aicode.feature.agent.data.local.entity
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.aicode.feature.agent.presentation.AgentAttachment
 import com.aicode.feature.agent.presentation.BACKGROUND_NOTIFICATION_PREFIX
@@ -10,7 +11,10 @@ import com.aicode.feature.agent.presentation.AgentUIMessage
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 
-@Entity(tableName = "agent_messages")
+@Entity(
+    tableName = "agent_messages",
+    indices = [Index(value = ["sessionId"])]
+)
 data class AgentMessageEntity(
     @PrimaryKey val id: String,
     val sessionId: String,

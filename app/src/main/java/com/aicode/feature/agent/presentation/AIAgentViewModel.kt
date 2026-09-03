@@ -690,23 +690,29 @@ class AIAgentViewModel @Inject constructor(
     }
 
     init {
-        viewModelScope.launch {
-            // 冷启动收尾：上次进程被杀时若有工具正在执行，其占位行会永久显示「执行中」。
-            // 这些工具不可能还在跑，统一回填为「已中断」。放在设置会话之前完成，使首帧不再闪转圈。
+        // 冷启动收尾：上次进程被杀时残留的「执行中」工具回填为「已中断」。在后台执行，不阻塞首屏与会话展示。
+        viewModelScope.launch(Dispatchers.IO) {
             sessionUseCase.initColdStartCleanup()
+        }
 
+        viewModelScope.launch {
             _currentWorkspace.collectLatest { path ->
                 if (path.isBlank()) return@collectLatest
                 val recent = sessionUseCase.getFirstSessionOfWorkspace(path)
-                // 每次启动/切工作区先回收多余的空会话（保留最近会话），
-                // 防止「最近会话非空则新建空白会话」在用户切回旧会话场景下堆积空会话。
-                if (recent != null) sessionUseCase.recycleEmptySessions(path, keepId = recent.id)
-                // 复用最近一个空会话（未发送过消息），避免反复启动/切工作区堆积空会话；
-                // 最近会话已有内容则新建空白会话（与 newSession 防堆积策略一致）。
-                _currentSessionId.value = if (recent != null && sessionUseCase.isSessionEmpty(recent.id)) {
+                // 立即确定并设置当前会话：若最近会话未发过消息则直接复用，否则立即创建新会话。
+                // 确保首帧 UI 秒开、侧边栏立即出现新会话，彻底消除转圈卡顿。
+                val targetId = if (recent != null && sessionUseCase.isSessionEmpty(recent.id)) {
                     recent.id
                 } else {
                     createAndUpsertSession(path)
+                }
+                _currentSessionId.value = targetId
+
+                // 异步回收多余的空会话（保留当前 targetId），在后台执行，不卡主线程与首帧渲染。
+                if (recent != null) {
+                    launch(Dispatchers.IO) {
+                        sessionUseCase.recycleEmptySessions(path, keepId = targetId)
+                    }
                 }
             }
         }

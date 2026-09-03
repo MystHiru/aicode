@@ -1,12 +1,16 @@
 package com.aicode.feature.agent.data.local.entity
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.aicode.feature.agent.domain.model.AgentMode
 import com.aicode.feature.agent.domain.model.ChatSession
 import com.aicode.feature.agent.domain.model.ReasoningEffort
 
-@Entity(tableName = "chat_sessions")
+@Entity(
+    tableName = "chat_sessions",
+    indices = [Index(value = ["workspacePath"])]
+)
 data class ChatSessionEntity(
     @PrimaryKey val id: String,
     val title: String,
