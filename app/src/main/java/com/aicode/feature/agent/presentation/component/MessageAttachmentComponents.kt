@@ -26,6 +26,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,6 +45,8 @@ import compose.icons.FeatherIcons
 import compose.icons.feathericons.FileText
 import compose.icons.feathericons.Image
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 internal fun MessageAttachmentPreviewRow(
@@ -137,18 +141,22 @@ private fun isApk(attachment: AgentAttachment): Boolean {
 
 @Composable
 private fun MessageImagePreview(attachment: AgentAttachment) {
-    val bitmap = remember(attachment.localPath) {
-        runCatching {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(attachment.localPath, bounds)
-            val sampleSize = calculateMessageAttachmentSampleSize(bounds.outWidth, bounds.outHeight, 180, 180)
-            val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-            BitmapFactory.decodeFile(attachment.localPath, options)?.asImageBitmap()
-        }.getOrNull()
+    // 读盘 + 解码放 IO 线程：以前在 remember 里同步 decodeFile，滚到带图消息时会卡主线程。
+    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, attachment.localPath) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(attachment.localPath, bounds)
+                val sampleSize = calculateMessageAttachmentSampleSize(bounds.outWidth, bounds.outHeight, 180, 180)
+                val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                BitmapFactory.decodeFile(attachment.localPath, options)?.asImageBitmap()
+            }.getOrNull()
+        }
     }
-    if (bitmap != null) {
+    val loaded = bitmap
+    if (loaded != null) {
         ComposeImage(
-            bitmap = bitmap,
+            bitmap = loaded,
             contentDescription = attachment.fileName.ifBlank { stringResource(R.string.common_image_preview) },
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()

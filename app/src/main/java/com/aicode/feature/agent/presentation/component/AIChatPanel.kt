@@ -78,6 +78,7 @@ import compose.icons.FeatherIcons
 import compose.icons.feathericons.ArrowDown
 import java.io.File
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 
@@ -557,29 +558,49 @@ fun AIChatPanel(
     // （最后可见项不是最后一项，即跟丢）时，滚回锚点；md 异步解析的高度跳变也会在
     // 下一帧被检测到，不存在信号与渲染错位。
     // 只向下校准：内容变矮（流式结束、折叠）时保持当前位置，避免「往回滚」与拉锯。
-    LaunchedEffect(listState, messagesReady) {
-        if (!messagesReady) return@LaunchedEffect
-        while (true) {
-            withFrameNanos { }
-            if (!followBottom) continue
+    // reserve 经 State 传递：下面这个 lambda 只创建一次，直接捕获局部 Int 会一直用首帧的兜底值。
+    val reservePxState = rememberUpdatedState(inputBarReservePx)
+    val busyState = rememberUpdatedState(isBusy)
+    val calibrateToAnchor: suspend () -> Unit = remember(listState) {
+        {
             // 无向下滚动空间（内容不满屏或已滚到锚点）：最后内容必然在安全区上方，无需校准。
-            if (!listState.canScrollForward) continue
-            val layout = listState.layoutInfo
-            val lastIndex = layout.totalItemsCount - 1
-            if (lastIndex < 0) continue
-            val lastVisible = layout.visibleItemsInfo.lastOrNull()
-            // 最后内容被推出视口下方（最后一项不可见）：跟丢——直接滚回锚点。
-            // 用户在别处浏览时 followBottom 已为 false，不会走到这里。
-            if (lastVisible == null || lastVisible.index < lastIndex) {
-                listState.scrollToItem(lastIndex, Int.MAX_VALUE)
-                continue
-            }
-            val safeBottom = layout.viewportEndOffset - inputBarReservePx
-            val lastBottom = lastVisible.offset + lastVisible.size
-            if (lastBottom > safeBottom + AUTO_SCROLL_TOLERANCE_PX) {
-                listState.scrollToItem(lastIndex, Int.MAX_VALUE)
+            if (followBottom && listState.canScrollForward) {
+                val layout = listState.layoutInfo
+                val lastIndex = layout.totalItemsCount - 1
+                if (lastIndex >= 0) {
+                    val lastVisible = layout.visibleItemsInfo.lastOrNull()
+                    val safeBottom = layout.viewportEndOffset - reservePxState.value
+                    // 最后一项被推出视口下方（跟丢）或最后内容底部越过安全区：滚回锚点。
+                    // 用户在别处浏览时 followBottom 已为 false，不会走到这里。
+                    val lost = lastVisible == null || lastVisible.index < lastIndex
+                    val pushedDown = lastVisible != null &&
+                        lastVisible.offset + lastVisible.size > safeBottom + AUTO_SCROLL_TOLERANCE_PX
+                    if (lost || pushedDown) listState.scrollToItem(lastIndex, Int.MAX_VALUE)
+                }
             }
         }
+    }
+
+    // 只在「跟随中且内容可能还在动」时逐帧校准。原来是无条件 while(true)，followBottom
+    // 为 false 也只 continue、帧回调照旧注册，等于让主线程全程每帧醒一次（空闲也在耗电）。
+    LaunchedEffect(listState, messagesReady) {
+        if (!messagesReady) return@LaunchedEffect
+        snapshotFlow { followBottom && (busyState.value || listState.isScrollInProgress) }
+            .collectLatest { active ->
+                if (active) {
+                    while (true) {
+                        withFrameNanos { }
+                        calibrateToAnchor()
+                    }
+                } else {
+                    // 收工那一刻内容未必已稳定（md 异步解析往往落在后面），再兜一小段再收手。
+                    val deadline = System.nanoTime() + CALIBRATE_TAIL_MS * 1_000_000L
+                    while (System.nanoTime() < deadline) {
+                        withFrameNanos { }
+                        calibrateToAnchor()
+                    }
+                }
+            }
     }
 
     // 内容变化信号旁路：文本/思考/消息条数变化时立即校准一次，不等下一帧——
@@ -588,23 +609,7 @@ fun AIChatPanel(
         if (!messagesReady) return@LaunchedEffect
         snapshotFlow {
             Triple(streamingText?.length, streamingReasoning?.length, messages.size)
-        }.collect { _ ->
-            if (!followBottom) return@collect
-            if (!listState.canScrollForward) return@collect
-            val layout = listState.layoutInfo
-            val lastIndex = layout.totalItemsCount - 1
-            if (lastIndex < 0) return@collect
-            val lastVisible = layout.visibleItemsInfo.lastOrNull()
-            if (lastVisible == null || lastVisible.index < lastIndex) {
-                listState.scrollToItem(lastIndex, Int.MAX_VALUE)
-                return@collect
-            }
-            val safeBottom = layout.viewportEndOffset - inputBarReservePx
-            val lastBottom = lastVisible.offset + lastVisible.size
-            if (lastBottom > safeBottom + AUTO_SCROLL_TOLERANCE_PX) {
-                listState.scrollToItem(lastIndex, Int.MAX_VALUE)
-            }
-        }
+        }.collect { calibrateToAnchor() }
     }
 
     val firstVisibleItemIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }

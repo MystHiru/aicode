@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -306,12 +307,20 @@ private fun SessionListTab(
         state = listState,
         modifier = Modifier.fillMaxSize()
     ) {
-        items(groups, key = { it.groupKey }) { group ->
-            SettingsGroupHeader(
-                text = sessionGroupLabel(group.groupKey, group.sessions.first())
-            )
-            Column {
-                group.sessions.forEachIndexed { index, session ->
+        // 每个分组占一个 item、组内 forEach 全量渲染会让 LazyColumn 失去惰性：
+        // 「最近 30 天」这种分组有上百个会话时，一个 item 就要组合上百行。分组头与会话各自成 item。
+        groups.forEach { group ->
+            item(key = "group-${group.groupKey}", contentType = "group-header") {
+                SettingsGroupHeader(
+                    text = sessionGroupLabel(group.groupKey, group.sessions.first())
+                )
+            }
+            itemsIndexed(
+                items = group.sessions,
+                key = { _, session -> session.id },
+                contentType = { _, _ -> "session" }
+            ) { index, session ->
+                Column {
                     if (index > 0) {
                         if (group.groupKey == "pinned") Spacer(Modifier.height(Spacing.sm)) else SettingsDivider()
                     }
@@ -448,14 +457,17 @@ private fun FileBrowserTab(
                 val density = LocalDensity.current
                 // 预算最宽一行的内容宽度（固定开销 + 缩进 + 文本），供所有行取统一宽度，
                 // 以实现整棵树统一横向平移（而非每行各自滚动）。
+                // 逐个 measure 在大目录下会在组合期同步跑上千次文本测量；先按「缩进 + 字符宽度权重」
+                // 挑出最宽的那一行，只对它做一次真实测量。估算不精确，但这里只用来给横向滚动留够宽度。
                 val maxContentPx = remember(state.nodes, textStyle) {
                     with(density) {
-                        val overhead = FILE_TREE_ROW_OVERHEAD.toPx()
-                        state.nodes.maxOfOrNull { node ->
+                        val widest = state.nodes.maxByOrNull { node ->
                             val label = if (node.isRoot) WORKSPACE_LABEL else node.entry.name
-                            val textW = textMeasurer.measure(label, textStyle).size.width
-                            overhead + (Spacing.lg * node.depth).toPx() + textW
-                        }?.toInt() ?: 0
+                            node.depth * 4 + label.sumOf { ch -> if (ch.code > 0x2E80) 2 else 1 }
+                        } ?: return@with 0
+                        val label = if (widest.isRoot) WORKSPACE_LABEL else widest.entry.name
+                        val textW = textMeasurer.measure(label, textStyle).size.width
+                        (FILE_TREE_ROW_OVERHEAD.toPx() + (Spacing.lg * widest.depth).toPx() + textW).toInt()
                     }
                 }
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {

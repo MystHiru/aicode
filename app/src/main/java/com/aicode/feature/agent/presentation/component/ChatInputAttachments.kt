@@ -31,6 +31,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +53,8 @@ import compose.icons.feathericons.FileText
 import compose.icons.feathericons.Image
 import compose.icons.feathericons.X
 import java.util.Base64
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 待发送队列面板：AI 忙时排队的消息，风格与斜杠命令菜单一致。
@@ -204,24 +208,30 @@ private fun ImageThumbnail(
     modifier: Modifier = Modifier.size(44.dp)
 ) {
     val base64Data = attachment.image?.base64Data.orEmpty()
-    val bitmap = remember(base64Data) {
-        runCatching {
-            val bytes = Base64.getDecoder().decode(base64Data)
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            val sampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight, 180, 180)
-            val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
-        }.getOrNull()
+    // Base64 解码 + 两次 BitmapFactory 放到 IO 线程：以前写在 remember 里，选图后的首帧
+    // 会在主线程组合阶段同步解码，大图直接掉帧。
+    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, base64Data) {
+        if (base64Data.isEmpty()) return@produceState
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val bytes = Base64.getDecoder().decode(base64Data)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                val sampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight, 180, 180)
+                val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
+            }.getOrNull()
+        }
     }
     Surface(
         shape = RoundedCornerShape(Radius.sm),
         color = MaterialTheme.colorScheme.surface,
         modifier = modifier
     ) {
-        if (bitmap != null) {
+        val loaded = bitmap
+        if (loaded != null) {
             ComposeImage(
-                bitmap = bitmap,
+                bitmap = loaded,
                 contentDescription = attachment.fileName.ifBlank { stringResource(R.string.common_image_preview) },
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
