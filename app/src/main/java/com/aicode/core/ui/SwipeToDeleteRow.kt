@@ -31,7 +31,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -40,6 +39,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aicode.R
+import com.aicode.core.theme.semanticColors
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Trash2
 import kotlin.math.roundToInt
@@ -64,11 +64,7 @@ fun SwipeToDeleteRow(
     deleteEnabled: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    val rowBackground = if (MaterialTheme.colorScheme.background.luminance() > 0.5f) {
-        Color.White
-    } else {
-        MaterialTheme.colorScheme.surface
-    }
+    val rowBackground = MaterialTheme.semanticColors.cardSurface
     val density = LocalDensity.current
     val revealPx = remember(density) { with(density) { -112.dp.toPx() } }
     val offsetX = remember { Animatable(0f) }

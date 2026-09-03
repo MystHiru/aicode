@@ -38,12 +38,14 @@ import compose.icons.feathericons.Download
 import compose.icons.feathericons.Folder
 import compose.icons.feathericons.Power
 import compose.icons.feathericons.RefreshCw
+import compose.icons.feathericons.Sun
 import compose.icons.feathericons.Zap
 
 /**
  * 「软件权限」二级页：集中展示并管理系统级权限。
  * - 后台运行保活 / Agent 完成通知：内联开关，开启前检测通知权限（Android 13+），
  *   未授予则申请；申请不了（系统不再弹授权框）时弹窗引导去系统设置手动开启。
+ * - 屏幕常亮：内联开关，纯窗口标志，不需系统权限。
  * - 安装未知应用：展示授权状态，未授权点击跳转系统设置开启。
  * - 访问存储空间：展示授权状态，未授权点击申请运行时权限；已被永久拒绝时同样引导去系统设置。
  * - 忽略电池优化 / 自启动管理：跳转系统设置。
@@ -53,6 +55,8 @@ import compose.icons.feathericons.Zap
 internal fun AppPermissionsSection(
     keepaliveEnabled: Boolean,
     onToggleKeepalive: (Boolean) -> Unit,
+    screenOnEnabled: Boolean,
+    onToggleScreenOn: (Boolean) -> Unit,
     agentSoundEnabled: Boolean,
     onToggleAgentSound: (Boolean) -> Unit
 ) {
@@ -129,6 +133,18 @@ internal fun AppPermissionsSection(
                         onCheckedChange = { enabled ->
                             toggleWithNotificationPermission(onToggleKeepalive, enabled)
                         }
+                    )
+                }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon = FeatherIcons.Sun,
+                title = stringResource(R.string.settings_screen_on_title),
+                subtitle = stringResource(R.string.settings_screen_on_subtitle),
+                trailing = {
+                    AppSwitch(
+                        checked = screenOnEnabled,
+                        onCheckedChange = onToggleScreenOn
                     )
                 }
             )

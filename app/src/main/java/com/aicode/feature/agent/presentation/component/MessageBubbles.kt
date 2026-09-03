@@ -1,10 +1,9 @@
 package com.aicode.feature.agent.presentation.component
 
 import android.content.ClipData
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -43,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
@@ -57,6 +57,7 @@ import com.aicode.R
 import com.aicode.core.theme.Brand
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.ContentWidth
 import com.aicode.feature.agent.presentation.AgentUIMessage
 import com.aicode.feature.agent.presentation.hasVisibleContent
@@ -65,14 +66,87 @@ import compose.icons.FeatherIcons
 import compose.icons.feathericons.Check
 import compose.icons.feathericons.ChevronDown
 import compose.icons.feathericons.ChevronUp
+import compose.icons.feathericons.Clock
 import compose.icons.feathericons.Copy
+import compose.icons.feathericons.Database
 import compose.icons.feathericons.MoreHorizontal
 import compose.icons.feathericons.RotateCcw
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /** 落库思考气泡保持展开的窗口（ms）：刚结束的思考不立即折叠回缩，防止高度骤变抽搐。 */
 private const val REASONING_FRESH_WINDOW_MS = 5_000L
+
+/** 工具卡片入场时长（ms）与上浮起点：略微下移再淡入到位，只走 draw 层不影响布局。 */
+private const val MESSAGE_ENTRY_ANIM_MS = 260
+private val MESSAGE_ENTRY_RISE = 10.dp
+
+/**
+ * 每轮任务的总耗时（毫秒）：轮末助手消息落库时刻 − 该轮用户消息发出时刻，即用户按下发送
+ * 到本轮 AI 收工的挂钟时间（含工具执行与等待用户授权的时间）。返回「消息 id → 耗时」，
+ * 只有轮末的那条助手消息才有条目。
+ *
+ * 轮末判定：其后第一条消息是用户消息，或它就是列表末条且本轮已结束（[lastTurnFinished]，
+ * 由 agent 是否空闲给出）。仍在生成中的末条不给耗时，收工落库后自然出现。
+ *
+ * 上下文压缩插入的锚点/摘要落在轮内（压缩发生在请求前），若参与划分会把轮起点算到压缩
+ * 时刻上，故先剔除。
+ */
+internal fun computeTaskDurations(
+    messages: List<AgentUIMessage>,
+    lastTurnFinished: Boolean
+): Map<String, Long> {
+    val turnMessages = messages.filter {
+        !it.isCompactionMarker && !it.isContextSummary && !it.isCompactionFailure
+    }
+    if (turnMessages.isEmpty()) return emptyMap()
+    val durations = mutableMapOf<String, Long>()
+    var turnStart: Long? = null
+    turnMessages.forEachIndexed { index, message ->
+        when (message.role) {
+            MessageRole.USER -> turnStart = message.timestamp
+            MessageRole.ASSISTANT -> {
+                val start = turnStart ?: return@forEachIndexed
+                val isTurnEnd = if (index == turnMessages.lastIndex) {
+                    lastTurnFinished
+                } else {
+                    turnMessages[index + 1].role == MessageRole.USER
+                }
+                if (isTurnEnd && message.timestamp > start) {
+                    durations[message.id] = message.timestamp - start
+                }
+            }
+            MessageRole.TOOL -> Unit
+        }
+    }
+    return durations
+}
+
+/** 任务耗时格式化：不足 1 分钟显示 `12s`，不足 1 小时显示 `2:05`，更长显示 `1:02:05`。 */
+internal fun formatTaskDuration(millis: Long): String {
+    val totalSeconds = ((millis + 500) / 1000).coerceAtLeast(1)
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    val paddedSeconds = seconds.toString().padStart(2, '0')
+    return when {
+        hours > 0 -> "$hours:${minutes.toString().padStart(2, '0')}:$paddedSeconds"
+        minutes > 0 -> "$minutes:$paddedSeconds"
+        else -> "${seconds}s"
+    }
+}
+
+/**
+ * 单条消息的缓存命中率：命中缓存的输入 / 总输入，与设置页 Token 统计同口径。
+ * Anthropic 的 input_tokens 不含 cache_read，该口径会偏大，故封顶 100%。
+ * 无输入统计或本次未命中缓存时返回 null（不占位，避免把「渠道不报缓存数据」误示为 0% 命中）。
+ */
+internal fun formatCacheHitRate(inputTokens: Int, cachedInputTokens: Int): String? {
+    if (inputTokens <= 0 || cachedInputTokens <= 0) return null
+    val rate = (cachedInputTokens * 100.0 / inputTokens).coerceAtMost(100.0)
+    return "${rate.roundToInt()}%"
+}
 
 @Composable
 internal fun AgentMessageItem(
@@ -82,6 +156,8 @@ internal fun AgentMessageItem(
     onRewindClick: ((String) -> Unit)? = null,
     onMoreClick: ((AgentUIMessage) -> Unit)? = null,
     onToolToggle: (() -> Unit)? = null,
+    /** 本轮任务总耗时（ms）：仅轮末助手消息非空，见 [computeTaskDurations]。 */
+    taskDurationMs: Long? = null,
     /** 新消息入场动画延迟（ms）：null 表示历史消息直接显示；非 null 时首次组合延迟后淡入展开。 */
     entryDelayMs: Long? = null
 ) {
@@ -121,18 +197,24 @@ internal fun AgentMessageItem(
     val clipboard = LocalClipboard.current
     val copyScope = rememberCoroutineScope()
 
-    // 工具调用卡片入场动画：仅流式期间新插入时淡入展开；历史/落库后直接显示不重播。
-    // item 滚出视口重新组合时若消息已过新消息窗口，entryDelayMs 为 null，同样直接显示。
-    // 播完即进 saveable：仍在新消息窗口内（entryDelayMs 非 null）时切页返回或 item 回收
-    // 重挂载，不会再播一遍入场。
+    // 工具卡片入场：只对本次浏览期间新追加进来的消息播（entryDelayMs 非空），
+    // 历史、切页返回、item 回收重挂载都直接显示（谁该入场由 MessageEntryScheduler 定）。
+    // 入场只改 alpha 与 translationY（draw 阶段生效），卡片高度从插入那一帧就到位：
+    // 用 AnimatedVisibility 的话未入场的卡片完全不占位，每张卡片入场都让列表高度跳一次，
+    // 与贴底跟随的 scrollToItem 叠加就是一连串抖动——而那正是这个动画本来要消除的。
+    // 现在列表高度只在消息插入时变一次，之后动画全程不碰布局。
     var entered by rememberSaveable(message.id) { mutableStateOf(entryDelayMs == null) }
-    LaunchedEffect(entryDelayMs) {
-        val delayMs = entryDelayMs
-        if (delayMs != null) {
-            delay(delayMs)
-            entered = true
-        }
+    LaunchedEffect(message.id) {
+        if (entered) return@LaunchedEffect
+        val delayMs = entryDelayMs ?: return@LaunchedEffect
+        if (delayMs > 0) delay(delayMs)
+        entered = true
     }
+    val entryProgress by animateFloatAsState(
+        targetValue = if (entered) 1f else 0f,
+        animationSpec = tween(durationMillis = MESSAGE_ENTRY_ANIM_MS, easing = LinearOutSlowInEasing),
+        label = "tool-entry"
+    )
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -154,19 +236,18 @@ internal fun AgentMessageItem(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         if (message.role == MessageRole.TOOL) {
-                            // 工具调用卡片：仅流式期间新插入时淡入展开；落库后的历史直接显示不重播
-                            AnimatedVisibility(
-                                visible = entered,
-                                enter = fadeIn(tween(180)) + slideInVertically(tween(180)) { it / 3 }
+                            Surface(
+                                shape = RoundedCornerShape(Radius.md, Radius.md, Radius.md, Radius.xs),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                border = null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .graphicsLayer {
+                                        alpha = entryProgress
+                                        translationY = (1f - entryProgress) * MESSAGE_ENTRY_RISE.toPx()
+                                    }
                             ) {
-                                Surface(
-                                    shape = RoundedCornerShape(Radius.md, Radius.md, Radius.md, Radius.xs),
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
-                                    border = null,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    ToolMessageBody(message, liveOutput = liveOutput, onToggle = onToolToggle)
-                                }
+                                ToolMessageBody(message, liveOutput = liveOutput, onToggle = onToolToggle)
                             }
                         } else {
                             Surface(
@@ -231,23 +312,25 @@ internal fun AgentMessageItem(
                 if (isUser && hasAttachments) {
                     MessageAttachmentPreviewRow(attachments = message.attachments)
                 }
-                // 气泡下方复制按钮（工具消息不显示）
-                if (message.content.hasVisibleContent() && message.role != MessageRole.TOOL) {
+                // 气泡下方操作行（工具消息不显示）。纯图片消息没有文字，同样要能撤销/删除，故附件也算
+                if ((hasContent || (isUser && hasAttachments)) && message.role != MessageRole.TOOL) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         val iconTint = MaterialTheme.colorScheme.onSurfaceVariant
-                        MessageActionIconButton(
-                            icon = if (copied) FeatherIcons.Check else FeatherIcons.Copy,
-                            contentDescription = if (copied) stringResource(R.string.chat_copied) else stringResource(R.string.chat_copy),
-                            tint = iconTint,
-                            onClick = {
-                                copyScope.launch {
-                                    clipboard.setClipEntry(
-                                        ClipEntry(ClipData.newPlainText("message", message.content))
-                                    )
-                                    copied = true
+                        if (hasContent) {
+                            MessageActionIconButton(
+                                icon = if (copied) FeatherIcons.Check else FeatherIcons.Copy,
+                                contentDescription = if (copied) stringResource(R.string.chat_copied) else stringResource(R.string.chat_copy),
+                                tint = iconTint,
+                                onClick = {
+                                    copyScope.launch {
+                                        clipboard.setClipEntry(
+                                            ClipEntry(ClipData.newPlainText("message", message.content))
+                                        )
+                                        copied = true
+                                    }
                                 }
-                            }
-                        )
+                            )
+                        }
                         if (isUser && onRewindClick != null) {
                             MessageActionIconButton(
                                 icon = FeatherIcons.RotateCcw,
@@ -269,6 +352,40 @@ internal fun AgentMessageItem(
                             val outStr = formatTokenCount(message.outputTokens)
                             Text(
                                 text = "↑$inStr ↓$outStr",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        val cacheHitRate = if (message.role == MessageRole.ASSISTANT) {
+                            formatCacheHitRate(message.inputTokens, message.cachedInputTokens)
+                        } else null
+                        if (cacheHitRate != null) {
+                            Spacer(Modifier.width(Spacing.sm))
+                            Icon(
+                                FeatherIcons.Database,
+                                contentDescription = stringResource(R.string.chat_cache_hit_rate, cacheHitRate),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(Modifier.width(2.dp))
+                            Text(
+                                text = cacheHitRate,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (taskDurationMs != null) {
+                            val durationText = formatTaskDuration(taskDurationMs)
+                            Spacer(Modifier.width(Spacing.sm))
+                            Icon(
+                                FeatherIcons.Clock,
+                                contentDescription = stringResource(R.string.chat_task_duration, durationText),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(Modifier.width(2.dp))
+                            Text(
+                                text = durationText,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -315,16 +432,17 @@ private fun BackgroundNotificationBar(message: AgentUIMessage) {
     val summaries = Regex("<summary>(.*?)</summary>")
         .findAll(content).map { it.groupValues.getOrNull(1)?.trim() }.filterNotNull().toList()
     val isSuccess = statuses.all { it == "completed" }
-    val dotColor = if (isSuccess) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error
+    val dotColor = if (isSuccess) MaterialTheme.semanticColors.success else MaterialTheme.colorScheme.error
     val label = when {
         summaries.size <= 1 -> summaries.firstOrNull() ?: stringResource(R.string.chat_bg_command_done)
         else -> {
+            // 摘要原文由 domain 层生成（同一份还要喂给 AI），这里不按中文标记切字符串取任务名——
+            // 换文案或切到英文界面这段解析就废了。多条时只报数量与失败数。
             val failedCount = statuses.count { it != "completed" }
-            val namePart = summaries.joinToString("、") { s -> s.removePrefix("后台任务「").substringBefore("」") }
             if (failedCount > 0) {
-                stringResource(R.string.chat_bg_commands_partial_failed, summaries.size, failedCount, namePart)
+                stringResource(R.string.chat_bg_commands_partial_failed, summaries.size, failedCount)
             } else {
-                stringResource(R.string.chat_bg_commands_done, summaries.size, namePart)
+                stringResource(R.string.chat_bg_commands_done, summaries.size)
             }
         }
     }

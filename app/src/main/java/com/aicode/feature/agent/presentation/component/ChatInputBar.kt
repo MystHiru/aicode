@@ -1,8 +1,13 @@
 package com.aicode.feature.agent.presentation.component
 
 import android.content.ClipData
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -13,19 +18,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -50,10 +51,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -62,6 +66,7 @@ import com.aicode.R
 import com.aicode.core.theme.Brand
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.rememberImeBottomInset
 import com.aicode.feature.agent.domain.command.SlashCommandHandler
 import com.aicode.feature.agent.domain.model.AgentMode
@@ -301,9 +306,13 @@ internal fun ChatInputBar(
                         val modeColor = when (currentMode) {
                             AgentMode.PLAN -> MaterialTheme.colorScheme.primaryContainer
                             AgentMode.AUTO -> MaterialTheme.colorScheme.error
-                            AgentMode.BUILD -> MaterialTheme.colorScheme.tertiary
+                            AgentMode.BUILD -> MaterialTheme.semanticColors.success
                         }
-                        val modeTextColor = if (currentMode == AgentMode.PLAN) MaterialTheme.colorScheme.onPrimaryContainer else Color.White
+                        val modeTextColor = when (currentMode) {
+                            AgentMode.PLAN -> MaterialTheme.colorScheme.onPrimaryContainer
+                            AgentMode.AUTO -> MaterialTheme.colorScheme.onError
+                            AgentMode.BUILD -> MaterialTheme.semanticColors.onSuccess
+                        }
                         Surface(
                             shape = RoundedCornerShape(16.dp),
                             color = modeColor,
@@ -436,10 +445,15 @@ internal fun SendButton(
     val buttonColor = when {
         showStop -> MaterialTheme.colorScheme.error
         isBusy -> Brand.Orange
-        canSend -> MaterialTheme.colorScheme.tertiary
+        canSend -> MaterialTheme.semanticColors.success
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
-    val iconTint = if (clickable) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+    // 前景色相对按钮底色而非主题：深色主题下的亮绿底用主题 onSurface（近白）会看不清。
+    val iconTint = when {
+        !clickable -> MaterialTheme.colorScheme.onSurfaceVariant
+        buttonColor.luminance() > 0.5f -> Color(0xFF1C1C1E)
+        else -> Color.White
+    }
     val arcColor = buttonColor.copy(alpha = 0.85f)
     val clampedProgress = tokenProgress.coerceIn(0f, 1f)
     Box(
@@ -449,7 +463,16 @@ internal fun SendButton(
         contentAlignment = Alignment.Center
     ) {
         if (clampedProgress > 0f) {
-            Canvas(modifier = Modifier.size(44.dp)) {
+            val usageLabel = stringResource(
+                R.string.chat_context_usage,
+                (clampedProgress * 100).toInt()
+            )
+            Canvas(
+                modifier = Modifier
+                    .size(44.dp)
+                    // 上下文用量只靠这圈弧表达，给读屏补上百分比。
+                    .semantics { contentDescription = usageLabel }
+            ) {
                 val stroke = 3.dp.toPx()
                 val arcSize = size.minDimension - stroke
                 val topLeft = androidx.compose.ui.geometry.Offset(stroke / 2f, stroke / 2f)
@@ -495,6 +518,7 @@ internal fun SendButton(
 internal fun ToolPermissionPanel(
     request: PendingToolPermission,
     onChoice: (PermissionChoice) -> Unit,
+    sessionTitle: String = "",
     forceCollapse: Boolean = false
 ) {
     var expanded by remember { mutableStateOf(true) }
@@ -543,6 +567,17 @@ internal fun ToolPermissionPanel(
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
+                )
+            }
+
+            if (sessionTitle.isNotBlank()) {
+                Spacer(Modifier.height(Spacing.xs))
+                Text(
+                    text = stringResource(R.string.chat_perm_session_label, sessionTitle),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
@@ -612,16 +647,15 @@ internal fun ToolPermissionPanel(
 
 @Composable
 internal fun StatusBanner(state: AgentUIState) {
-    androidx.compose.animation.AnimatedVisibility(
+    // 退出动画期间 state 已不是 Error，when 会走 else 渲染空内容，横幅的淡出就变成了瞬间消失；
+    // 拿最后一次的错误文本兜住整段退场。
+    val lastError = rememberLastNonNull((state as? AgentUIState.Error)?.message)
+    AnimatedVisibility(
         visible = state is AgentUIState.Error,
-        enter = androidx.compose.animation.fadeIn(),
-        exit = androidx.compose.animation.fadeOut()
+        enter = fadeIn() + expandVertically(),
+        exit = fadeOut() + shrinkVertically()
     ) {
-        when (state) {
-            is AgentUIState.Error -> ErrorBubble(message = state.message)
-
-            else -> {}
-        }
+        lastError?.let { ErrorBubble(message = it) }
     }
 }
 

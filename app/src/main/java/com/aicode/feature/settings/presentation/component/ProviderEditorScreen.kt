@@ -140,7 +140,6 @@ import compose.icons.feathericons.Eye
 import compose.icons.feathericons.EyeOff
 import compose.icons.feathericons.FileText
 import compose.icons.feathericons.Folder
-import compose.icons.feathericons.Menu
 import compose.icons.feathericons.Minus
 import compose.icons.feathericons.Play
 import compose.icons.feathericons.Plus
@@ -298,6 +297,7 @@ fun ProviderEditorScreen(
         models.add(to.index, models.removeAt(from.index))
         modelsOrderDirty = true
     }
+    val hapticFeedback = LocalHapticFeedback.current
 
     fun saveAndNavigateBack() {
         modelsOrderDirty = false
@@ -725,33 +725,18 @@ fun ProviderEditorScreen(
                                                 saveCurrent()
                                             },
                                             showDivider = !isLast && !isDragging,
-                                            dragHandle = {
-                                                val haptic = LocalHapticFeedback.current
-                                                IconButton(
-                                                    onClick = {},
-                                                    modifier = Modifier
-                                                        .size(32.dp)
-                                                        .longPressDraggableHandle(
-                                                            onDragStarted = {
-                                                                haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
-                                                            },
-                                                            onDragStopped = {
-                                                                haptic.performHapticFeedback(HapticFeedbackType.GestureEnd)
-                                                                if (modelsOrderDirty) {
-                                                                    modelsOrderDirty = false
-                                                                    saveCurrent()
-                                                                }
-                                                            }
-                                                        )
-                                                ) {
-                                                    Icon(
-                                                        imageVector = FeatherIcons.Menu,
-                                                        contentDescription = stringResource(R.string.provider_sort_drag_handle),
-                                                        tint = MaterialTheme.semanticColors.subtleText,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
+                                            dragModifier = Modifier.longPressDraggableHandle(
+                                                onDragStarted = {
+                                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                                                },
+                                                onDragStopped = {
+                                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                                                    if (modelsOrderDirty) {
+                                                        modelsOrderDirty = false
+                                                        saveCurrent()
+                                                    }
                                                 }
-                                            }
+                                            )
                                         )
                                     }
                                 }
@@ -1075,7 +1060,9 @@ private fun AddModelSheet(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .padding(horizontal = 20.dp)
+                    .padding(top = 12.dp, bottom = Spacing.xl)
+                    .navigationBarsPadding()
             ) {
                 Button(
                     enabled = canSave,
@@ -1891,12 +1878,11 @@ private fun RawOutputBottomSheet(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
-    val light = settingsLightMode()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = if (light) Color.White else MaterialTheme.colorScheme.surface
+        containerColor = MaterialTheme.semanticColors.cardSurface
     ) {
         Column(
             modifier = Modifier

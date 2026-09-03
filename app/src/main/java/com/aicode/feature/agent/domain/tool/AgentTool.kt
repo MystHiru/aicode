@@ -86,7 +86,9 @@ data class PendingToolPermission(
      * 由 [com.aicode.feature.agent.domain.permission.ToolPermissionPolicyEngine] 评估后填入。
      */
     val rememberablePatterns: List<String> = emptyList(),
-    val rememberDisabledReason: String? = null
+    val rememberDisabledReason: String? = null,
+    /** 发起该授权请求的会话 id。多会话并行时用于在 UI 上区分弹窗归属、点亮侧边栏等待授权指示。 */
+    val sessionId: String = ""
 )
 
 abstract class AgentTool {

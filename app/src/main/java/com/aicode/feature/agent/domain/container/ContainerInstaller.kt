@@ -211,12 +211,6 @@ class ContainerInstaller @Inject constructor(
     private fun assetExists(path: String): Boolean =
         context.assets.list(path.substringBeforeLast('/'))?.any { it == path.substringAfterLast('/') } == true
 
-    val ASSET_PROOT: String get() = "$ASSET_DIR/proot"
-    // Termux proot 的 loader 分离（靠 PROOT_LOADER 定位），且动态依赖 libtalloc / libandroid-shmem。
-    val ASSET_LOADER: String get() = "$ASSET_DIR/loader"
-    val ASSET_LOADER32: String get() = "$ASSET_DIR/loader32"
-    val ASSET_LIBTALLOC: String get() = "$ASSET_DIR/libtalloc.so.2"
-    val ASSET_LIBSHMEM: String get() = "$ASSET_DIR/libandroid-shmem.so"
     // 故意用中性的 .bin 后缀：AGP 的 asset 合并会把 .tar.gz/.tgz 当归档自动解压并改名，
     // 导致运行时 open("...tar.gz") 找不到文件。.bin 让它当普通二进制原样打包。
     val ASSET_ROOTFS: String get() = "$ASSET_DIR/alpine-rootfs.bin"
@@ -235,19 +229,27 @@ class ContainerInstaller @Inject constructor(
     val aicodeDir: File
         get() = File(context.filesDir, "aicode")
 
-    /** PRoot 可执行文件路径（Termux 构建，含 statx，动态链接 libtalloc/libandroid-shmem） */
+    /**
+     * proot 全套所在目录：APK 内 `lib/<abi>/lib*.so` 由安装器解压到此（见 build.gradle.kts 的
+     * jniLibs sourceSet 与 useLegacyPackaging）。**不能改回 filesDir**——它是 App 目录里唯一
+     * 允许 execve 的位置，filesDir 下的文件在 targetSdk 29+ 会被 W^X 拒绝执行。
+     */
+    private val nativeLibDir: File
+        get() = File(context.applicationInfo.nativeLibraryDir)
+
+    /** PRoot 可执行文件（Termux 构建，含 statx，动态链接 libtalloc/libandroid-shmem） */
     val prootBin: File
-        get() = File(context.filesDir, "container/bin/proot")
+        get() = File(nativeLibDir, "libproot.so")
 
     /** PRoot 的 64/32 位 loader（Termux proot loader 分离，由 PROOT_LOADER/_32 指向）。 */
     val prootLoader: File
-        get() = File(context.filesDir, "container/bin/loader")
+        get() = File(nativeLibDir, "libproot-loader.so")
     val prootLoader32: File
-        get() = File(context.filesDir, "container/bin/loader32")
+        get() = File(nativeLibDir, "libproot-loader32.so")
 
-    /** proot 的动态依赖库目录（libtalloc.so.2 / libandroid-shmem.so），由 LD_LIBRARY_PATH 指向。 */
+    /** proot 的动态依赖库目录（libtalloc.so / libandroid-shmem.so），由 LD_LIBRARY_PATH 指向。 */
     val prootLibDir: File
-        get() = File(context.filesDir, "container/lib")
+        get() = nativeLibDir
 
     /**
      * PRoot 在 Android 上必须的临时目录（Android 没有 /tmp）。
@@ -261,9 +263,9 @@ class ContainerInstaller @Inject constructor(
     private val installedMarker: File
         get() = File(rootfsDir, ".installed")
 
-    /** 检查 rootfs 与 proot 是否已按当前版本安装就绪 */
+    /** 检查 rootfs 是否已按当前版本解压就绪（proot 随 APK 安装，不属于安装状态） */
     fun isInstalled(): Boolean {
-        if (!prootBin.exists() || !rootfsDir.isDirectory) return false
+        if (!rootfsDir.isDirectory) return false
         val marker = installedMarker
         return marker.exists() && marker.readText().trim() == INSTALL_VERSION
     }
@@ -271,7 +273,7 @@ class ContainerInstaller @Inject constructor(
     /**
      * 若未安装（或版本不匹配）则从 assets 解压安装。幂等，可在每次执行命令前调用。
      *
-     * [onProgress] 在真正解压/部署的各阶段被回调以更新 [ContainerInitState]；已安装的快路径不会调用。
+     * [onProgress] 在真正解压的各阶段被回调以更新 [ContainerInitState]；已安装的快路径不会调用。
      */
     suspend fun installRootfsIfNeed(
         onProgress: (ContainerInitState) -> Unit = {}
@@ -284,8 +286,6 @@ class ContainerInstaller @Inject constructor(
         if (rootfsDir.exists()) rootfsDir.deleteRecursively()
         rootfsDir.mkdirs()
 
-        onProgress(ContainerInitState.DeployingProot)
-        installProot()
         extractRootfs(onProgress)
         configureResolvConf()
         prootTmpDir.mkdirs()
@@ -312,12 +312,12 @@ class ContainerInstaller @Inject constructor(
         when {
             profile.isBuiltin -> isInstalled()
             profile.rootfsSource is RootfsSource.RemoteSsh -> true
-            else -> prootBin.exists() && rootfsDirFor(profile).isDirectory && customInstalledMarker(profile).exists()
+            else -> rootfsDirFor(profile).isDirectory && customInstalledMarker(profile).exists()
         }
 
     /**
-     * 按 [profile] 解压安装 rootfs。内置走 assets 全流程（proot/resolv/apk 源）；自定义本地镜像只解压
-     * tar.gz + 装 proot + 写 DNS（不写 apk 源）。两者都不自动装包——基础工具由进入终端时的
+     * 按 [profile] 解压安装 rootfs。内置走 assets 全流程（rootfs/resolv/apk 源）；自定义本地镜像只解压
+     * tar.gz + 写 DNS（不写 apk 源）。两者都不自动装包——基础工具由进入终端时的
      * 初始化菜单（assets/aicode/provision.sh）引导用户选择安装。远程 SSH profile 无本地 rootfs，直接返回
      * （命令执行走 [RemoteSshEngine]，不需本地 rootfs）。
      */
@@ -343,8 +343,6 @@ class ContainerInstaller @Inject constructor(
         if (dest.exists()) dest.deleteRecursively()
         dest.mkdirs()
 
-        onProgress(ContainerInitState.DeployingProot)
-        installProot()
         when (val src = profile.rootfsSource) {
             is RootfsSource.Asset -> context.assets.open("${ASSET_DIR}/${src.path}").use {
                 extractRootfsTo(dest, it, CompressedFormat.GZIP, onProgress)
@@ -463,44 +461,6 @@ class ContainerInstaller @Inject constructor(
 
     /** 从 assets 提取容器初始化依赖安装脚本到 ~/.aicode/provision.sh 并赋可执行位。 */
     fun extractProvisionScript() = extractProvisionScript(context)
-
-    /** 从 assets 复制 proot 全套（二进制 + loader + 动态依赖库）到私有目录并赋权限 */
-    private fun installProot() {
-        // 二进制与 loader：需可执行
-        copyAsset(ASSET_PROOT, prootBin, executable = true)
-        copyAsset(ASSET_LOADER, prootLoader, executable = true)
-        copyAsset(ASSET_LOADER32, prootLoader32, executable = true)
-        // 动态依赖库：放到 lib 目录，由 LD_LIBRARY_PATH 指向；可读即可（给可执行位无害）
-        copyAsset(ASSET_LIBTALLOC, File(prootLibDir, "libtalloc.so.2"), executable = true)
-        copyAsset(ASSET_LIBSHMEM, File(prootLibDir, "libandroid-shmem.so"), executable = true)
-    }
-
-    /** 把单个 asset 复制到目标文件，按需赋「对所有用户」的可执行位（proot 进程以 App uid 运行）。
-     *  幂等：内容与 assets 一致则跳过——proot 常被运行中的容器进程占用，直接覆写会 ETXTBSY；
-     *  不一致（App 升级换了新二进制）先删后写：unlink 运行中的可执行文件是安全的，新文件写新 inode 不与旧进程冲突。 */
-    private fun copyAsset(assetPath: String, dest: File, executable: Boolean) {
-        dest.parentFile?.mkdirs()
-        if (assetContentEquals(assetPath, dest)) return
-        dest.delete()
-        context.assets.open(assetPath).use { input ->
-            dest.outputStream().use { output -> input.copyTo(output) }
-        }
-        if (executable && !dest.setExecutable(true, false)) {
-            FileLogger.w(TAG, "setExecutable 返回 false: ${dest.absolutePath}")
-        }
-    }
-
-    /** asset 与目标文件字节是否一致（读失败按不一致处理）。 */
-    private fun assetContentEquals(assetPath: String, dest: File): Boolean {
-        if (!dest.isFile) return false
-        return try {
-            context.assets.open(assetPath).use { input ->
-                dest.inputStream().use { output -> input.readBytes().contentEquals(output.readBytes()) }
-            }
-        } catch (e: Exception) {
-            false
-        }
-    }
 
     /** 解压 alpine-minirootfs.tar.gz，正确处理目录/文件/符号链接/硬链接与权限位 */
     private fun extractRootfs(onProgress: (ContainerInitState) -> Unit) {

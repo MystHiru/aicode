@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import com.aicode.core.theme.Brand
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.theme.semanticColors
 import com.aicode.feature.agent.domain.session.SessionUseCase
 import com.aicode.feature.agent.presentation.AgentUIMessage
 import compose.icons.FeatherIcons
@@ -62,6 +63,7 @@ import compose.icons.feathericons.ChevronDown
 import compose.icons.feathericons.ChevronUp
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -71,6 +73,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.aicode.R
 
 internal val DiffAddBg = Color(0x2622C55E)
@@ -114,6 +118,10 @@ internal fun ToolMessageBody(
     val webSearchData = if (message.toolName == "websearch" && !running && !message.isError) {
         remember(message.id, message.content) { parseWebSearchResult(message.content) }
     } else null
+    // 后台任务/子代理完成通知：搭车在本次工具结果里送给 AI 的，同时常显给用户看。
+    val notifications = if (!running) {
+        remember(message.id, message.content) { parseToolNotifications(message.content) }
+    } else emptyList()
 
     // 执行中也可折叠/展开（如 bash 刷屏时可收起只看标题行），无论当前是否有输出；无输出时折叠态无内容，但保持可点击与箭头一致
     val hasLiveOutput = !liveOutput.isNullOrBlank()
@@ -273,6 +281,10 @@ internal fun ToolMessageBody(
                 }
             }
         }
+        if (notifications.isNotEmpty()) {
+            Spacer(Modifier.height(Spacing.sm))
+            notifications.forEach { ToolNotificationRow(it) }
+        }
         // 文件卡片：工具结束后常显在消息底部，点击用系统 app 打开。
         if (!running && message.attachments.isNotEmpty()) {
             val context = LocalContext.current
@@ -281,6 +293,55 @@ internal fun ToolMessageBody(
                 onClick = { openAttachment(context, it) }
             )
         }
+    }
+}
+
+internal data class ToolNotificationInfo(val summary: String, val succeeded: Boolean)
+
+/**
+ * 从工具结果 transport JSON 顶层的 `notifications` 字段提取搭车通知（后台任务/子代理完成）。
+ * 该字段由 [com.aicode.feature.agent.domain.workflow.StatefulAgentWorkflow] 在 AI 忙碌时注入。
+ */
+internal fun parseToolNotifications(raw: String): List<ToolNotificationInfo> {
+    val array = parseToolTransport(raw.withoutToolStatusPrefix())?.get("notifications") as? JsonArray
+        ?: return emptyList()
+    return array.mapNotNull { element ->
+        val obj = element as? JsonObject ?: return@mapNotNull null
+        val summary = (obj["summary"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+            ?: return@mapNotNull null
+        ToolNotificationInfo(
+            summary = summary,
+            succeeded = (obj["status"] as? JsonPrimitive)?.contentOrNull == "completed"
+        )
+    }
+}
+
+/** 工具卡片底部的搭车通知提示条：状态点 + 摘要。 */
+@Composable
+private fun ToolNotificationRow(info: ToolNotificationInfo) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = Spacing.xs),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(
+                    if (info.succeeded) MaterialTheme.semanticColors.success
+                    else MaterialTheme.colorScheme.error
+                )
+        )
+        Text(
+            text = info.summary,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -355,12 +416,21 @@ internal fun ToolStatusDot(running: Boolean, isError: Boolean) {
     } else {
         1f
     }
+    val statusLabel = stringResource(
+        when {
+            running -> R.string.chat_tool_running
+            isError -> R.string.chat_tool_failed
+            else -> R.string.chat_tool_succeeded
+        }
+    )
     Box(
         modifier = Modifier
             .size(8.dp)
             .graphicsLayer { alpha = dotAlpha }
             .clip(CircleShape)
             .background(baseColor)
+            // 颜色是唯一信号，读屏与色弱用户没法区分，补上文字语义。
+            .semantics { contentDescription = statusLabel }
     )
 }
 

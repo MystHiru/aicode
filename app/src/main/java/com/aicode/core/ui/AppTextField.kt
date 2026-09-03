@@ -19,31 +19,51 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.aicode.core.theme.semanticColors
 
 /**
  * 全局统一的 App 输入框颜色规范：
- * - 浅色模式：纯白背景卡片 + 柔和外边框 + 聚焦主色高光；
- * - 暗色模式：深蓝表面底色（surface/surfaceVariant）+ 蓝灰描边 + 聚焦主色微光。
+ * - 浅色模式：主题卡片色背景 + 柔和外边框 + 聚焦主色高光；
+ * - 暗色模式：深色表面底色（surface/surfaceVariant）+ 描边 + 聚焦主色微光。
  */
 @Composable
 fun appTextFieldColors(
-    isLight: Boolean = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    isLight: Boolean = MaterialTheme.colorScheme.background.luminance() > 0.5f,
+    unfocusedContainerColor: Color = MaterialTheme.semanticColors.cardSurface,
+    focusedContainerColor: Color = if (isLight) MaterialTheme.semanticColors.cardSurface
+    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f)
 ): TextFieldColors {
     return OutlinedTextFieldDefaults.colors(
         unfocusedBorderColor = if (isLight) MaterialTheme.colorScheme.outlineVariant
         else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
         focusedBorderColor = MaterialTheme.colorScheme.primary,
-        unfocusedContainerColor = if (isLight) Color.White else MaterialTheme.colorScheme.surface,
-        focusedContainerColor = if (isLight) Color.White else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
+        unfocusedContainerColor = unfocusedContainerColor,
+        focusedContainerColor = focusedContainerColor,
         focusedLabelColor = MaterialTheme.colorScheme.primary,
         unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
         cursorColor = MaterialTheme.colorScheme.primary,
         focusedLeadingIconColor = MaterialTheme.colorScheme.primary,
         unfocusedLeadingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
         focusedTrailingIconColor = MaterialTheme.colorScheme.primary,
-        unfocusedTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant
+        unfocusedTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        // 禁用态沿用未聚焦时的底色：M3 默认把 disabled 容器色置为透明，enabled 一变背景就在有色与透明之间跳一下，
+        // 看着就是输入框在闪。禁用语义交给较浅的边框与文字表达。
+        disabledContainerColor = unfocusedContainerColor,
+        disabledBorderColor = if (isLight) MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
     )
 }
+
+/**
+ * 弹窗（AlertDialog 等自带主题底色的容器）里的输入框配色：容器全透明，底色直接透出弹窗自身的颜色。
+ *
+ * 弹窗底色随主题变，而普通页面用的卡片白底放到这种弹窗里会像贴上去的一块白纸。
+ */
+@Composable
+fun dialogTextFieldColors(): TextFieldColors = appTextFieldColors(
+    unfocusedContainerColor = Color.Transparent,
+    focusedContainerColor = Color.Transparent
+)
 
 /**
  * 全局统一的基础输入框组件：

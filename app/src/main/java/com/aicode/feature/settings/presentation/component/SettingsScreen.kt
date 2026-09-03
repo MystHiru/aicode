@@ -4,6 +4,9 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ContentTransform
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -48,6 +51,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalConfiguration
@@ -56,8 +60,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.aicode.core.theme.AppThemePreset
 import com.aicode.core.theme.Spacing
+import com.aicode.core.theme.isDynamicColorSupported
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.pageEnter
+import com.aicode.core.ui.pageExit
 import com.aicode.core.util.LogLevel
 import com.aicode.R
 import com.aicode.feature.agent.domain.mcp.McpServerEntry
@@ -137,6 +145,22 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     About(R.string.settings_about)
 }
 
+/**
+ * 分区层级：0 首页菜单，1 一级分区，2 分区里再翻一层的详情 / 编辑页。
+ *
+ * 只用于判定切换方向（变浅算返回）。[SettingsSection.Log] 的上一层是动态的（见 logReturnSection），
+ * 统一当二级算：从菜单直接进它仍是 0 → 2 的「前进」，方向不会反。
+ */
+private fun SettingsSection.depth(): Int = when (this) {
+    SettingsSection.Menu -> 0
+    SettingsSection.ProviderEditor,
+    SettingsSection.SkillDetail,
+    SettingsSection.SubAgentDetail,
+    SettingsSection.ContainerDownloads,
+    SettingsSection.Log -> 2
+    else -> 1
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -156,8 +180,11 @@ fun SettingsScreen(
     val projectRules by viewModel.projectRules.collectAsStateWithLifecycle()
     val currentProjectName by viewModel.currentProjectName.collectAsStateWithLifecycle()
     val keepaliveEnabled by viewModel.keepaliveEnabled.collectAsStateWithLifecycle()
+    val screenOnEnabled by viewModel.screenOnEnabled.collectAsStateWithLifecycle()
     val agentSoundEnabled by viewModel.agentSoundEnabled.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+    val themePresetId by viewModel.themePresetId.collectAsStateWithLifecycle()
+    val dynamicColorEnabled by viewModel.dynamicColorEnabled.collectAsStateWithLifecycle()
     val backgroundImagePath by viewModel.backgroundImagePath.collectAsStateWithLifecycle()
     val backgroundAlpha by viewModel.backgroundAlpha.collectAsStateWithLifecycle()
     val languageTag by viewModel.languageTag.collectAsStateWithLifecycle()
@@ -254,9 +281,15 @@ fun SettingsScreen(
     }
 
     // 菜单内容：窄窗当首页用，大屏当常驻左栏用，共用同一份。
+    // 滚动位置必须提到 AnimatedContent 之外持有：菜单页作为分区分支被切走时会被 dispose，
+    // 内部 rememberScrollState 一并丢弃，从二级页返回就跳回顶部。
+    val menuScrollState = rememberScrollState()
     val menuBody: @Composable () -> Unit = {
         SettingsMenu(
+            scrollState = menuScrollState,
             themeMode = themeMode,
+            themePresetId = themePresetId,
+            dynamicColorEnabled = dynamicColorEnabled,
             terminalSettings = terminalSettings,
             currentLanguageDisplayName = currentLanguageDisplayName,
             backgroundImagePath = backgroundImagePath,
@@ -309,10 +342,23 @@ fun SettingsScreen(
             VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
 
-        Box(modifier = Modifier.weight(1f)) {
+        // 过渡期间退场页会向左移出自身区域（sizeTransform 为 null 时 AnimatedContent 不裁剪），
+        // 不夹住就会画到大屏左侧常驻菜单上。
+        Box(modifier = Modifier.weight(1f).clipToBounds()) {
+        // 分区切换走整页过渡（顶栏一起滑），而不是瞬切；方向按层级深度定：进更深一层从右来，返回从左来。
+        AnimatedContent(
+            targetState = section,
+            modifier = Modifier.fillMaxSize(),
+            transitionSpec = {
+                val forward = targetState.depth() >= initialState.depth()
+                // sizeTransform 必须给 null：新旧内容尺寸本就一样，默认的尺寸补间只会让容器裁剪拖影。
+                ContentTransform(pageEnter(forward), pageExit(forward), sizeTransform = null)
+            },
+            label = "settings-section"
+        ) { current ->
         when {
             // 这两页自带顶栏，不能嵌进下面的 Scaffold（会双层顶栏）：窄窗占整屏，大屏占右栏。
-            section == SettingsSection.ProviderEditor -> ProviderEditorScreen(
+            current == SettingsSection.ProviderEditor -> ProviderEditorScreen(
                 viewModel = viewModel,
                 initialProvider = editingProvider,
                 onNavigateBack = { section = SettingsSection.Providers },
@@ -321,7 +367,7 @@ fun SettingsScreen(
                 }
             )
 
-            section == SettingsSection.RemoteServers ->
+            current == SettingsSection.RemoteServers ->
                 com.aicode.feature.workspace.presentation.remote.RemoteServerScreen(
                     onNavigateBack = { section = SettingsSection.Menu }
                 )
@@ -332,15 +378,15 @@ fun SettingsScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = if (section == SettingsSection.SkillDetail) {
-                            selectedSkill?.name ?: stringResource(section.titleRes)
-                        } else if (section == SettingsSection.SubAgentDetail) {
-                            selectedSubAgent?.name ?: stringResource(section.titleRes)
-                        } else if (expanded && section == SettingsSection.Menu) {
+                        text = if (current == SettingsSection.SkillDetail) {
+                            selectedSkill?.name ?: stringResource(current.titleRes)
+                        } else if (current == SettingsSection.SubAgentDetail) {
+                            selectedSubAgent?.name ?: stringResource(current.titleRes)
+                        } else if (expanded && current == SettingsSection.Menu) {
                             // 大屏左栏顶部已经写着「设置」，右栏空态不再重复
                             ""
                         } else {
-                            stringResource(section.titleRes)
+                            stringResource(current.titleRes)
                         }
                     )
                 },
@@ -360,7 +406,7 @@ fun SettingsScreen(
                     }
                 },
                 actions = {
-                    when (section) {
+                    when (current) {
                         SettingsSection.Providers -> IconButton(onClick = {
                             editingProvider = null
                             section = SettingsSection.ProviderEditor
@@ -449,7 +495,7 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            when (section) {
+            when (current) {
                 // 大屏菜单已常驻左栏，右栏在没选中分区时给个占位提示
                 SettingsSection.Menu -> if (expanded) SettingsDetailPlaceholder() else menuBody()
                 SettingsSection.Providers -> ProvidersSection(
@@ -586,6 +632,8 @@ fun SettingsScreen(
                 SettingsSection.AppPermissions -> AppPermissionsSection(
                     keepaliveEnabled = keepaliveEnabled,
                     onToggleKeepalive = { viewModel.setKeepaliveEnabled(it) },
+                    screenOnEnabled = screenOnEnabled,
+                    onToggleScreenOn = { viewModel.setScreenOnEnabled(it) },
                     agentSoundEnabled = agentSoundEnabled,
                     onToggleAgentSound = { viewModel.setAgentSoundEnabled(it) }
                 )
@@ -612,6 +660,7 @@ fun SettingsScreen(
         }
     }
         } // 详情区 when 结束
+        } // AnimatedContent 结束
         } // 右栏结束
     } // Row 结束
 
@@ -640,7 +689,11 @@ fun SettingsScreen(
     if (showThemeSheet) {
         ThemeSelectionSheet(
             selected = themeMode,
+            selectedPresetId = themePresetId,
+            dynamicColorEnabled = dynamicColorEnabled,
             onSelected = { viewModel.setThemeMode(it) },
+            onPresetSelected = { viewModel.setThemePreset(it) },
+            onDynamicColorChanged = { viewModel.setDynamicColorEnabled(it) },
             onDismiss = { showThemeSheet = false }
         )
     }
@@ -820,7 +873,10 @@ private fun SettingsDetailPlaceholder() {
 /** 设置首页：每个分区一个可点击的二级菜单入口。 */
 @Composable
 internal fun SettingsMenu(
+    scrollState: ScrollState,
     themeMode: AppThemeMode,
+    themePresetId: String?,
+    dynamicColorEnabled: Boolean,
     terminalSettings: TerminalSettings,
     currentLanguageDisplayName: String,
     backgroundImagePath: String?,
@@ -835,7 +891,7 @@ internal fun SettingsMenu(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = Spacing.lg)
             .padding(bottom = Spacing.xl),
         verticalArrangement = Arrangement.spacedBy(Spacing.sm)
@@ -926,8 +982,13 @@ internal fun SettingsMenu(
                 title = stringResource(R.string.settings_theme_title),
                 onClick = onOpenThemeSheet,
                 trailing = {
+                    val colorLabel = if (dynamicColorEnabled && isDynamicColorSupported) {
+                        stringResource(R.string.theme_dynamic_color)
+                    } else {
+                        stringResource(AppThemePreset.findById(themePresetId).nameRes)
+                    }
                     Text(
-                        text = stringResource(themeMode.labelRes),
+                        text = "${stringResource(themeMode.labelRes)} · $colorLabel",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.semanticColors.subtleText
                     )

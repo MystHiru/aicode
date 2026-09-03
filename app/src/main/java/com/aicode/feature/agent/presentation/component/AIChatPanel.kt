@@ -7,10 +7,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.DragInteraction
@@ -23,7 +25,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -57,7 +58,6 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -82,6 +82,7 @@ import compose.icons.FeatherIcons
 import compose.icons.feathericons.ArrowDown
 import java.io.File
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 
@@ -106,11 +107,15 @@ private const val STREAMING_TAIL_RETAIN_MS = 150L
 /** 滚动到底部按钮直径（dp）。 */
 private const val SCROLL_TO_BOTTOM_BTN_SIZE = 34
 
-/** 新消息入场动画判定窗口（ms）：timestamp 距今小于该值视为刚插入的新消息。 */
-private const val MESSAGE_ENTRY_WINDOW_MS = 10_000L
+/** 连续新消息的入场错开间隔（ms）与总上限：一次插入很多卡片时不能让最后一张等好几秒。 */
+private const val MESSAGE_ENTRY_STAGGER_MS = 90L
+private const val MESSAGE_ENTRY_MAX_STAGGER_MS = 360L
 
-/** 连续新消息的入场动画间隔（ms）：多条消息同时插入时逐个出现。 */
-private const val MESSAGE_ENTRY_STAGGER_MS = 100L
+/** AI 收工后继续逐帧校准的时长（ms）：md 异步解析仍可能改高度，不能一停就收手。 */
+private const val CALIBRATE_TAIL_MS = 1_200L
+
+/** 消息未就绪时延迟多久才显示加载提示（ms）：本地读库很快，立即显示反而闪。 */
+private const val MESSAGES_LOADING_HINT_DELAY_MS = 220L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -122,6 +127,9 @@ fun AIChatPanel(
     workspaceViewModel: WorkspaceViewModel? = null,
     onOpenDrawer: () -> Unit,
     showMenuButton: Boolean = true,
+    /** 大屏右栏当前开的是终端 / Git 时，顶栏对应图标高亮。 */
+    terminalActive: Boolean = false,
+    gitActive: Boolean = false,
     currentFile: String? = null,
     selectedCode: String? = null,
     modifier: Modifier = Modifier
@@ -130,30 +138,11 @@ fun AIChatPanel(
     val messagesState by viewModel.messagesState.collectAsStateWithLifecycle()
     val messages = messagesState.messages
 
-    // 工具调用卡片入场动画：仅流式期间新插入的 TOOL 消息按顺序分配递增延迟，逐个淡入展开；
-    // 落库后的历史（timestamp 旧）直接显示不重播。
-    val messageEntryDelays = remember(messages) {
-        val now = System.currentTimeMillis()
-        val map = mutableMapOf<String, Long>()
-        // 消息按时间升序：先定位窗口起点（从最新往回找首个未超窗消息），
-        // 长历史时每次落库只遍历窗口内尾部，而不是全量扫描旧消息。
-        var start = messages.size - 1
-        while (start >= 0 && now - messages[start].timestamp < MESSAGE_ENTRY_WINDOW_MS) start--
-        start++
-        var consecutive = 0
-        for (i in start until messages.size) {
-            val m = messages[i]
-            if (m.role == MessageRole.TOOL && now - m.timestamp < MESSAGE_ENTRY_WINDOW_MS) {
-                map[m.id] = consecutive * MESSAGE_ENTRY_STAGGER_MS.toLong()
-                consecutive++
-            } else {
-                consecutive = 0
-            }
-        }
-        map
-    }
-
     val currentSessionId by viewModel.currentSessionId.collectAsStateWithLifecycle()
+    // 工具卡片入场调度：只排本次浏览期间新追加到尾部的 TOOL 消息，逐个错开淡入。
+    // 换会话时调度器重建，新会话的存量消息不入场。
+    val entryScheduler = remember(currentSessionId) { MessageEntryScheduler() }
+    val messageEntryDelays = remember(messages, entryScheduler) { entryScheduler.schedule(messages) }
     val currentSessionState by viewModel.currentSessionState.collectAsStateWithLifecycle()
     val currentSession = currentSessionState
     val sessionTitle = currentSession?.title?.takeIf { it.isNotBlank() } ?: stringResource(R.string.chat_new_session_btn)
@@ -167,6 +156,7 @@ fun AIChatPanel(
     val streamingText by viewModel.streamingText.collectAsStateWithLifecycle()
     val streamingReasoning by viewModel.streamingReasoning.collectAsStateWithLifecycle()
     val pendingPermission by viewModel.pendingToolPermission.collectAsStateWithLifecycle()
+    val pendingPermissionSessionTitle by viewModel.pendingToolPermissionSessionTitle.collectAsStateWithLifecycle()
     val pendingQuestion by viewModel.pendingUserQuestion.collectAsStateWithLifecycle()
     val queuedRequests by viewModel.queuedRequests.collectAsStateWithLifecycle()
     val targetRewindMessageId by viewModel.targetRewindMessageId.collectAsStateWithLifecycle()
@@ -208,21 +198,15 @@ fun AIChatPanel(
     var messageForMenu by remember { mutableStateOf<AgentUIMessage?>(null) }
     var editingMessage by remember { mutableStateOf<AgentUIMessage?>(null) }
     val listState = rememberLazyListState()
-    // 滚动方向追踪：记录最近一次滚动方向。向下滚后即使停住也保持显示回底按钮，
-    // 向上滚或已到底时隐藏（可见性条件见底部 ScrollToBottomButton）。
-    var scrollingDown by remember { mutableStateOf(false) }
-    var lastScrollPos by remember { mutableStateOf(0 to 0) }
-    LaunchedEffect(listState) {
-        snapshotFlow {
-            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
-        }.collect { pos ->
-            val (lastIndex, lastOffset) = lastScrollPos
-            val (index, offset) = pos
-            if (index != lastIndex || offset != lastOffset) {
-                scrollingDown = index > lastIndex || (index == lastIndex && offset > lastOffset)
-                lastScrollPos = pos
-            }
+    // 消息未就绪时的加载提示：本地读库通常几十毫秒，立刻显示反而闪一下，等一小会儿还没就绪才提示。
+    var showMessagesLoading by remember(currentSessionId) { mutableStateOf(false) }
+    LaunchedEffect(currentSessionId, messagesReady) {
+        if (messagesReady) {
+            showMessagesLoading = false
+            return@LaunchedEffect
         }
+        delay(MESSAGES_LOADING_HINT_DELAY_MS)
+        showMessagesLoading = true
     }
     // 贴底滚动留白：首帧测量前用兜底值（约输入框 + 间距），实测悬浮层高度后改为动态值，
     // 横幅/面板/输入框任何形态下最后一条消息都停在悬浮层上方不被遮挡。
@@ -235,10 +219,13 @@ fun AIChatPanel(
     val markdownCache = remember { MarkdownRenderCache() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val focusManager = LocalFocusManager.current
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     val isBusy = agentState is AgentUIState.Loading || agentState is AgentUIState.Streaming
+    // 每轮任务的总耗时（用户发送 → 本轮 AI 收工），挂在轮末助手气泡下方
+    val taskDurations = remember(messages, isBusy) {
+        computeTaskDurations(messages, lastTurnFinished = !isBusy)
+    }
     val activeModel = activeProvider?.effectiveModel.orEmpty()
     val activeModelMetadata = modelMetadata[activeModel]
     val canUploadFiles = projectRoot.isNotBlank() && activeModelMetadata?.supportsTools == true
@@ -427,6 +414,12 @@ fun AIChatPanel(
     // 流式结束过渡：streamingText 清空后保留最后文本一小段（落库消息通常在此窗口内接管），
     // 避免尾巴 item 高度骤减导致视口被 clamp 上移、露出历史消息（结束瞬间“闪回”看到用户消息）。
     var tailStreamingText by remember { mutableStateOf<String?>(null) }
+    // 会话切换时立即丢掉尾巴：保留窗口只用于同一会话内「流式结束 → 落库消息接管」的交接，
+    // 跳会话留着会让新会话底部先闪一下上一个会话的流式气泡。必须声明在下面那个 effect 之前：
+    // 两者同帧重启时按声明顺序执行，清空得先跑，否则会把新会话刚填上的尾巴又抹掉。
+    LaunchedEffect(currentSessionId) {
+        tailStreamingText = null
+    }
     LaunchedEffect(streamingText) {
         val st = streamingText
         if (st != null && st.hasVisibleContent()) {
@@ -444,21 +437,25 @@ fun AIChatPanel(
     // 还没被上面的 LaunchedEffect 回填，此刻若传空文本，打字机会把恢复出的进度判成换轮从头重打。
     val typewriterRenderText = rememberTypewriterStreamingText(
         text = streamingText ?: tailStreamingText ?: "",
-        active = streamingText != null
+        active = streamingText != null,
+        sessionKey = currentSessionId
     )
     // 思考过程同样走打字机：与回复文本共用同一速率自适应逻辑。
     // 正文开始输出（streamingText 非空）即视为思考结束：思考打字机立即补全，
     // 避免思考还没打完、正文已开始导致两者叠着慢慢打。
     val typewriterReasoningText = rememberTypewriterStreamingText(
         text = streamingReasoning ?: "",
-        active = streamingReasoning != null && streamingText == null
+        active = streamingReasoning != null && streamingText == null,
+        sessionKey = currentSessionId
     )
 
     // 自动滚动跟随
     var positionedSession by remember { mutableStateOf<String?>(null) }
     var followBottom by remember { mutableStateOf(true) }
 
-    val isAtBottom by remember {
+    // key 必须带上 inputBarReservePx：闭包捕获的是创建时的值，用无 key 的 remember 会让
+    // 判定永远停在首帧的兜底留白（156dp）上，面板展开把悬浮层顶高后仍按旧安全区算。
+    val isAtBottom by remember(inputBarReservePx) {
         derivedStateOf {
             if (!listState.canScrollForward) return@derivedStateOf true
             val layout = listState.layoutInfo
@@ -470,6 +467,20 @@ fun AIChatPanel(
             val safeBottom = layout.viewportEndOffset - inputBarReservePx
             lastVisible.index >= lastIndex &&
                 (lastVisible.offset + lastVisible.size) <= safeBottom + AUTO_SCROLL_TOLERANCE_PX
+        }
+    }
+
+    // 回底按钮的显示门槛：只用「不在底部」会让流式增长的那一两帧（校准循环还没把视口拉回）
+    // 也算离底，按钮跟着闪。要求离底超过半个视口，用户真的翻上去看历史时才出现。
+    val isFarFromBottom by remember(inputBarReservePx) {
+        derivedStateOf {
+            if (!listState.canScrollForward) return@derivedStateOf false
+            val layout = listState.layoutInfo
+            val lastVisible = layout.visibleItemsInfo.lastOrNull()
+                ?: return@derivedStateOf false
+            if (lastVisible.index < layout.totalItemsCount - 1) return@derivedStateOf true
+            val safeBottom = layout.viewportEndOffset - inputBarReservePx
+            (lastVisible.offset + lastVisible.size) - safeBottom > layout.viewportEndOffset / 2
         }
     }
 
@@ -561,29 +572,49 @@ fun AIChatPanel(
     // （最后可见项不是最后一项，即跟丢）时，滚回锚点；md 异步解析的高度跳变也会在
     // 下一帧被检测到，不存在信号与渲染错位。
     // 只向下校准：内容变矮（流式结束、折叠）时保持当前位置，避免「往回滚」与拉锯。
-    LaunchedEffect(listState, messagesReady) {
-        if (!messagesReady) return@LaunchedEffect
-        while (true) {
-            withFrameNanos { }
-            if (!followBottom) continue
+    // reserve 经 State 传递：下面这个 lambda 只创建一次，直接捕获局部 Int 会一直用首帧的兜底值。
+    val reservePxState = rememberUpdatedState(inputBarReservePx)
+    val busyState = rememberUpdatedState(isBusy)
+    val calibrateToAnchor: suspend () -> Unit = remember(listState) {
+        {
             // 无向下滚动空间（内容不满屏或已滚到锚点）：最后内容必然在安全区上方，无需校准。
-            if (!listState.canScrollForward) continue
-            val layout = listState.layoutInfo
-            val lastIndex = layout.totalItemsCount - 1
-            if (lastIndex < 0) continue
-            val lastVisible = layout.visibleItemsInfo.lastOrNull()
-            // 最后内容被推出视口下方（最后一项不可见）：跟丢——直接滚回锚点。
-            // 用户在别处浏览时 followBottom 已为 false，不会走到这里。
-            if (lastVisible == null || lastVisible.index < lastIndex) {
-                listState.scrollToItem(lastIndex, Int.MAX_VALUE)
-                continue
-            }
-            val safeBottom = layout.viewportEndOffset - inputBarReservePx
-            val lastBottom = lastVisible.offset + lastVisible.size
-            if (lastBottom > safeBottom + AUTO_SCROLL_TOLERANCE_PX) {
-                listState.scrollToItem(lastIndex, Int.MAX_VALUE)
+            if (followBottom && listState.canScrollForward) {
+                val layout = listState.layoutInfo
+                val lastIndex = layout.totalItemsCount - 1
+                if (lastIndex >= 0) {
+                    val lastVisible = layout.visibleItemsInfo.lastOrNull()
+                    val safeBottom = layout.viewportEndOffset - reservePxState.value
+                    // 最后一项被推出视口下方（跟丢）或最后内容底部越过安全区：滚回锚点。
+                    // 用户在别处浏览时 followBottom 已为 false，不会走到这里。
+                    val lost = lastVisible == null || lastVisible.index < lastIndex
+                    val pushedDown = lastVisible != null &&
+                        lastVisible.offset + lastVisible.size > safeBottom + AUTO_SCROLL_TOLERANCE_PX
+                    if (lost || pushedDown) listState.scrollToItem(lastIndex, Int.MAX_VALUE)
+                }
             }
         }
+    }
+
+    // 只在「跟随中且内容可能还在动」时逐帧校准。原来是无条件 while(true)，followBottom
+    // 为 false 也只 continue、帧回调照旧注册，等于让主线程全程每帧醒一次（空闲也在耗电）。
+    LaunchedEffect(listState, messagesReady) {
+        if (!messagesReady) return@LaunchedEffect
+        snapshotFlow { followBottom && (busyState.value || listState.isScrollInProgress) }
+            .collectLatest { active ->
+                if (active) {
+                    while (true) {
+                        withFrameNanos { }
+                        calibrateToAnchor()
+                    }
+                } else {
+                    // 收工那一刻内容未必已稳定（md 异步解析往往落在后面），再兜一小段再收手。
+                    val deadline = System.nanoTime() + CALIBRATE_TAIL_MS * 1_000_000L
+                    while (System.nanoTime() < deadline) {
+                        withFrameNanos { }
+                        calibrateToAnchor()
+                    }
+                }
+            }
     }
 
     // 内容变化信号旁路：文本/思考/消息条数变化时立即校准一次，不等下一帧——
@@ -592,23 +623,7 @@ fun AIChatPanel(
         if (!messagesReady) return@LaunchedEffect
         snapshotFlow {
             Triple(streamingText?.length, streamingReasoning?.length, messages.size)
-        }.collect { _ ->
-            if (!followBottom) return@collect
-            if (!listState.canScrollForward) return@collect
-            val layout = listState.layoutInfo
-            val lastIndex = layout.totalItemsCount - 1
-            if (lastIndex < 0) return@collect
-            val lastVisible = layout.visibleItemsInfo.lastOrNull()
-            if (lastVisible == null || lastVisible.index < lastIndex) {
-                listState.scrollToItem(lastIndex, Int.MAX_VALUE)
-                return@collect
-            }
-            val safeBottom = layout.viewportEndOffset - inputBarReservePx
-            val lastBottom = lastVisible.offset + lastVisible.size
-            if (lastBottom > safeBottom + AUTO_SCROLL_TOLERANCE_PX) {
-                listState.scrollToItem(lastIndex, Int.MAX_VALUE)
-            }
-        }
+        }.collect { calibrateToAnchor() }
     }
 
     val firstVisibleItemIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
@@ -654,7 +669,9 @@ fun AIChatPanel(
                 currentMode = currentMode,
                 onToggleMode = { viewModel.setSessionMode(it) },
                 connectionState = connectionState?.takeIf { isRemote },
-                showMenuButton = showMenuButton
+                showMenuButton = showMenuButton,
+                terminalActive = terminalActive,
+                gitActive = gitActive
             )
         }
     ) { padding ->
@@ -678,6 +695,15 @@ fun AIChatPanel(
                     // 远程模式连接未就绪时显示连接状态占位，避免空白或旧工作区记录闪烁
                     if (isRemote && connectionState != null && connectionState != com.aicode.feature.agent.domain.container.ConnectionState.CONNECTED) {
                         RemoteConnectingPlaceholder(state = connectionState)
+                    } else if (showMessagesLoading) {
+                        // 本地模式读库偏慢时的占位：以前这里什么都不画，切会话会先闪一下空白。
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 } else if (messages.isEmpty()) {
                     WelcomeState(modifier = Modifier.fillMaxSize())
@@ -724,6 +750,7 @@ fun AIChatPanel(
                                         }
                                     }
                                 },
+                                taskDurationMs = taskDurations[message.id],
                                 entryDelayMs = messageEntryDelays[message.id]
                             )
                         }
@@ -749,7 +776,7 @@ fun AIChatPanel(
                             Column {
                                 if (showReasoning) {
                                     // 流式实时：短文本默认展开边想边看，过长（超 REASONING_COLLAPSE_LINE_LIMIT）时由气泡内部自动折叠，不刷屏
-                                    ReasoningBubble(text = typewriterReasoningText, initiallyExpanded = true, cache = markdownCache, showTimer = true, preRendered = true)
+                                    ReasoningBubble(text = typewriterReasoningText, initiallyExpanded = true, cache = markdownCache, showTimer = true, preRendered = true, sessionKey = currentSessionId)
                                 }
                                 when (tailKind) {
                                     TailKind.THINKING -> ThinkingBubble()
@@ -778,26 +805,32 @@ fun AIChatPanel(
             ) {
             StatusBanner(state = agentState)
 
+            // 三个面板都用「最后一次非空值」渲染：退出动画期间源状态已置空，直接在 content 里
+            // 解引用会淡出一个空面板，看起来是瞬间消失而不是淡出。位移也一并补上——只淡入的话
+            // 面板在 Column 里占的高度是瞬间生效的，输入框会先跳一格再看到面板浮现。
+            val permissionForPanel = rememberLastNonNull(pendingPermission)
             AnimatedVisibility(
                 visible = pendingPermission != null,
-                enter = fadeIn(),
-                exit = fadeOut()
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
             ) {
-                pendingPermission?.let { request ->
+                permissionForPanel?.let { request ->
                     ToolPermissionPanel(
                         request = request,
                         onChoice = { choice -> viewModel.resolveToolPermission(request.id, choice) },
+                        sessionTitle = pendingPermissionSessionTitle,
                         forceCollapse = balanceCollapseActive
                     )
                 }
             }
 
+            val questionForPanel = rememberLastNonNull(pendingQuestion)
             AnimatedVisibility(
                 visible = pendingQuestion != null,
-                enter = fadeIn(),
-                exit = fadeOut()
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
             ) {
-                pendingQuestion?.let { question ->
+                questionForPanel?.let { question ->
                     AskUserQuestionPanel(
                         question = question,
                         onConfirm = { answer -> viewModel.resolveUserQuestion(question.id, answer) },
@@ -808,12 +841,13 @@ fun AIChatPanel(
             }
 
             val planApproval by viewModel.pendingPlanApproval.collectAsStateWithLifecycle()
+            val planForPanel = rememberLastNonNull(planApproval)
             AnimatedVisibility(
                 visible = planApproval != null,
-                enter = fadeIn(),
-                exit = fadeOut()
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
             ) {
-                planApproval?.let { state ->
+                planForPanel?.let { state ->
                     PlanApprovalPanel(
                         state = state,
                         onApprove = { viewModel.approvePlanAndBuild() },
@@ -882,10 +916,10 @@ fun AIChatPanel(
             )
             } // 悬浮层结束
 
-            // 滚动到底部按钮：悬浮在输入框右上角上方（悬浮层高度 + 间距定位），向下滚动后
-            // 保持显示（停着也显示），向上滚/已到底不显示；滚动时跟随输入框淡出。
+            // 滚动到底部按钮：悬浮在输入框右上角上方（悬浮层高度 + 间距定位），离底超过半屏时
+            // 显示，不看滚动方向——往上翻历史后停住恰恰是最需要一键回底的时刻；滚动时跟随输入框淡出。
             androidx.compose.animation.AnimatedVisibility(
-                visible = scrollingDown && !isAtBottom,
+                visible = isFarFromBottom,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(end = Spacing.lg)
@@ -949,6 +983,64 @@ fun AIChatPanel(
         // Dialog 是独立 window、不占父布局尺寸，挂在 Scaffold 之后即可覆盖整屏 ——
         // 平板双栏下不会只盖住聊天列，也不会被 MainActivity 画在最上层的全局背景水印压住。
         ImageViewerHost(state = imageViewerState, load = chatImageLoad)
+    }
+}
+
+/**
+ * 记住最后一个非空值，供 [AnimatedVisibility] 的退出动画继续渲染旧内容。
+ *
+ * 用普通对象而不是 [androidx.compose.runtime.MutableState] 持有：这里只需要跨重组留住上一个值，
+ * 不需要它自己触发重组（源值变化本身就会重组读取点），进快照系统反而会多引发一次无效重组。
+ */
+@Composable
+internal fun <T : Any> rememberLastNonNull(value: T?): T? {
+    val holder = remember { LastNonNullHolder<T>() }
+    if (value != null) holder.value = value
+    return holder.value
+}
+
+private class LastNonNullHolder<T : Any>(var value: T? = null)
+
+/**
+ * 工具卡片入场动画的调度器：决定哪些消息该播入场、以及各自错开多久。
+ *
+ * 判据是「本调度器存续期间新追加到尾部」，而不是「timestamp 距今 N 秒内」——
+ * 后者在切页返回时会把仍在时间窗内的那批消息再判成新消息，动画重播一遍。
+ * 首次调用时列表里已有的消息一律记为存量；向上翻页加载进来的历史比已见最大时间戳更旧，
+ * 同样不入场。会话切换时整个调度器重建，新会话的存量消息也不入场。
+ */
+private class MessageEntryScheduler {
+    private val seen = mutableSetOf<String>()
+    private val delays = mutableMapOf<String, Long>()
+    private var initialized = false
+    private var maxSeenTimestamp = Long.MIN_VALUE
+
+    /** 返回「消息 id → 入场延迟（ms）」；不在表内的消息直接显示。 */
+    fun schedule(messages: List<AgentUIMessage>): Map<String, Long> {
+        if (!initialized) {
+            initialized = true
+            messages.forEach { seen += it.id }
+            maxSeenTimestamp = messages.maxOfOrNull { it.timestamp } ?: Long.MIN_VALUE
+            return emptyMap()
+        }
+        var consecutive = 0
+        for (message in messages) {
+            if (message.id in seen) {
+                consecutive = 0
+                continue
+            }
+            seen += message.id
+            val appendedAtTail = message.timestamp >= maxSeenTimestamp
+            maxSeenTimestamp = maxOf(maxSeenTimestamp, message.timestamp)
+            if (appendedAtTail && message.role == MessageRole.TOOL) {
+                delays[message.id] = (consecutive * MESSAGE_ENTRY_STAGGER_MS)
+                    .coerceAtMost(MESSAGE_ENTRY_MAX_STAGGER_MS)
+                consecutive++
+            } else {
+                consecutive = 0
+            }
+        }
+        return delays.toMap()
     }
 }
 

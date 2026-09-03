@@ -25,9 +25,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -44,6 +47,8 @@ import compose.icons.FeatherIcons
 import compose.icons.feathericons.FileText
 import compose.icons.feathericons.Image
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 internal fun MessageAttachmentPreviewRow(
@@ -152,12 +157,17 @@ private fun isApk(attachment: AgentAttachment): Boolean {
 
 @Composable
 private fun MessageImagePreview(attachment: AgentAttachment) {
-    val bitmap = remember(attachment.localPath) {
-        decodeSampledBitmap(attachment.localPath, THUMBNAIL_MAX_EDGE)
+    // 读盘 + 解码放 IO 线程：以前在 remember 里同步 decodeFile，滚到带图消息时会卡主线程。
+    // 采样与 OOM 兜底统一走 decodeSampledBitmap。
+    val bitmap by produceState<ImageBitmap?>(null, attachment.localPath) {
+        value = withContext(Dispatchers.IO) {
+            decodeSampledBitmap(attachment.localPath, THUMBNAIL_MAX_EDGE)
+        }
     }
-    if (bitmap != null) {
+    val loaded = bitmap
+    if (loaded != null) {
         ComposeImage(
-            bitmap = bitmap,
+            bitmap = loaded,
             contentDescription = attachment.fileName.ifBlank { stringResource(R.string.common_image_preview) },
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()

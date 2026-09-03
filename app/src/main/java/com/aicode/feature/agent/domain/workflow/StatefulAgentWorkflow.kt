@@ -4,6 +4,9 @@ import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.model.AgentMessage
 import com.aicode.feature.agent.domain.model.AgentMode
+import com.aicode.feature.agent.domain.notification.AgentNotificationCenter
+import com.aicode.feature.agent.domain.notification.AgentNotificationFormatter
+import com.aicode.feature.agent.domain.notification.PendingNotification
 import com.aicode.feature.agent.domain.session.SessionUseCase
 import com.aicode.feature.agent.domain.session.MessagePersistenceUseCase
 import com.aicode.feature.agent.domain.checkpoint.CheckpointManager
@@ -51,12 +54,14 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import android.os.SystemClock
@@ -87,7 +92,8 @@ class StatefulAgentWorkflow @Inject constructor(
     private val messagePersistenceUseCase: MessagePersistenceUseCase,
     private val checkpointManager: CheckpointManager,
     private val llmCallRecordDao: LlmCallRecordDao,
-    private val keyRotator: ProviderKeyRotator
+    private val keyRotator: ProviderKeyRotator,
+    private val agentNotificationCenter: AgentNotificationCenter
 ) : AgentWorkflow {
 
     private companion object {
@@ -606,7 +612,7 @@ class StatefulAgentWorkflow @Inject constructor(
                     is AgentSideEffect.RequestPermission -> {
                         val tool = toolRegistry.getTool(effect.toolCall.name)
                         val argsPreview = JsonObject(effect.toolCall.arguments).toString().take(500)
-                        val checkResult = requestPermissionIfNeeded(tool, effect.toolCall.id, effect.toolCall.arguments, argsPreview, currentContext.mode)
+                        val checkResult = requestPermissionIfNeeded(tool, effect.toolCall.id, effect.toolCall.arguments, argsPreview, currentContext.mode, currentContext.sessionId)
 
                         if (!checkResult.approved) {
                             val rawResult = ToolResult.Error(checkResult.denyReason, checkResult.errorCode).toTransportString()
@@ -700,9 +706,27 @@ class StatefulAgentWorkflow @Inject constructor(
                             batchResults.add(ToolBatchResult(toolCall.id, toolCall.name, rawResult, isError, runResult.attachments, runResult.images))
                         }
 
+                        // 本轮内到达的后台任务/子代理完成通知：搭在本批最后一条工具结果上立即送达，
+                        // AI 当轮即可感知，不必等本轮结束再起新一轮。ack 放到完成事件发出（结果已落库）之后：
+                        // 中途被取消时通知仍留在队列里，由后续批次或本轮结束的兜底路径送达。
+                        val notifySessionId = currentContext.sessionId
+                        val notifications = if (notifySessionId != null && batchResults.isNotEmpty()) {
+                            agentNotificationCenter.peek(notifySessionId)
+                        } else {
+                            emptyList()
+                        }
+                        if (notifications.isNotEmpty()) {
+                            val last = batchResults.last()
+                            batchResults[batchResults.lastIndex] =
+                                last.copy(result = injectNotifications(last.result, notifications))
+                        }
+
                         // 逐个推送完成事件（保持与 batchToolCalls 一致顺序），并进入收尾。
                         batchResults.forEach { br ->
                             send(AgentEvent.ToolCallFinished(br.id, br.toolName, br.result, br.isError, attachments = br.attachments))
+                        }
+                        if (notifySessionId != null && notifications.isNotEmpty()) {
+                            agentNotificationCenter.ack(notifySessionId, notifications.map { it.seq })
                         }
                         actionQueue.addLast(AgentAction.ToolBatchFinished(batchResults))
                     }
@@ -879,6 +903,17 @@ class StatefulAgentWorkflow @Inject constructor(
     }
 
     /** 工具切换成功后拼进 switchMode 工具结果的模式状态通知（当轮即可见，无需等下一条用户消息）。 */
+    /**
+     * 把待送通知注入工具结果：优先作为 transport JSON 顶层的 `notifications` 字段，结果仍是合法 JSON，
+     * UI 的 formatToolResult（只读 data/message）与各类结构化解析不受影响。
+     * raw 已被模式切换提示等纯文本追加过、不再是合法 JSON 时，退化为文本追加。
+     */
+    private fun injectNotifications(raw: String, items: List<PendingNotification>): String {
+        val obj = runCatching { Json.parseToJsonElement(raw).jsonObject }.getOrNull()
+            ?: return raw + "\n\n" + AgentNotificationFormatter.buildMessage(items)
+        return JsonObject(obj + ("notifications" to AgentNotificationFormatter.buildJsonArray(items))).toString()
+    }
+
     private fun buildModeSwitchNotice(mode: AgentMode): String = when (mode) {
         AgentMode.PLAN -> "\n\n" + promptProvider.resolvePrompt(MODE_REMINDER_PLAN_FILE)
             .replace(LEADING_COMMENT, "")
@@ -932,7 +967,8 @@ class StatefulAgentWorkflow @Inject constructor(
         callId: String,
         arguments: Map<String, kotlinx.serialization.json.JsonElement>,
         argsPreview: String,
-        mode: com.aicode.feature.agent.domain.model.AgentMode
+        mode: com.aicode.feature.agent.domain.model.AgentMode,
+        sessionId: String?
     ): PermissionCheckResult {
         if (tool == null) {
             return PermissionCheckResult(true)
@@ -965,7 +1001,8 @@ class StatefulAgentWorkflow @Inject constructor(
                 val request = tool.buildPermissionRequest(callId, arguments, argsPreview)
                     .copy(
                         rememberablePatterns = eval.rememberablePatterns,
-                        rememberDisabledReason = eval.rememberDisabledReason
+                        rememberDisabledReason = eval.rememberDisabledReason,
+                        sessionId = sessionId.orEmpty()
                     )
                 when (permissionManager.awaitApproval(request)) {
                     PermissionChoice.REJECT -> PermissionCheckResult(false, "用户拒绝执行该工具", "USER_REJECTED")

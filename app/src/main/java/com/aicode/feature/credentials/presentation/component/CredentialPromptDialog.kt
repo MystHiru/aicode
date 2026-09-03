@@ -12,6 +12,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.aicode.core.ui.AppTextField
+import com.aicode.core.ui.dialogTextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,14 +63,16 @@ fun CredentialPromptDialog(
                     label = stringResource(R.string.credential_remote_host),
                     singleLine = true,
                     readOnly = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = dialogTextFieldColors()
                 )
                 AppTextField(
                     value = username,
                     onValueChange = { username = it },
                     label = stringResource(R.string.common_username),
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = dialogTextFieldColors()
                 )
                 AppTextField(
                     value = token,
@@ -86,7 +89,8 @@ fun CredentialPromptDialog(
                             )
                         }
                     },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = dialogTextFieldColors()
                 )
                 Text(
                     text = stringResource(R.string.credential_prompt_desc),

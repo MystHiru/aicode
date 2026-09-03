@@ -21,7 +21,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -29,11 +28,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -43,7 +43,6 @@ import com.aicode.core.ui.SwipeToDeleteRow
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.ChevronRight
-import compose.icons.feathericons.Menu
 import androidx.compose.ui.res.stringResource
 import com.aicode.R
 import sh.calvin.reorderable.ReorderableItem
@@ -51,7 +50,7 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
 
 /**
  * 提供商二级页：列表 + 空态提示。新增/编辑由顶栏「+」与点击触发 [ProviderEditorScreen]，左滑删除。
- * 每行为一组圆角卡片，长按行尾拖拽手柄（≡）可调整提供商顺序（持久化到 sortOrder）。
+ * 每行为一组圆角卡片，长按内容区域可调整提供商顺序（持久化到 sortOrder）。
  */
 @Composable
 internal fun ProvidersSection(
@@ -68,6 +67,7 @@ internal fun ProvidersSection(
     val reorderableState = rememberReorderableLazyListState(lazyListState) { from, to ->
         onReorder(from.index, to.index)
     }
+    val hapticFeedback = LocalHapticFeedback.current
     LazyColumn(
         state = lazyListState,
         modifier = Modifier
@@ -112,29 +112,14 @@ internal fun ProvidersSection(
                         provider = provider,
                         onEdit = { onEdit(provider) },
                         onDelete = { onDelete(provider) },
-                        dragHandle = {
-                            val haptic = LocalHapticFeedback.current
-                            IconButton(
-                                onClick = {},
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .longPressDraggableHandle(
-                                        onDragStarted = {
-                                            haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
-                                        },
-                                        onDragStopped = {
-                                            haptic.performHapticFeedback(HapticFeedbackType.GestureEnd)
-                                        }
-                                    )
-                            ) {
-                                Icon(
-                                    imageVector = FeatherIcons.Menu,
-                                    contentDescription = stringResource(R.string.provider_sort_drag_handle),
-                                    tint = MaterialTheme.semanticColors.subtleText,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                        dragModifier = Modifier.longPressDraggableHandle(
+                            onDragStarted = {
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                            },
+                            onDragStopped = {
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.GestureEnd)
                             }
-                        }
+                        )
                     )
                 }
             }
@@ -161,18 +146,19 @@ internal fun EmptyHint(text: String) {
 
 /**
  * 提供商行：左侧品牌 logo（按提供商名称自动识别），
- * 中部两行（名称 / 类型 + 模型数量 pills），右侧状态 pill + 箭头 + 拖拽手柄。
- * 整行点击进入编辑，左滑露出删除按钮。
+ * 中部两行（名称 / 类型 + 模型数量 pills），右侧状态 pill + 箭头。
+ * 整行点击进入编辑，左滑露出删除按钮；长按左侧信息区域可调整顺序。
  */
 @Composable
 fun ProviderItem(
     provider: AIProviderConfig,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
-    dragHandle: (@Composable () -> Unit)? = null
+    dragModifier: Modifier = Modifier
 ) {
+    val sortDescription = stringResource(R.string.provider_sort_long_press)
     // 状态色与 MCP 行一致：启用用主题 tertiary（绿调），停用用 outline（灰）。
-    val statusColor = if (provider.isEnabled) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outline
+    val statusColor = if (provider.isEnabled) MaterialTheme.semanticColors.success else MaterialTheme.colorScheme.outline
 
     SwipeToDeleteRow(
         onDelete = onDelete,
@@ -184,52 +170,62 @@ fun ProviderItem(
                 .padding(horizontal = Spacing.lg, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 左侧品牌 logo 容器
-            Box(
+            Row(
                 modifier = Modifier
-                    .size(40.dp)
-                    .background(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(8.dp)
-                    )
+                    .weight(1f)
+                    .then(dragModifier)
+                    .semantics {
+                        contentDescription = sortDescription
+                    },
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                ProviderLogoIcon(
-                    provider = provider,
-                    size = 22.dp,
-                    modifier = Modifier.size(22.dp).align(Alignment.Center)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(Spacing.md))
-
-            // 中间：名称 / 类型 + 模型数量
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = provider.name,
-                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                // 左侧品牌 logo 容器
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(8.dp)
+                        )
                 ) {
-                    McpPill(
-                        text = providerTypeLabel(provider.type),
-                        textColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                    ProviderLogoIcon(
+                        provider = provider,
+                        size = 22.dp,
+                        modifier = Modifier.size(22.dp).align(Alignment.Center)
                     )
-                    McpPill(
-                        text = stringResource(R.string.provider_models_count_tag, provider.models.size),
-                        textColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        modifier = Modifier.weight(1f, fill = false)
+                }
+
+                Spacer(modifier = Modifier.width(Spacing.md))
+
+                // 中间：名称 / 类型 + 模型数量
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = provider.name,
+                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth()
                     )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        McpPill(
+                            text = providerTypeLabel(provider.type),
+                            textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                        )
+                        McpPill(
+                            text = stringResource(R.string.provider_models_count_tag, provider.models.size),
+                            textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                    }
                 }
             }
 
@@ -248,12 +244,6 @@ fun ProviderItem(
                 tint = MaterialTheme.semanticColors.subtleText,
                 modifier = Modifier.size(18.dp)
             )
-
-            // 行尾拖拽手柄（长按排序）
-            if (dragHandle != null) {
-                Spacer(Modifier.width(Spacing.xs))
-                dragHandle()
-            }
         }
     }
 }

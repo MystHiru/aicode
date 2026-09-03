@@ -164,10 +164,11 @@ internal fun McpServerRow(
     val statusBgColor = statusColor.copy(alpha = 0.12f)
 
     val typeText = if (server.isStdio) stringResource(R.string.mcp_type_stdio) else "HTTP"
+    // HTTP 未连接时不再展示完整地址：URL 很长，在列表里只能看到一截断的头，占位而无信息量。
     val infoText = when {
         isConnected -> stringResource(R.string.mcp_tools_count, status?.toolCount ?: 0)
         server.isStdio -> server.command.orEmpty().ifEmpty { "stdio" }
-        else -> server.url.orEmpty().ifEmpty { "HTTP" }
+        else -> null
     }
 
     SwipeToDeleteRow(
@@ -228,12 +229,14 @@ internal fun McpServerRow(
                         textColor = MaterialTheme.colorScheme.onSurfaceVariant,
                         backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
                     )
-                    McpPill(
-                        text = infoText,
-                        textColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
+                    if (infoText != null) {
+                        McpPill(
+                            text = infoText,
+                            textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                    }
                 }
             }
 

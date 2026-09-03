@@ -62,7 +62,6 @@ import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.GitLanePalette
 import com.aicode.core.theme.semanticColors
-import com.aicode.feature.settings.presentation.component.settingsLightMode
 import com.aicode.feature.git.domain.model.GitFileChange
 import com.aicode.feature.git.domain.model.GitGraph
 import com.aicode.feature.git.domain.model.GitGraphRef
@@ -118,7 +117,7 @@ internal fun LogTab(
     LaunchedEffect(shouldLoadMore) {
         if (shouldLoadMore && graph.hasMore && !graphLoadingMore) onLoadMore()
     }
-    val cardColor = if (settingsLightMode()) Color.White else MaterialTheme.colorScheme.surface
+    val cardColor = MaterialTheme.semanticColors.cardSurface
     Column(modifier = Modifier.fillMaxSize()) {
         SectionHeader(stringResource(R.string.git_commit_count, commits.size))
         // 滚动容器占满整屏（与状态/分支页一致）：白色卡片是滚动内容的一部分——

@@ -10,8 +10,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -40,6 +38,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -61,9 +60,13 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.aicode.core.theme.AIEditorTheme
+import com.aicode.core.theme.AppThemePreset
+import com.aicode.core.ui.PAGE_MOTION_MS
 import com.aicode.core.ui.VerticalSplitHandle
 import com.aicode.core.ui.drawerWidth
 import com.aicode.core.ui.isExpandedWidth
+import com.aicode.core.ui.pageEnter
+import com.aicode.core.ui.pageExit
 import com.aicode.feature.agent.presentation.AIAgentViewModel
 import com.aicode.feature.agent.presentation.component.AIChatPanel
 import com.aicode.feature.agent.presentation.component.ChatDrawerContent
@@ -74,10 +77,11 @@ import com.aicode.feature.git.presentation.component.GitScreen
 import com.aicode.feature.settings.data.repository.KeepaliveSettingsRepository
 import com.aicode.feature.settings.data.repository.AppThemeMode
 import com.aicode.feature.settings.data.repository.BackgroundSettingsRepository
+import com.aicode.feature.settings.data.repository.ScreenOnSettingsRepository
 import com.aicode.feature.settings.data.repository.ThemeSettingsRepository
 import com.aicode.feature.settings.presentation.SettingsViewModel
 import com.aicode.feature.settings.presentation.UpdateCheckUiState
-import com.aicode.feature.settings.presentation.component.GITHUB_RELEASES_URL
+import com.aicode.feature.settings.presentation.component.githubReleaseUrl
 import com.aicode.feature.settings.presentation.component.SettingsScreen
 import com.aicode.feature.settings.presentation.component.UpdateCheckDialog
 import com.aicode.feature.settings.presentation.component.decodeBackgroundBitmap
@@ -94,7 +98,6 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
-import androidx.compose.ui.res.stringResource
 import com.aicode.R
 
 @AndroidEntryPoint
@@ -109,6 +112,10 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var backgroundSettings: BackgroundSettingsRepository
+
+    /** 屏幕常亮开关：只在 App 前台约束屏幕，切后台由系统自动失效。 */
+    @Inject
+    lateinit var screenOnSettings: ScreenOnSettingsRepository
 
     /** 语言偏好：attachBaseContext 时同步读取以应用 locale，变化时 recreate。 */
     @Inject
@@ -164,6 +171,16 @@ class MainActivity : ComponentActivity() {
                 recreate()
             }
         }
+        // 屏幕常亮：窗口标志只在 Activity 可见时约束屏幕，退到后台系统自动放开，无需手动释放。
+        lifecycleScope.launch {
+            screenOnSettings.enabledFlow.collect { enabled ->
+                if (enabled) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+        }
         // API 30+：全局切到 ADJUST_NOTHING，由 rememberImeBottomInset() 接管键盘内边距。
         // 必须在 Activity 级别统一设置，不能在每个 composable 里各自 save/restore——
         // NavHost 过渡动画期间新旧页面共存，旧页面 dispose 恢复 softInputMode 会触发窗口重布局导致白屏。
@@ -172,6 +189,8 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             val themeMode by themeSettings.themeModeFlow.collectAsStateWithLifecycle(initialValue = AppThemeMode.AUTO)
+            val themePresetId by themeSettings.themePresetIdFlow.collectAsStateWithLifecycle(initialValue = null)
+            val dynamicColor by themeSettings.dynamicColorFlow.collectAsStateWithLifecycle(initialValue = false)
             val systemDarkTheme = isSystemInDarkTheme()
             val darkTheme = when (themeMode) {
                 AppThemeMode.AUTO -> systemDarkTheme
@@ -185,7 +204,11 @@ class MainActivity : ComponentActivity() {
                 controller.isAppearanceLightNavigationBars = !darkTheme
             }
 
-            AIEditorTheme(darkTheme = darkTheme) {
+            AIEditorTheme(
+                darkTheme = darkTheme,
+                preset = AppThemePreset.findById(themePresetId),
+                dynamicColor = dynamicColor
+            ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -257,11 +280,12 @@ private const val MAX_PANE_SPLIT = 0.7f
  *
  * [ModalNavigationDrawer] 放在 [NavHost] **外面**，使 Drawer 的生命周期独立于页面切换。
  *
- * NavHost 禁用了全部过渡动画（enterTransition / exitTransition = None）——
- * Terminal 页面的 [AndroidView] 不参与 Compose 的 graphicsLayer alpha 动画，
- * 如果保留默认 fadeIn/fadeOut，过渡期间新旧 composable 共存，TerminalView 以满不透明度
- * 覆盖在新页面之上；过渡结束后原生 View 被移除触发 View 层级重布局，恰与 Drawer 打开动画
- * 叠加导致渲染管线中断——表现为「退出终端后立即点侧边栏白屏」。
+ * 页面过渡统一走 [pageEnter] / [pageExit]。
+ *
+ * **注意**：终端页承载的是原生 TerminalView，历史上启用过渡曾导致「退出终端后立即点侧边栏白屏」——
+ * 当时过渡期间新旧页面共存，旧页 dispose 把 softInputMode 切回 adjustResize 触发窗口重布局，
+ * 与 Drawer 打开动画叠加后渲染管线中断。该路径已由 onCreate 统一设置 softInputMode 与
+ * `rememberImeBottomInset` 的空 onDispose 兜住；若白屏复现，先把终端路由的过渡降级为 None 排除嫌疑。
  *
  * ViewModel 提升到这一层创建，以便 Drawer 内容和 AIChatPanel 共享同一实例。
  */
@@ -290,11 +314,6 @@ fun AppNavigation() {
         settingsViewModel.checkUpdate(manual = false)
     }
 
-    // 抽屉每次打开时刷一次文件列表：本地模式兼顾 inotify 漏事件，远程模式则完全靠它。
-    androidx.compose.runtime.LaunchedEffect(drawerState.isOpen) {
-        if (drawerState.isOpen) agentViewModel.refreshBrowse()
-    }
-
     // 侧边栏打开时，系统返回键先收起侧边栏。
     BackHandler(enabled = drawerState.isOpen) {
         scope.launch { drawerState.close() }
@@ -311,6 +330,7 @@ fun AppNavigation() {
     val sessions by agentViewModel.sessions.collectAsStateWithLifecycle()
     val currentSessionId by agentViewModel.currentSessionId.collectAsStateWithLifecycle()
     val agentStates by agentViewModel.agentStates.collectAsStateWithLifecycle()
+    val awaitingPermissionSessionIds by agentViewModel.awaitingPermissionSessionIds.collectAsStateWithLifecycle()
     val subSessionsByParent by agentViewModel.subSessionsByParent.collectAsStateWithLifecycle()
     val expandedPaths by agentViewModel.expandedPaths.collectAsStateWithLifecycle()
     val browseState by agentViewModel.browseState.collectAsStateWithLifecycle()
@@ -348,6 +368,15 @@ fun AppNavigation() {
     // 常驻侧栏只在聊天页开：终端 / 编辑器 / 设置都是全屏页，被侧栏挤窄反而难用。
     // 常驻侧栏只看窗口宽度：它只在聊天页展开，切到其他页会滑回去（见下方 sidebarWidth）。
     val permanentDrawer = expanded
+
+    // 侧栏出现时刷一次文件列表：本地模式兼顾 inotify 漏事件，远程模式无 inotify 则完全靠它。
+    // 不能直接盯 drawerState.isOpen：大屏常驻侧栏不走 ModalNavigationDrawer，drawerState 永远是 Closed，
+    // 那样大屏远程模式下文件树只能靠手动刷新按钮。改取「侧栏可见」：窄窗看抽屉开没开，
+    // 大屏看是否停在聊天页（侧栏只在聊天页展开）。
+    val sidebarVisible = if (permanentDrawer) currentRoute == "chat" else drawerState.isOpen
+    LaunchedEffect(sidebarVisible) {
+        if (sidebarVisible) agentViewModel.refreshBrowse()
+    }
 
     // 右栏工作台：大屏下编辑器 / 终端 / Git 与聊天并排，窄窗仍走全屏路由。
     var paneKind by rememberSaveable { mutableStateOf(WorkbenchPaneKind.NONE) }
@@ -394,6 +423,7 @@ fun AppNavigation() {
             sessions = sessions,
             currentSessionId = currentSessionId,
             agentStates = agentStates,
+            awaitingPermissionSessionIds = awaitingPermissionSessionIds,
             subSessionsByParent = subSessionsByParent,
             browseState = browseState,
             expandedPaths = expandedPaths,
@@ -444,10 +474,12 @@ fun AppNavigation() {
         NavHost(
             navController = navController,
             startDestination = "chat",
-            enterTransition = { EnterTransition.None },
-            exitTransition = { ExitTransition.None },
-            popEnterTransition = { EnterTransition.None },
-            popExitTransition = { ExitTransition.None }
+            // 过渡期间退场页会向左移出自身区域，大屏下不夹住会画到左侧常驻会话侧栏上。
+            modifier = Modifier.fillMaxSize().clipToBounds(),
+            enterTransition = { pageEnter(forward = true) },
+            exitTransition = { pageExit(forward = true) },
+            popEnterTransition = { pageEnter(forward = false) },
+            popExitTransition = { pageExit(forward = false) }
         ) {
             composable("chat") {
                 // 聊天区内覆盖 LocalUriHandler：Markdown 链接点击默认经此 handler 派发。
@@ -477,7 +509,9 @@ fun AppNavigation() {
                                 onOpenDrawer = { scope.launch { drawerState.open() } },
                                 showMenuButton = !permanentDrawer,
                                 onNavigateToTerminal = { openWorkbench(WorkbenchPaneKind.TERMINAL) },
-                                onNavigateToGit = { openWorkbench(WorkbenchPaneKind.GIT) }
+                                onNavigateToGit = { openWorkbench(WorkbenchPaneKind.GIT) },
+                                terminalActive = paneOpen && paneKind == WorkbenchPaneKind.TERMINAL,
+                                gitActive = paneOpen && paneKind == WorkbenchPaneKind.GIT
                             )
                         }
                     }
@@ -571,12 +605,16 @@ fun AppNavigation() {
     if (expanded) {
         // 大屏不套 ModalNavigationDrawer：侧栏常驻在左，抽屉那套 scrim / 手势 / 锚点在这里完全用不上。
         // 侧栏只在聊天页展开：设置页自己就是「菜单 + 详情」两栏，外面再套一层会话侧栏就成了三栏。
-        // 宽度走 220ms 补间而不是直接增删，否则右侧区域宽度突变，切页时会明显闪一下。
+        // 宽度走补间而不是直接增删，否则右侧区域宽度突变，切页时会明显闪一下；
+        // 时长与页面过渡取同一个值，两段动画同时收尾。
         val sidebarWidth by animateDpAsState(
             targetValue = if (currentRoute == "chat") drawerWidth() else 0.dp,
-            animationSpec = tween(durationMillis = 220),
+            animationSpec = tween(durationMillis = PAGE_MOTION_MS),
             label = "sidebar-width"
         )
+        // 侧栏完全收起后整棵子树离开组合，要拿 SaveableStateHolder 接住内部状态，
+        // 否则每次从设置页回来 tab 都跳回「会话」、文件树滚动位置也丢。
+        val sidebarStateHolder = rememberSaveableStateHolder()
         Row(modifier = Modifier.fillMaxSize()) {
             if (sidebarWidth > 0.dp) {
                 Box(
@@ -591,7 +629,9 @@ fun AppNavigation() {
                             .width(drawerWidth())
                             .fillMaxHeight()
                     ) {
-                        drawerBody()
+                        sidebarStateHolder.SaveableStateProvider("chat-sidebar") {
+                            drawerBody()
+                        }
                     }
                 }
                 VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -632,8 +672,8 @@ fun AppNavigation() {
             state = updateCheckState,
             currentVersion = version,
             onDismiss = { settingsViewModel.dismissUpdateCheck() },
-            onOpenRelease = {
-                openUrl(context, GITHUB_RELEASES_URL)
+            onOpenRelease = { tag ->
+                openUrl(context, githubReleaseUrl(tag))
                 settingsViewModel.dismissUpdateCheck()
             }
         )
@@ -647,17 +687,16 @@ private fun toastFileOpFailed(context: android.content.Context, messageRes: Int)
 
 /**
  * 聊天区 Markdown 链接处理：把「容器文件路径」链接拦下来交给 [onOpenFile] 打开编辑器，
- * 其余（http/https/mailto 等带 scheme 的网址）委托给系统默认 [delegate]（浏览器）。
+ * 其余（http/https/mailto 等网址）委托给系统默认 [delegate]（浏览器）。
  *
  * 约定：AI 用 `[显示文本](路径)` 输出可点击路径，路径可带 `:行号` 后缀（如 `~/workspace/a.kt:42`）。
- * 判定规则：URL 无 scheme（相对/绝对容器路径）或 scheme 为 `file` 视为文件路径；否则视为网址。
  */
 private class FileAwareUriHandler(
     private val delegate: androidx.compose.ui.platform.UriHandler,
     private val onOpenFile: (path: String, line: Int) -> Unit
 ) : androidx.compose.ui.platform.UriHandler {
     override fun openUri(uri: String) {
-        val filePath = asFilePath(uri)
+        val filePath = asChatFilePath(uri)
         if (filePath == null) {
             delegate.openUri(uri)
             return
@@ -665,26 +704,37 @@ private class FileAwareUriHandler(
         val (path, line) = splitPathAndLine(filePath)
         onOpenFile(path, line)
     }
+}
 
-    private companion object {
-        private val SCHEME = Regex("^([a-zA-Z][a-zA-Z0-9+.-]*):")
-        private val TRAILING_LINE = Regex("^(.*):(\\d+)$")
+/** 带 `//` 的层级式 scheme：`http://`、`https://`、`file://`、`content://` 等。 */
+private val HIERARCHICAL_SCHEME = Regex("^([a-zA-Z][a-zA-Z0-9+.-]*)://")
 
-        /** 返回归一化后的文件路径；若判定为网址（非 file scheme）返回 null。 */
-        fun asFilePath(uri: String): String? {
-            val scheme = SCHEME.find(uri)?.groupValues?.get(1)?.lowercase()
-            return when (scheme) {
-                null -> uri // 无 scheme：相对或容器绝对路径
-                "file" -> android.net.Uri.decode(uri.removePrefix("file://"))
-                else -> null // http/https/mailto/tel 等交给浏览器
-            }
-        }
+/**
+ * 不带 `//` 的网址型 scheme 只能白名单枚举：scheme 语法允许 `.`，因此工作区根目录下的
+ * 文件链接 `notes.md:12` 与 `mailto:x` 在语法上无从区分，按「有冒号即网址」判定会让
+ * 这类链接被丢给浏览器而点不开。
+ */
+private val OPAQUE_URL_SCHEME = Regex(
+    "^(mailto|tel|sms|smsto|geo|data|market|intent|about|javascript):",
+    RegexOption.IGNORE_CASE
+)
 
-        /** 拆出可选的 `:行号` 后缀；无则行号为 0。 */
-        fun splitPathAndLine(path: String): Pair<String, Int> {
-            val cleaned = path.substringBefore('#').trim()
-            val m = TRAILING_LINE.find(cleaned) ?: return cleaned to 0
-            return m.groupValues[1] to m.groupValues[2].toInt()
-        }
+private val TRAILING_LINE = Regex("^(.*):(\\d+)$")
+
+/** 聊天区链接目标 → 归一化后的文件路径；判定为网址（非 `file` scheme）时返回 null。 */
+internal fun asChatFilePath(uri: String): String? {
+    val hierarchical = HIERARCHICAL_SCHEME.find(uri)?.groupValues?.get(1)?.lowercase()
+    return when {
+        hierarchical == "file" -> android.net.Uri.decode(uri.removePrefix("file://"))
+        hierarchical != null -> null // http/https/content 等交给系统
+        OPAQUE_URL_SCHEME.containsMatchIn(uri) -> null // mailto/tel 等
+        else -> uri // 容器绝对路径或相对工作区路径，含 `notes.md:12` 这种纯文件名
     }
+}
+
+/** 拆出可选的 `:行号` 后缀；无则行号为 0。 */
+internal fun splitPathAndLine(path: String): Pair<String, Int> {
+    val cleaned = path.substringBefore('#').trim()
+    val m = TRAILING_LINE.find(cleaned) ?: return cleaned to 0
+    return m.groupValues[1] to (m.groupValues[2].toIntOrNull() ?: 0)
 }

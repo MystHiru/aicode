@@ -1,13 +1,9 @@
 package com.aicode.feature.agent.presentation.component
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,6 +25,7 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -47,20 +43,21 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import com.aicode.core.ui.AppTextField
+import com.aicode.core.ui.dialogTextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,6 +65,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.ui.SegmentedTabs
 import com.aicode.feature.settings.presentation.component.SettingsDivider
 import com.aicode.feature.settings.presentation.component.SettingsGroup
 import com.aicode.feature.settings.presentation.component.SettingsGroupHeader
@@ -109,6 +107,7 @@ fun ChatDrawerContent(
     sessions: List<ChatSession>,
     currentSessionId: String?,
     agentStates: Map<String, AgentUIState>,
+    awaitingPermissionSessionIds: Set<String> = emptySet(),
     onSelect: (ChatSession) -> Unit,
     onDelete: (ChatSession) -> Unit,
     onRename: (ChatSession, String) -> Unit,
@@ -127,7 +126,9 @@ fun ChatDrawerContent(
     onNavigateToSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var selectedTab by remember { mutableStateOf(0) }
+    // tab 与展开状态进 saveable：大屏下侧栏收起后整棵子树会离开组合（见 MainActivity 的
+    // SaveableStateProvider），用 remember 存会让每次回到聊天页都重置回「会话」页。
+    var selectedTab by rememberSaveable { mutableStateOf(0) }
     var pendingDelete by remember { mutableStateOf<ChatSession?>(null) }
     var pendingRename by remember { mutableStateOf<ChatSession?>(null) }
     var menuSession by remember { mutableStateOf<ChatSession?>(null) }
@@ -155,8 +156,12 @@ fun ChatDrawerContent(
         verticalArrangement = Arrangement.spacedBy(Spacing.sm)
     ) {
         // 顶部 Tab 切换
-        DrawerTopTabs(
+        SegmentedTabs(
             selected = selectedTab,
+            labels = listOf(
+                stringResource(R.string.subagent_tab_sessions),
+                stringResource(R.string.drawer_tab_files)
+            ),
             onSelect = { selectedTab = it }
         )
 
@@ -166,6 +171,7 @@ fun ChatDrawerContent(
                     sessions = sessions,
                     currentSessionId = currentSessionId,
                     agentStates = agentStates,
+                    awaitingPermissionSessionIds = awaitingPermissionSessionIds,
                     subSessionsByParent = subSessionsByParent,
                     listState = listState,
                     onSelect = onSelect,
@@ -245,7 +251,8 @@ fun ChatDrawerContent(
                     onValueChange = { renameText = it },
                     singleLine = true,
                     label = stringResource(R.string.chat_session_name),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = dialogTextFieldColors()
                 )
             },
             confirmButton = {
@@ -264,80 +271,13 @@ fun ChatDrawerContent(
     }
 }
 
-/**
- * 侧边栏顶部 Tab 切换条（会话 / 文件）。
- * iOS 风分段控件：中性灰轨道 + 白色（深色下为抬起灰）滑块，选中时滑块弹性滑到对应一侧。
- * 不用主题蓝填充，让整体与下方扫描式列表协调，只用中性色与轻阴影表现层次。
- */
-@Composable
-private fun DrawerTopTabs(
-    selected: Int,
-    onSelect: (Int) -> Unit
-) {
-    val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val trackColor = if (dark) Color(0xFF16202E) else Color(0xFFEEF1F5)
-    val thumbColor = if (dark) Color(0xFF2B3A4F) else Color.White
-    val labels = listOf(R.string.subagent_tab_sessions, R.string.drawer_tab_files)
-
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(34.dp)
-            .clip(RoundedCornerShape(9.dp))
-            .background(trackColor)
-            .padding(3.dp)
-    ) {
-        val thumbWidth = maxWidth / 2
-        // 选中滑块位移：临界阻尼弹簧（不过冲），切换时滑块顺滑到位，不是硬切。
-        val thumbOffset by animateDpAsState(
-            targetValue = if (selected == 0) 0.dp else thumbWidth,
-            animationSpec = spring(dampingRatio = 1f, stiffness = Spring.StiffnessMediumLow),
-            label = "tab-thumb"
-        )
-        Surface(
-            modifier = Modifier
-                .offset(x = thumbOffset)
-                .width(thumbWidth)
-                .fillMaxHeight(),
-            shape = RoundedCornerShape(7.dp),
-            color = thumbColor,
-            shadowElevation = 2.dp,
-            content = {}
-        )
-        Row(modifier = Modifier.fillMaxSize()) {
-            labels.forEachIndexed { index, labelRes ->
-                val isSelected = selected == index
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(7.dp))
-                        // 禁用点击波纹：选中滑块位移已是反馈，ripple 残留的深色阴影反而吓眼。
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) { onSelect(index) },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = stringResource(labelRes),
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (isSelected) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-    }
-}
-
 /** Tab0：根会话列表（按最后回复时间分组）。带子代理的会话行尾有展开箭头，展开后在其下方缩进列出子代理。 */
 @Composable
 private fun SessionListTab(
     sessions: List<ChatSession>,
     currentSessionId: String?,
     agentStates: Map<String, AgentUIState>,
+    awaitingPermissionSessionIds: Set<String>,
     subSessionsByParent: Map<String, List<ChatSession>>,
     listState: LazyListState,
     onSelect: (ChatSession) -> Unit,
@@ -357,7 +297,12 @@ private fun SessionListTab(
         }
         return
     }
-    var expandedIds by remember { mutableStateOf(emptySet<String>()) }
+    var expandedIds by rememberSaveable(
+        stateSaver = listSaver<Set<String>, String>(
+            save = { it.toList() },
+            restore = { it.toSet() }
+        )
+    ) { mutableStateOf(emptySet<String>()) }
     val groups = remember(sessions) {
         val now = System.currentTimeMillis()
         val pinned = sessions.filter { it.isPinned }
@@ -371,12 +316,20 @@ private fun SessionListTab(
         state = listState,
         modifier = Modifier.fillMaxSize()
     ) {
-        items(groups, key = { it.groupKey }) { group ->
-            SettingsGroupHeader(
-                text = sessionGroupLabel(group.groupKey, group.sessions.first())
-            )
-            Column {
-                group.sessions.forEachIndexed { index, session ->
+        // 每个分组占一个 item、组内 forEach 全量渲染会让 LazyColumn 失去惰性：
+        // 「最近 30 天」这种分组有上百个会话时，一个 item 就要组合上百行。分组头与会话各自成 item。
+        groups.forEach { group ->
+            item(key = "group-${group.groupKey}", contentType = "group-header") {
+                SettingsGroupHeader(
+                    text = sessionGroupLabel(group.groupKey, group.sessions.first())
+                )
+            }
+            itemsIndexed(
+                items = group.sessions,
+                key = { _, session -> session.id },
+                contentType = { _, _ -> "session" }
+            ) { index, session ->
+                Column {
                     if (index > 0) {
                         if (group.groupKey == "pinned") Spacer(Modifier.height(Spacing.sm)) else SettingsDivider()
                     }
@@ -388,6 +341,7 @@ private fun SessionListTab(
                         session = session,
                         selected = session.id == currentSessionId,
                         isExecuting = isExecuting,
+                        awaitingPermission = session.id in awaitingPermissionSessionIds,
                         pinned = session.isPinned,
                         onClick = { onSelect(session) },
                         onLongClick = { onLongClick(session) },
@@ -416,6 +370,7 @@ private fun SessionListTab(
                                     selected = sub.id == currentSessionId,
                                     isExecuting = subState is AgentUIState.Loading ||
                                         subState is AgentUIState.Streaming,
+                                    awaitingPermission = sub.id in awaitingPermissionSessionIds,
                                     pinned = false,
                                     onClick = { onSelect(sub) },
                                     onLongClick = { onLongClick(sub) }
@@ -511,14 +466,17 @@ private fun FileBrowserTab(
                 val density = LocalDensity.current
                 // 预算最宽一行的内容宽度（固定开销 + 缩进 + 文本），供所有行取统一宽度，
                 // 以实现整棵树统一横向平移（而非每行各自滚动）。
+                // 逐个 measure 在大目录下会在组合期同步跑上千次文本测量；先按「缩进 + 字符宽度权重」
+                // 挑出最宽的那一行，只对它做一次真实测量。估算不精确，但这里只用来给横向滚动留够宽度。
                 val maxContentPx = remember(state.nodes, textStyle) {
                     with(density) {
-                        val overhead = FILE_TREE_ROW_OVERHEAD.toPx()
-                        state.nodes.maxOfOrNull { node ->
+                        val widest = state.nodes.maxByOrNull { node ->
                             val label = if (node.isRoot) WORKSPACE_LABEL else node.entry.name
-                            val textW = textMeasurer.measure(label, textStyle).size.width
-                            overhead + (Spacing.lg * node.depth).toPx() + textW
-                        }?.toInt() ?: 0
+                            node.depth * 4 + label.sumOf { ch -> if (ch.code > 0x2E80) 2 else 1 }
+                        } ?: return@with 0
+                        val label = if (widest.isRoot) WORKSPACE_LABEL else widest.entry.name
+                        val textW = textMeasurer.measure(label, textStyle).size.width
+                        (FILE_TREE_ROW_OVERHEAD.toPx() + (Spacing.lg * widest.depth).toPx() + textW).toInt()
                     }
                 }
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -672,7 +630,8 @@ private fun FileNameInputDialog(
                 onValueChange = { name = it },
                 singleLine = true,
                 label = stringResource(R.string.file_browser_name_label),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                colors = dialogTextFieldColors()
             )
         },
         confirmButton = {

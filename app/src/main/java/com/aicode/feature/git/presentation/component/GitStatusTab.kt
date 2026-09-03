@@ -58,7 +58,6 @@ import com.aicode.feature.git.domain.model.GitFileChange
 import com.aicode.feature.git.domain.model.GitStatus
 import com.aicode.feature.settings.presentation.component.SettingsDivider
 import com.aicode.feature.settings.presentation.component.SettingsGroup
-import com.aicode.feature.settings.presentation.component.settingsLightMode
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Check
 import compose.icons.feathericons.ChevronDown
@@ -66,7 +65,6 @@ import compose.icons.feathericons.ChevronRight
 import compose.icons.feathericons.Copy
 import compose.icons.feathericons.DownloadCloud
 import compose.icons.feathericons.FileText
-import compose.icons.feathericons.Folder
 import compose.icons.feathericons.GitBranch
 import compose.icons.feathericons.Minus
 import compose.icons.feathericons.Plus
@@ -438,7 +436,7 @@ private fun StatusOverview(status: GitStatus?, clean: Boolean) {
     val untracked = status?.untracked?.size ?: 0
 
     Surface(
-        color = if (settingsLightMode()) Color.White else MaterialTheme.colorScheme.surface,
+        color = MaterialTheme.semanticColors.cardSurface,
         shape = RoundedCornerShape(Radius.lg),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -667,7 +665,7 @@ private fun ActionButton(
 
 /**
  * 未跟踪目录行（`git status` 把新目录折叠成 `dir/` 一行）：点击展开/收起其中的未跟踪文件，
- * 长按开操作菜单，行尾「+」暂存整个目录。[childCount] 为 null 表示尚未展开。
+ * 长按开操作菜单，行尾「+」暂存整个目录。[childCount] 为 null 表示尚未展开，此时箭头左侧不显示数量。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -690,34 +688,26 @@ private fun UntrackedDirRow(
     ) {
         StatusChip("?")
         Spacer(Modifier.width(Spacing.md))
-        Icon(
-            FeatherIcons.Folder,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(16.dp)
+        Text(
+            text = path,
+            style = MaterialTheme.typography.bodyMedium,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
         )
-        Spacer(Modifier.width(Spacing.sm))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = path,
-                style = MaterialTheme.typography.bodyMedium,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = if (childCount != null) stringResource(R.string.git_untracked_dir_file_count, childCount)
-                else stringResource(R.string.git_untracked_dir_expand_hint),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
-            )
-        }
         Spacer(Modifier.width(Spacing.sm))
         if (loading) {
             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
         } else {
+            if (childCount != null) {
+                Text(
+                    text = childCount.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Icon(
                 if (expanded) FeatherIcons.ChevronDown else FeatherIcons.ChevronRight,
                 contentDescription = null,

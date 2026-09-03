@@ -25,6 +25,7 @@ import com.aicode.core.ui.AppSwitch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.aicode.core.ui.AppTextField
+import com.aicode.core.ui.dialogTextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -406,7 +407,8 @@ private fun PasswordDialog(
                     label = stringResource(R.string.backup_password_label),
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = dialogTextFieldColors()
                 )
             }
         },

@@ -1,15 +1,20 @@
 package com.aicode.core.theme
 
+import android.os.Build
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -171,14 +176,18 @@ object TokenStatsPalette {
     val Progress = Color(0xFF22C55E)
 }
 
-private val DarkColorScheme = darkColorScheme(
+internal val DarkColorScheme = darkColorScheme(
     primary = Color(0xFF60A5FA),
     onPrimary = Color(0xFF082F49),
     primaryContainer = Color(0xFF0F3A63),
     onPrimaryContainer = Color(0xFFDBEAFE),
     secondary = Color(0xFF7DD3FC),
     onSecondary = Color(0xFF082F49),
+    secondaryContainer = Color(0xFF0C4A6E),
+    onSecondaryContainer = Color(0xFFBAE6FD),
     tertiary = Color(0xFF22C55E),
+    tertiaryContainer = Color(0xFF14532D),
+    onTertiaryContainer = Color(0xFFBBF7D0),
     background = Color(0xFF07111F),
     onBackground = Color(0xFFEAF2FF),
     surface = Color(0xFF0D1B2E),
@@ -186,6 +195,13 @@ private val DarkColorScheme = darkColorScheme(
     surfaceVariant = Color(0xFF13273F),
     onSurfaceVariant = Color(0xFFB8C7DA),
     surfaceTint = Color.Transparent,
+    surfaceContainerLowest = Color(0xFF050C17),
+    surfaceContainerLow = Color(0xFF07111F),
+    surfaceContainer = Color(0xFF0D1B2E),
+    surfaceContainerHigh = Color(0xFF13273F),
+    surfaceContainerHighest = Color(0xFF1B3350),
+    surfaceBright = Color(0xFF24405F),
+    surfaceDim = Color(0xFF07111F),
     outline = Color(0xFF64748B),
     outlineVariant = Color(0xFF334155),
     error = Color(0xFFF87171),
@@ -194,14 +210,18 @@ private val DarkColorScheme = darkColorScheme(
     onErrorContainer = Color(0xFFFECACA)
 )
 
-private val LightColorScheme = lightColorScheme(
+internal val LightColorScheme = lightColorScheme(
     primary = Brand.Blue,
     onPrimary = Color(0xFFFFFFFF),
     primaryContainer = Color(0xFFDBEAFE),
     onPrimaryContainer = Color(0xFF0B3B76),
     secondary = Color(0xFF0284C7),
     onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFE0F2FE),
+    onSecondaryContainer = Color(0xFF075985),
     tertiary = Color(0xFF16A34A),
+    tertiaryContainer = Color(0xFFDCFCE7),
+    onTertiaryContainer = Color(0xFF15803D),
     background = Color(0xFFFFFFFF),
     onBackground = Color(0xFF0F172A),
     surface = Color(0xFFFFFFFF),
@@ -209,6 +229,13 @@ private val LightColorScheme = lightColorScheme(
     surfaceVariant = Color(0xFFEAF4FF),
     onSurfaceVariant = Color(0xFF475569),
     surfaceTint = Color.White,
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceContainerLow = Color(0xFFFAFCFF),
+    surfaceContainer = Color(0xFFF4F9FF),
+    surfaceContainerHigh = Color(0xFFEAF4FF),
+    surfaceContainerHighest = Color(0xFFE0EDFA),
+    surfaceBright = Color(0xFFFFFFFF),
+    surfaceDim = Color(0xFFE8EEF6),
     outline = Color(0xFFD1D1D6),
     outlineVariant = Color(0xFFE5E5EA),
     error = Color(0xFFDC2626),
@@ -229,17 +256,33 @@ private val AppTypography = Typography().run {
     )
 }
 
+/**
+ * @param preset 用户选定的配色主题。
+ * @param dynamicColor 是否启用系统莫奈取色；低于 Android 12 时自动回退到 [preset]。
+ */
 @Composable
 fun AIEditorTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    preset: AppThemePreset = AppThemePreset.DEFAULT,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
-    val semanticColors = if (darkTheme) DarkSemanticColors else LightSemanticColors
+    val context = LocalContext.current
+    val themeColors = remember(darkTheme, preset, dynamicColor, context) {
+        if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val dynamicScheme =
+                if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            deriveDynamicThemeColors(dynamicScheme, darkTheme)
+        } else if (darkTheme) {
+            preset.dark
+        } else {
+            preset.light
+        }
+    }
 
-    CompositionLocalProvider(LocalAppSemanticColors provides semanticColors) {
+    CompositionLocalProvider(LocalAppSemanticColors provides themeColors.semanticColors) {
         MaterialTheme(
-            colorScheme = colorScheme,
+            colorScheme = themeColors.colorScheme,
             typography = AppTypography,
             content = content
         )

@@ -104,8 +104,13 @@ android {
     defaultConfig {
         applicationId = "com.aicode"
         minSdk = 26
-        // 锁定 targetSdk 28：Android 10+（API 29+）的 W^X/SELinux 策略禁止执行 App 可写
-        // 数据目录里的文件，PRoot 二进制将无法运行（同 Termux 的取舍）。代价：不能上 Google Play。
+        // 仍锁 targetSdk 28，但阻塞项已不是 PRoot：proot 全套改由 jniLibs 装到 nativeLibraryDir
+        // （见 sourceSets 与 packaging.jniLibs 注释），W^X 不再挡容器启动。升级前待解决：
+        //   1. 外部工作区（EXTERNAL_LOCAL）目前用 File API 直读 /storage/emulated/0，29+ 需改走
+        //      MANAGE_EXTERNAL_STORAGE；
+        //   2. TerminalKeepaliveService 的 dataSync 前台服务在 35 上有 24 小时内累计 6 小时上限，
+        //      保活需换 specialUse。
+        // 代价：不能上 Google Play。
         targetSdk = 28
         versionCode = gitCommitCount()
         versionName = gitVersionName()
@@ -145,11 +150,19 @@ android {
     // 这样单架构包天然只含一套镜像（AGP 资源并集合并：未被引用的目录不参与），
     // universal 含两套；镜像二进制在仓库里也只各一份，无重复。
     // 放弃 ignoreAssetsPattern=dir:x86：实测对 container/x86 整树无效（rc1 已证实）。
+    // proot 全套（proot 本体 + 两个 loader + libtalloc/libandroid-shmem）走 jniLibs 而非 assets：
+    // 安装器只把 APK 内 lib/<abi>/lib*.so 解压到 nativeLibraryDir，而那是 App 目录里唯一
+    // 允许 execve 的位置（SELinux 标签 apk_data_file）。rootfs 仍在 assets→filesDir——
+    // 客户机二进制不由内核 execve，而是 proot 的 loader 用 mmap(PROT_EXEC) 映射进内存，
+    // 不受 W^X 约束。故命名必须是 lib*.so（libproot-loader32.so 实为 32 位 ELF，同样有效）。
     sourceSets {
         getByName("universal") { assets.srcDir("src/_armAssets") }
         getByName("universal") { assets.srcDir("src/_x86Assets") }
         getByName("armsolo") { assets.srcDir("src/_armAssets") }
         getByName("x86solo") { assets.srcDir("src/_x86Assets") }
+        getByName("universal") { jniLibs.srcDirs("src/_armJniLibs", "src/_x86JniLibs") }
+        getByName("armsolo") { jniLibs.srcDir("src/_armJniLibs") }
+        getByName("x86solo") { jniLibs.srcDir("src/_x86JniLibs") }
         // 文档不放在 app/src/main/assets 下，改由 syncAiDocs 从 docs-site/docs 生成后并入
         getByName("main") { assets.srcDir(aiDocsGeneratedDir) }
     }
@@ -196,6 +209,20 @@ android {
 
 
     packaging {
+        jniLibs {
+            // 必须 true：默认（false）下 .so 不解压、直接从 APK 映射，nativeLibraryDir 会是空目录，
+            // execve libproot.so 得到 ENOENT。代价是安装后多占一份解压副本（proot 全套约 300KB）。
+            useLegacyPackaging = true
+            // proot 全套是外部预编译产物，不得被构建流程后处理：当前 NDK 的 strip 认不出它们而
+            // 自行跳过，显式声明避开 AGP/NDK 升版后 strip 真的生效而改动字节。
+            keepDebugSymbols += setOf(
+                "**/libproot.so",
+                "**/libproot-loader.so",
+                "**/libproot-loader32.so",
+                "**/libtalloc.so",
+                "**/libandroid-shmem.so"
+            )
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "META-INF/DEPENDENCIES"
@@ -212,8 +239,7 @@ android {
         }
     }
 
-    // targetSdk 故意锁定 28（PRoot 需在 app 可写目录执行二进制，Android 10+ W^X 禁止），
-    // 代价是不进 Google Play——故关闭该平台的过期 targetSdk 检查。
+    // targetSdk 故意锁定 28（原因见 defaultConfig 处注释），代价是不进 Google Play——故关闭该平台的过期 targetSdk 检查。
     // 同时关闭 release 构建的 lint 检查：本仓库只出 GitHub Release 不上 Play，
     // lintVital 在 R8/打包阶段额外吃 CPU 与内存（2 核 7GB runner 易 OOM），且其发现不阻塞发布。
     lint {

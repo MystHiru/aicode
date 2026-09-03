@@ -44,6 +44,7 @@ fun ChatSessionRow(
     session: ChatSession,
     selected: Boolean,
     isExecuting: Boolean = false,
+    awaitingPermission: Boolean = false,
     pinned: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -61,7 +62,16 @@ fun ChatSessionRow(
             .padding(horizontal = Spacing.lg, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (isExecuting) {
+        if (awaitingPermission) {
+            // 等待用户授权：橙色常亮圆点，优先级高于执行中的绿色脉冲，提示该会话已挂起待处理。
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.semanticColors.warning)
+            )
+            Spacer(Modifier.width(Spacing.md))
+        } else if (isExecuting) {
             val transition = rememberInfiniteTransition(label = "tool-status-dot")
             val alpha by transition.animateFloat(
                 initialValue = 1f,

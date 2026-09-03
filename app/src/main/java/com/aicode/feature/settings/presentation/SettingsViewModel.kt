@@ -57,6 +57,7 @@ import com.aicode.feature.settings.data.repository.LanguageSettingsRepository
 import com.aicode.feature.settings.data.repository.LogSettingsRepository
 import com.aicode.feature.settings.data.repository.ProxyConfig
 import com.aicode.feature.settings.data.repository.ProxySettingsRepository
+import com.aicode.feature.settings.data.repository.ScreenOnSettingsRepository
 import com.aicode.feature.settings.data.repository.ThemeSettingsRepository
 import com.aicode.feature.settings.data.repository.BackgroundSettingsRepository
 import com.aicode.feature.settings.data.repository.VisionModelSettingsRepository
@@ -86,6 +87,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -232,6 +235,7 @@ class SettingsViewModel @Inject constructor(
     private val themeSettingsRepository: ThemeSettingsRepository,
     private val backgroundSettingsRepository: BackgroundSettingsRepository,
     private val keepaliveSettingsRepository: KeepaliveSettingsRepository,
+    private val screenOnSettingsRepository: ScreenOnSettingsRepository,
     private val agentSoundSettingsRepository: AgentSoundSettingsRepository,
     private val languageSettingsRepository: LanguageSettingsRepository,
     private val mcpConfigRepository: McpConfigRepository,
@@ -267,6 +271,8 @@ class SettingsViewModel @Inject constructor(
         const val CACHE_READ_DISCOUNT = 0.1
         /** 缓存写入单价缺失时相对输入价的倍率（Anthropic 官方为 1.25×）。 */
         const val CACHE_WRITE_MARKUP = 1.25
+        /** 背景透明度停止拖动后的落盘延迟。 */
+        const val BACKGROUND_ALPHA_WRITE_DEBOUNCE_MS = 80L
     }
 
     /** 终端个性化配置。 */
@@ -377,11 +383,20 @@ class SettingsViewModel @Inject constructor(
     private val _keepaliveEnabled = MutableStateFlow(false)
     val keepaliveEnabled: StateFlow<Boolean> = _keepaliveEnabled.asStateFlow()
 
+    private val _screenOnEnabled = MutableStateFlow(false)
+    val screenOnEnabled: StateFlow<Boolean> = _screenOnEnabled.asStateFlow()
+
     private val _agentSoundEnabled = MutableStateFlow(false)
     val agentSoundEnabled: StateFlow<Boolean> = _agentSoundEnabled.asStateFlow()
 
     private val _themeMode = MutableStateFlow(AppThemeMode.AUTO)
     val themeMode: StateFlow<AppThemeMode> = _themeMode.asStateFlow()
+
+    private val _themePresetId = MutableStateFlow<String?>(null)
+    val themePresetId: StateFlow<String?> = _themePresetId.asStateFlow()
+
+    private val _dynamicColorEnabled = MutableStateFlow(false)
+    val dynamicColorEnabled: StateFlow<Boolean> = _dynamicColorEnabled.asStateFlow()
 
     /** 全局自定义背景图文件路径（null=未设置），供设置弹窗展示与预览。 */
     private val _backgroundImagePath = MutableStateFlow<String?>(null)
@@ -390,6 +405,9 @@ class SettingsViewModel @Inject constructor(
     /** 背景图不透明度（0.05~1.0），实时写 DataStore，全局背景同步变化。 */
     private val _backgroundAlpha = MutableStateFlow(BackgroundSettingsRepository.DEFAULT_ALPHA)
     val backgroundAlpha: StateFlow<Float> = _backgroundAlpha.asStateFlow()
+
+    /** 透明度落盘的节流 job，见 [setBackgroundAlpha]。 */
+    private var backgroundAlphaWriteJob: Job? = null
 
     /** 用户选择的应用语言 tag（null 表示跟随系统）。 */
     private val _languageTag = MutableStateFlow<String?>(null)
@@ -588,6 +606,12 @@ class SettingsViewModel @Inject constructor(
             }
 
             launch {
+                screenOnSettingsRepository.enabledFlow.collectLatest {
+                    _screenOnEnabled.value = it
+                }
+            }
+
+            launch {
                 agentSoundSettingsRepository.enabledFlow.collectLatest {
                     _agentSoundEnabled.value = it
                 }
@@ -596,6 +620,18 @@ class SettingsViewModel @Inject constructor(
             launch {
                 themeSettingsRepository.themeModeFlow.collectLatest {
                     _themeMode.value = it
+                }
+            }
+
+            launch {
+                themeSettingsRepository.themePresetIdFlow.collectLatest {
+                    _themePresetId.value = it
+                }
+            }
+
+            launch {
+                themeSettingsRepository.dynamicColorFlow.collectLatest {
+                    _dynamicColorEnabled.value = it
                 }
             }
 
@@ -1010,6 +1046,13 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    // 仅持久化标志位——窗口 FLAG_KEEP_SCREEN_ON 的增删由 MainActivity 监听 enabledFlow 统一完成。
+    fun setScreenOnEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            screenOnSettingsRepository.setEnabled(enabled)
+        }
+    }
+
     fun setAgentSoundEnabled(enabled: Boolean) {
         viewModelScope.launch {
             agentSoundSettingsRepository.setEnabled(enabled)
@@ -1019,6 +1062,18 @@ class SettingsViewModel @Inject constructor(
     fun setThemeMode(mode: AppThemeMode) {
         viewModelScope.launch {
             themeSettingsRepository.setThemeMode(mode)
+        }
+    }
+
+    fun setThemePreset(id: String) {
+        viewModelScope.launch {
+            themeSettingsRepository.setThemePresetId(id)
+        }
+    }
+
+    fun setDynamicColorEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            themeSettingsRepository.setDynamicColorEnabled(enabled)
         }
     }
 
@@ -1036,9 +1091,16 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /** 调节背景图透明度（0.05~1.0），实时持久化。 */
+    /**
+     * 调节背景图透明度（0.05~1.0）。
+     *
+     * 滑块拖动会连续打进数十个值，DataStore 的写是串行的，逐个落盘会积压出肉眼可见的延迟，
+     * 回读又会把整个设置页带着重组。此处只保留最后一个值，停手约 80ms 后写一次。
+     */
     fun setBackgroundAlpha(alpha: Float) {
-        viewModelScope.launch {
+        backgroundAlphaWriteJob?.cancel()
+        backgroundAlphaWriteJob = viewModelScope.launch {
+            delay(BACKGROUND_ALPHA_WRITE_DEBOUNCE_MS)
             backgroundSettingsRepository.setBackgroundAlpha(alpha)
         }
     }

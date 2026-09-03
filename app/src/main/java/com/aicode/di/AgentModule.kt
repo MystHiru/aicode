@@ -69,6 +69,7 @@ import javax.inject.Singleton
 
 import com.aicode.core.db.MigrationLoader
 import com.aicode.feature.agent.domain.checkpoint.CheckpointManager
+import com.aicode.feature.agent.domain.notification.AgentNotificationCenter
 import com.aicode.feature.agent.domain.session.MessagePersistenceUseCase
 import com.aicode.feature.agent.domain.session.SessionUseCase
 import com.aicode.feature.agent.domain.tool.mcp.ManageMcpTool
@@ -308,7 +309,8 @@ object AgentModule {
         messagePersistenceUseCase: MessagePersistenceUseCase,
         checkpointManager: CheckpointManager,
         llmCallRecordDao: LlmCallRecordDao,
-        keyRotator: ProviderKeyRotator
+        keyRotator: ProviderKeyRotator,
+        agentNotificationCenter: AgentNotificationCenter
     ): AgentWorkflow {
         return StatefulAgentWorkflow(
             toolRegistry,
@@ -330,7 +332,8 @@ object AgentModule {
             messagePersistenceUseCase,
             checkpointManager,
             llmCallRecordDao,
-            keyRotator
+            keyRotator,
+            agentNotificationCenter
         )
     }
 }

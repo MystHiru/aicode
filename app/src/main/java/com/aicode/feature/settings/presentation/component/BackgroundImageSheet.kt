@@ -25,7 +25,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
@@ -63,7 +66,7 @@ internal fun decodeBackgroundBitmap(path: String, maxWidth: Int, maxHeight: Int)
  * @param imagePath 当前背景图路径，null 表示未设置。
  * @param alpha 当前透明度（0.05~1.0）。
  * @param onPickImage 用户选定图片后回调。
- * @param onAlphaChange 透明度变化回调（实时写 DataStore，全局背景同步变化）。
+ * @param onAlphaChange 透明度变化回调（写 DataStore，全局背景随之变化；落盘节流在 ViewModel 侧）。
  * @param onRemove 移除背景回调。
  * @param onDismiss 关闭弹窗。
  */
@@ -91,6 +94,10 @@ internal fun BackgroundImageSheet(
             }
         }
     }
+
+    // 滑块位置由本地状态驱动：直接绑外部 alpha 会让每次拖动都走「写 DataStore → 回读 → 整个设置页重组」
+    // 的往返，滑块因此跟不上手指。弹窗每次打开都重建，初值取当前设置即可。
+    var sliderPercent by remember { mutableFloatStateOf(BackgroundSettingsRepository.alphaToSlider(alpha)) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -134,15 +141,16 @@ internal fun BackgroundImageSheet(
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    text = "${BackgroundSettingsRepository.alphaToSlider(alpha).toInt()}%",
+                    text = "${sliderPercent.toInt()}%",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
             Slider(
-                value = BackgroundSettingsRepository.alphaToSlider(alpha),
+                value = sliderPercent,
                 onValueChange = { percent ->
+                    sliderPercent = percent
                     onAlphaChange(BackgroundSettingsRepository.sliderToAlpha(percent))
                 },
                 valueRange = 0f..100f

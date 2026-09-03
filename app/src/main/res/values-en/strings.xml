@@ -80,6 +80,15 @@
     <string name="settings_title_follow_chat">Follow current chat model</string>    <string name="settings_theme_title">Appearance</string>    <string name="theme_auto">Auto</string>
     <string name="theme_dark">Dark</string>
     <string name="theme_light">Light</string>
+    <string name="theme_mode_section">Appearance mode</string>
+    <string name="theme_preset_section">Color theme</string>
+    <string name="theme_preset_default">Default Blue</string>
+    <string name="theme_preset_coffee">Coffee</string>
+    <string name="theme_preset_graphite">Graphite</string>
+    <string name="theme_preset_forest">Forest</string>
+    <string name="theme_dynamic_color">Dynamic color</string>
+    <string name="theme_dynamic_color_desc">Derive colors from your wallpaper. Overrides the color theme above.</string>
+    <string name="theme_dynamic_color_unsupported">Requires Android 12 or newer</string>
     <string name="settings_background_image">Background image</string>
     <string name="settings_background_image_none">None</string>
     <string name="settings_background_image_alpha">Opacity</string>
@@ -123,6 +132,8 @@
     <string name="provider_balance_interval_30m">Every 30 mins</string>
     <string name="settings_keepalive_title">Background keepalive</string>
     <string name="settings_keepalive_subtitle">Foreground notification prevents background kill</string>
+    <string name="settings_screen_on_title">Keep screen on</string>
+    <string name="settings_screen_on_subtitle">Screen stays awake while the app is in the foreground</string>
     <string name="settings_agent_sound_title">Agent completion notification</string>
     <string name="settings_agent_sound_subtitle">Pop a notification when agent finishes in background</string>
     <string name="agent_complete_notification_title">Task complete</string>
@@ -429,7 +440,9 @@
     <string name="chat_perm_always_tool_desc">"Always allow" will remember all calls of this tool for this project</string>
     <string name="chat_perm_always_prefix">"Always allow" will remember for this project:</string>
     <string name="chat_perm_deny">Deny</string>
-    <string name="chat_perm_always_allow">Always Allow</string>    <string name="chat_plan_completed">Plan completed</string>
+    <string name="chat_perm_always_allow">Always Allow</string>
+    <string name="chat_perm_session_label">Session "%1$s"</string>
+    <string name="chat_plan_completed">Plan completed</string>
     <string name="chat_continue_feedback">Continue feedback</string>
     <string name="chat_approve_and_implement">Approve and implement</string>
 
@@ -446,9 +459,16 @@
     <!-- Chat Message Bubbles -->
     <string name="chat_copied">Copied</string>
     <string name="chat_copy">Copy</string>
+    <string name="chat_task_duration">Total time %1$s</string>
+    <string name="chat_cache_hit_rate">Cache hit rate %1$s</string>
+    <string name="chat_status_generating">Generating</string>
+    <string name="chat_tool_running">Tool running</string>
+    <string name="chat_tool_succeeded">Tool succeeded</string>
+    <string name="chat_tool_failed">Tool failed</string>
+    <string name="chat_context_usage">Context %1$d%% used</string>
     <string name="chat_bg_command_done">Background command completed</string>
-    <string name="chat_bg_commands_done">%1$d background tasks completed: %2$s</string>
-    <string name="chat_bg_commands_partial_failed">%1$d background tasks finished, %2$d failed: %3$s</string>
+    <string name="chat_bg_commands_done">%1$d background tasks completed</string>
+    <string name="chat_bg_commands_partial_failed">%1$d background tasks finished, %2$d failed</string>
     <string name="chat_context_compressed">Context compressed</string>
     <string name="chat_compaction_failed">Context compaction failed</string>
     <string name="chat_compressing_context">Compressing context</string>
@@ -672,8 +692,6 @@
     <string name="git_restore_file_confirm">Restore the deleted %1$s? The file will be brought back from the last commit.</string>
     <string name="git_revert_all_confirm">Discard all unstaged changes (%1$d files) and restore them to the last staged or committed content? Staged content is unaffected, but discarded changes cannot be recovered.</string>
     <string name="git_delete_untracked_confirm">Delete %1$s? It has never been committed, so Git cannot recover it after deletion.</string>
-    <string name="git_untracked_dir_expand_hint">Tap to list files inside</string>
-    <string name="git_untracked_dir_file_count">%1$d untracked files</string>
 
     <!-- Git Identity -->
     <string name="git_tab_identity">Identity</string>
@@ -727,7 +745,7 @@
 
     <!-- Skills Settings -->
     <string name="skills_empty">No skills installed</string>
-    <string name="skills_empty_hint">Place skills in ~/.aicode/skills/ (global) or the project\'s .aicode/skills/ (project-level); directories containing SKILL.md are recognized automatically</string>
+    <string name="skills_empty_hint">Put a folder containing SKILL.md into ~/.aicode/skills/</string>
     <string name="skills_no_project_skills">No skills for the current project</string>
     <string name="skills_no_global_skills">No global skills</string>
     <string name="skills_enable">Enable</string>
@@ -740,7 +758,7 @@
     <!-- Subagent Settings -->
     <string name="settings_subagents">Subagents</string>
     <string name="subagents_empty">No custom subagents yet</string>
-    <string name="subagents_empty_hint">Put definitions in ~/.aicode/agents/ (global) or .aicode/agents/ in the project (project-level); one .md file per agent</string>
+    <string name="subagents_empty_hint">Put an agent\'s .md definition into ~/.aicode/agents/</string>
     <string name="subagents_no_project">No subagents in this project</string>
     <string name="subagents_no_global">No global subagents</string>
     <string name="subagents_delete_confirm_title">Delete subagent</string>
@@ -773,7 +791,6 @@
     <string name="mcp_add_env_var">Add Environment Variable</string>
 
     <!-- Permissions Settings -->
-    <string name="perm_whitelist_short">Read-only commands like ls, pwd, cat are auto-approved without dialogs</string>
     <string name="perm_rules_short">Choosing "Always Allow" in chat creates remembered rules matched by command or path</string>
     <string name="perm_current_project">Current project: %1$s</string>
     <string name="perm_current_project_none">Current project (not selected)</string>
@@ -831,7 +848,7 @@
 
     <!-- Providers & Log -->
     <string name="providers_empty">No providers yet, tap + to add one</string>
-    <string name="provider_sort_drag_handle">Long press to reorder</string>
+    <string name="provider_sort_long_press">Long press to reorder</string>
     <string name="log_level">Log Level</string>
     <string name="log_level_desc">Logs below this level will be ignored. Use VERBOSE during development (log all); NONE to disable logging.</string>
     <string name="log_file_location">Log files are located at Android/data/&lt;package&gt;/files/logs/.</string>
@@ -962,7 +979,6 @@
     <string name="terminal_no_open_tabs">No open terminal tabs</string>
     <string name="terminal_close_tab">Close Tab</string>
     <string name="terminal_extracting_env">Extracting environment…\n%1$s files processed</string>
-    <string name="terminal_deploying_proot">Deploying proot runtime…</string>
     <string name="terminal_installing_packages">Installing python3 / git / pip / node / npm…\n%1$s</string>
     <string name="terminal_preparing_env_failed">Preparing container environment…\n%1$s</string>
     <string name="terminal_preparing_env_first_run">Preparing container environment…\nFirst run will extract the container, please wait</string>

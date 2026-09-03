@@ -43,6 +43,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -253,22 +255,32 @@ internal fun isStreamContinuation(text: String, seenChars: Int, seenHead: Int): 
  * 上游停顿时以 [TYPEWRITER_MIN_RATE] 兜底匀速追赶直至追平，避免停在半截。
  *
  * 渲染文本每 [TYPEWRITER_RENDER_INTERVAL_MS] 快照一次（throttle 而非 debounce，
- * 保证打字期间渲染持续可见增长），把 md 解析频率压在 ~10fps；text 突变（新一轮 /
- * 重试 / 切换会话）时显示进度归零重新打字。上游结束（[active] 变 false）时立即
- * 显示完整文本，与落库消息无缝交接。
+ * 保证打字期间渲染持续可见增长），把 md 解析频率压在 ~10fps；text 突变（换会话 /
+ * 新一轮 / 重试）时补全为当前全文，之后继续跟着 delta 打字。上游结束（[active] 变 false）
+ * 时立即显示完整文本，与落库消息无缝交接。
  *
  * 调用方应在 LazyColumn 之外持有本状态，避免尾巴 item 滚出视口被 dispose 后
  * 重新组合导致打字进度丢失。切页（chat 整棵子树离开 NavHost 组合）无法靠持有位置规避，
  * 由内部 saveable 进度承接。
  */
 @Composable
-internal fun rememberTypewriterStreamingText(text: String, active: Boolean): String {
+internal fun rememberTypewriterStreamingText(
+    text: String,
+    active: Boolean,
+    /**
+     * 文本所属会话。切到另一个正在输出的会话时，它已产出的部分是既成事实，必须直接补全显示——
+     * 本函数的状态挂在调用点上，会话切换并不会让它重建，不显式区分就会被下面的「换轮」
+     * 判定当成新一轮，把那段内容当着用户的面再逐字打一遍。
+     */
+    sessionKey: String? = null
+): String {
     // 已渲染文本的长度与前缀指纹进 saveable：切页返回后据此延续打字进度，避免已输出的
-    // 正文从头重打；期间若已换轮，指纹校验不通过则照常从头打字。
+    // 正文从头重打。校验不通过（期间换过轮或换过会话）时补全为当前全文而不是从头打字：
+    // 挂载这一刻才第一次看到的文本对用户就是历史，重打一遍只会让人以为模型在重复输出。
     var shownChars by rememberSaveable { mutableStateOf(0) }
     var shownHead by rememberSaveable { mutableStateOf(0) }
     val restored = remember {
-        if (isStreamContinuation(text, shownChars, shownHead)) text.substring(0, shownChars) else ""
+        if (isStreamContinuation(text, shownChars, shownHead)) text.substring(0, shownChars) else text
     }
     var shownCodePoints by remember {
         mutableStateOf(restored.codePointCount(0, restored.length).toFloat())
@@ -277,7 +289,8 @@ internal fun rememberTypewriterStreamingText(text: String, active: Boolean): Str
     // 上游到达事件窗口：(帧时间戳, 累计码点数)，用于估算吐字速率
     val arrivals = remember { ArrayDeque<Pair<Long, Int>>() }
     var lastArrivalNanos by remember { mutableStateOf(0L) }
-    var lastText by remember { mutableStateOf("") }
+    var lastText by remember { mutableStateOf(restored) }
+    var lastSessionKey by remember { mutableStateOf(sessionKey) }
     // 渲染文本与其 saveable 指纹必须同步更新，否则恢复时会拿指纹去校验另一段文本
     val commitRender: (String) -> Unit = { snapshot ->
         renderText = snapshot
@@ -285,11 +298,17 @@ internal fun rememberTypewriterStreamingText(text: String, active: Boolean): Str
         shownHead = streamHeadFingerprint(snapshot)
     }
 
-    LaunchedEffect(text, active) {
-        // 文本不是简单前缀增长（新一轮/重试/切换会话）：显示进度归零重新打字
-        if (lastText.isNotEmpty() && !text.startsWith(lastText)) {
-            shownCodePoints = 0f
-            commitRender("")
+    LaunchedEffect(text, active, sessionKey) {
+        // 文本不是当前进度的延续（换会话 / 新一轮 / 重试）：补全到当前全文，再跟着后续 delta 打字。
+        // 不能归零重打——切到另一个正在输出的会话时，它已产出的几百字会当着用户的面再来一遍。
+        // 换会话必须单独判：currentSessionId 与 streamingText 未必同一帧到达，只靠前缀判定
+        // 会漏掉先到的那一帧（那一帧文本还是旧会话的，看不出突变）。
+        // 新一轮开头也走这条路径，但那时 text 只有第一个 delta 的几个字，补全与重打视觉上无差别。
+        val sessionChanged = sessionKey != lastSessionKey
+        lastSessionKey = sessionKey
+        if (sessionChanged || (lastText.isNotEmpty() && !text.startsWith(lastText))) {
+            shownCodePoints = text.codePointCount(0, text.length).toFloat()
+            commitRender(text)
             arrivals.clear()
             lastArrivalNanos = 0L
         }
@@ -418,7 +437,9 @@ internal fun ReasoningBubble(
     cache: MarkdownRenderCache? = null,
     showTimer: Boolean = false,
     /** 文本已由外部打字机驱动（流式尾巴场景），跳过内部防抖直接渲染。 */
-    preRendered: Boolean = false
+    preRendered: Boolean = false,
+    /** 思考所属会话：切会话时重新计时，否则会拿上一个会话的起点算出离谱的时长。 */
+    sessionKey: String? = null
 ) {
     var userToggled by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(initiallyExpanded) }
@@ -430,7 +451,7 @@ internal fun ReasoningBubble(
     var timerSeenHead by rememberSaveable { mutableStateOf(0) }
     var elapsedSeconds by remember { mutableStateOf(0) }
     val latestText by rememberUpdatedState(text)
-    LaunchedEffect(showTimer) {
+    LaunchedEffect(showTimer, sessionKey) {
         if (!showTimer) return@LaunchedEffect
         if (!isStreamContinuation(latestText, timerSeenChars, timerSeenHead)) {
             timerStartMillis = System.currentTimeMillis()
@@ -530,8 +551,7 @@ internal fun ReasoningBubble(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = REASONING_COLLAPSE_LINE_LIMIT,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.heightIn(min = (REASONING_COLLAPSE_LINE_LIMIT * 18).dp)
+                        overflow = TextOverflow.Ellipsis
                     )
                     val hidden = lineCount - REASONING_COLLAPSE_LINE_LIMIT
                     Row(
@@ -580,9 +600,13 @@ internal fun TypingDots(
     dotSize: androidx.compose.ui.unit.Dp = 6.dp
 ) {
     val transition = rememberInfiniteTransition(label = "typing-dots")
+    val label = stringResource(R.string.chat_status_generating)
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.height(dotSize + 10.dp)
+        // 给读屏一个语义：三个跳动的点对 TalkBack 本来完全不可见。
+        modifier = Modifier
+            .height(dotSize + 10.dp)
+            .semantics { contentDescription = label }
     ) {
         repeat(3) { index ->
             val offsetY by transition.animateFloat(

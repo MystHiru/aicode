@@ -33,6 +33,7 @@ import com.aicode.feature.settings.data.local.entity.AIProviderEntity
 import com.aicode.feature.settings.data.repository.CompactionModelSettingsRepository
 import com.aicode.feature.settings.data.repository.AgentSoundSettingsRepository
 import com.aicode.feature.settings.data.repository.KeepaliveSettingsRepository
+import com.aicode.feature.settings.data.repository.ScreenOnSettingsRepository
 import com.aicode.feature.settings.data.repository.LogSettingsRepository
 import com.aicode.feature.settings.data.repository.SyncSettingsRepository
 import com.aicode.feature.settings.data.repository.ThemeSettingsRepository
@@ -78,6 +79,7 @@ class BackupManagerImpl @Inject constructor(
     private val permissionRulesRepository: PermissionRulesRepository,
     private val themeSettingsRepository: ThemeSettingsRepository,
     private val keepaliveSettingsRepository: KeepaliveSettingsRepository,
+    private val screenOnSettingsRepository: ScreenOnSettingsRepository,
     private val agentSoundSettingsRepository: AgentSoundSettingsRepository,
     private val logSettingsRepository: LogSettingsRepository,
     private val visionModelSettingsRepository: VisionModelSettingsRepository,
@@ -314,7 +316,10 @@ class BackupManagerImpl @Inject constructor(
         mcpServers = if (options.mcpServers) mcpConfigRepository.getGlobalServers() else emptyList(),
         globalPermissionRules = if (options.permissionRules) permissionRulesRepository.getGlobalRulesOnce() else emptyList(),
         themeMode = if (options.appSettings) themeSettingsRepository.snapshot() else null,
+        themePresetId = if (options.appSettings) themeSettingsRepository.presetSnapshot() else null,
+        dynamicColorEnabled = if (options.appSettings) themeSettingsRepository.dynamicColorSnapshot() else false,
         keepaliveEnabled = if (options.appSettings) keepaliveSettingsRepository.snapshot() else false,
+        screenOnEnabled = if (options.appSettings) screenOnSettingsRepository.snapshot() else false,
         agentSoundEnabled = if (options.appSettings) agentSoundSettingsRepository.snapshot() else false,
         logLevel = if (options.appSettings) logSettingsRepository.snapshot() else null,
         visionProviderId = if (options.appSettings) visionModelSettingsRepository.getVisionProviderId() else "",
@@ -559,7 +564,9 @@ class BackupManagerImpl @Inject constructor(
             permissionRulesRepository.setGlobalRules(meta.globalPermissionRules)
         }
         meta.themeMode?.let { themeSettingsRepository.restore(it) }
+        themeSettingsRepository.restoreColors(meta.themePresetId, meta.dynamicColorEnabled)
         keepaliveSettingsRepository.restore(meta.keepaliveEnabled)
+        screenOnSettingsRepository.restore(meta.screenOnEnabled)
         agentSoundSettingsRepository.restore(meta.agentSoundEnabled)
         logSettingsRepository.restore(meta.logLevel)
         if (meta.visionProviderId.isNotBlank() || meta.visionModel.isNotBlank()) {
