@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aicode.R
 import com.aicode.core.theme.Spacing
+import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.SwipeToDeleteRow
 import com.aicode.feature.agent.domain.container.ContainerImageEntry
 import com.aicode.feature.settings.data.repository.DownloadedImageRecord
@@ -247,13 +248,13 @@ private fun DownloadImageRow(
                         Box(
                             modifier = Modifier
                                 .padding(start = 6.dp)
-                                .background(Color(0xFF16A34A).copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.semanticColors.success.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
                                 .padding(horizontal = 6.dp, vertical = 1.dp)
                         ) {
                             Text(
                                 text = stringResource(R.string.container_download_done),
                                 style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF16A34A)
+                                color = MaterialTheme.semanticColors.success
                             )
                         }
                     }
@@ -370,7 +371,7 @@ private fun ImageDetailSheet(
                         Text(
                             text = stringResource(R.string.container_download_done),
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF16A34A)
+                            color = MaterialTheme.semanticColors.success
                         )
                     }
                 }

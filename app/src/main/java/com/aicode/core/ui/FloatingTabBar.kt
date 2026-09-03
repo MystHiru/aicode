@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.theme.semanticColors
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -97,12 +98,15 @@ fun FloatingTabBar(
     val outlineVariantColor = colorScheme.outlineVariant
     val primaryColor = colorScheme.primary
     val primaryContainerColor = colorScheme.primaryContainer
+    val cardSurfaceColor = MaterialTheme.semanticColors.cardSurface
+    val mutedSurfaceColor = MaterialTheme.semanticColors.mutedSurface
+    val pageBackgroundColor = MaterialTheme.semanticColors.pageBackground
 
     // 材质与描边画笔
-    val glassBackgroundBrush = remember(isLight, surfaceColor, surfaceVariantColor) {
+    val glassBackgroundBrush = remember(isLight, surfaceColor, surfaceVariantColor, cardSurfaceColor, mutedSurfaceColor) {
         if (isLight) {
             Brush.verticalGradient(
-                listOf(Color(0xFFFCFCFD).copy(alpha = 0.94f), Color(0xFFEFF1F4).copy(alpha = 0.90f))
+                listOf(cardSurfaceColor.copy(alpha = 0.94f), mutedSurfaceColor.copy(alpha = 0.90f))
             )
         } else {
             Brush.verticalGradient(
@@ -114,7 +118,7 @@ fun FloatingTabBar(
         }
     }
 
-    val glassBorderBrush = remember(isLight, outlineVariantColor) {
+    val glassBorderBrush = remember(isLight, outlineVariantColor, pageBackgroundColor) {
         if (isLight) {
             Brush.verticalGradient(
                 listOf(
@@ -128,7 +132,7 @@ fun FloatingTabBar(
                 listOf(
                     outlineVariantColor.copy(alpha = 0.55f),
                     outlineVariantColor.copy(alpha = 0.20f),
-                    Color(0xFF07111F).copy(alpha = 0.60f)
+                    pageBackgroundColor.copy(alpha = 0.60f)
                 )
             )
         }
@@ -382,11 +386,14 @@ fun FloatingTabBar(
     val outlineVariantColor = colorScheme.outlineVariant
     val primaryColor = colorScheme.primary
     val primaryContainerColor = colorScheme.primaryContainer
+    val cardSurfaceColor = MaterialTheme.semanticColors.cardSurface
+    val mutedSurfaceColor = MaterialTheme.semanticColors.mutedSurface
+    val pageBackgroundColor = MaterialTheme.semanticColors.pageBackground
 
-    val glassBackgroundBrush = remember(isLight, surfaceColor, surfaceVariantColor) {
+    val glassBackgroundBrush = remember(isLight, surfaceColor, surfaceVariantColor, cardSurfaceColor, mutedSurfaceColor) {
         if (isLight) {
             Brush.verticalGradient(
-                listOf(Color(0xFFFCFCFD).copy(alpha = 0.94f), Color(0xFFEFF1F4).copy(alpha = 0.90f))
+                listOf(cardSurfaceColor.copy(alpha = 0.94f), mutedSurfaceColor.copy(alpha = 0.90f))
             )
         } else {
             Brush.verticalGradient(
@@ -398,7 +405,7 @@ fun FloatingTabBar(
         }
     }
 
-    val glassBorderBrush = remember(isLight, outlineVariantColor) {
+    val glassBorderBrush = remember(isLight, outlineVariantColor, pageBackgroundColor) {
         if (isLight) {
             Brush.verticalGradient(
                 listOf(
@@ -412,7 +419,7 @@ fun FloatingTabBar(
                 listOf(
                     outlineVariantColor.copy(alpha = 0.55f),
                     outlineVariantColor.copy(alpha = 0.20f),
-                    Color(0xFF07111F).copy(alpha = 0.60f)
+                    pageBackgroundColor.copy(alpha = 0.60f)
                 )
             )
         }

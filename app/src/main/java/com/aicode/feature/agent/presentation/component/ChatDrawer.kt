@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.theme.semanticColors
 import com.aicode.feature.settings.presentation.component.SettingsDivider
 import com.aicode.feature.settings.presentation.component.SettingsGroup
 import com.aicode.feature.settings.presentation.component.SettingsGroupHeader
@@ -275,8 +276,8 @@ private fun DrawerTopTabs(
     onSelect: (Int) -> Unit
 ) {
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val trackColor = if (dark) Color(0xFF16202E) else Color(0xFFEEF1F5)
-    val thumbColor = if (dark) Color(0xFF2B3A4F) else Color.White
+    val trackColor = MaterialTheme.semanticColors.mutedSurface
+    val thumbColor = if (dark) MaterialTheme.semanticColors.capsuleSurface else MaterialTheme.semanticColors.cardSurface
     val labels = listOf(R.string.subagent_tab_sessions, R.string.drawer_tab_files)
 
     BoxWithConstraints(

@@ -63,7 +63,6 @@ import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
 import com.aicode.feature.settings.presentation.component.SettingsDivider
 import com.aicode.feature.settings.presentation.component.SettingsGroup
-import com.aicode.feature.settings.presentation.component.settingsLightMode
 import com.aicode.feature.git.domain.model.GitBranch
 import com.aicode.feature.git.domain.model.GitTag
 import compose.icons.FeatherIcons
@@ -496,7 +495,7 @@ private fun BranchesOverview(
     hasCurrentBranch: Boolean
 ) {
     Surface(
-        color = if (settingsLightMode()) Color.White else MaterialTheme.colorScheme.surface,
+        color = MaterialTheme.semanticColors.cardSurface,
         shape = RoundedCornerShape(Radius.lg),
         modifier = Modifier.fillMaxWidth()
     ) {

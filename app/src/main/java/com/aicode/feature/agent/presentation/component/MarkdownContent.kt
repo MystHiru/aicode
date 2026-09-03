@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.aicode.core.theme.semanticColors
 import com.mikepenz.markdown.compose.Markdown
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.compose.elements.MarkdownHighlightedCodeBlock
@@ -73,13 +74,14 @@ internal fun MarkdownContent(
     loading: (@Composable () -> Unit)? = null
 ) {
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val semantic = MaterialTheme.semanticColors
 
     val mdColors = markdownColor(
         text = color,
-        codeBackground = if (isDark) Color(0xFF152030) else Color(0xFFE8EDF3),
+        codeBackground = semantic.mutedSurface,
         inlineCodeBackground = MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.22f else 0.12f),
-        dividerColor = if (isDark) Color(0xFF2A3F56) else Color(0xFFCBD5E1),
-        tableBackground = if (isDark) Color(0xFF152030) else Color(0xFFF1F5F9),
+        dividerColor = semantic.subtleBorder,
+        tableBackground = semantic.mutedSurface,
     )
 
     val typography = MaterialTheme.typography
@@ -95,8 +97,8 @@ internal fun MarkdownContent(
         h5 = (if (compact) typography.bodySmall else typography.bodyLarge).copy(fontWeight = FontWeight.Medium, color = color),
         h6 = (if (compact) typography.bodySmall else typography.bodyMedium).copy(fontWeight = FontWeight.Medium, color = color),
         paragraph = body.copy(color = color, lineHeight = bodyLineHeight),
-        code = TextStyle(fontFamily = FontFamily.Monospace, fontSize = codeSize, color = if (isDark) Color(0xFFE2E8F0) else Color(0xFF1E293B)),
-        inlineCode = TextStyle(fontFamily = FontFamily.Monospace, color = if (isDark) Color(0xFFE2E8F0) else Color(0xFF1E293B)),
+        code = TextStyle(fontFamily = FontFamily.Monospace, fontSize = codeSize, color = MaterialTheme.colorScheme.onSurface),
+        inlineCode = TextStyle(fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface),
         ordered = body.copy(color = color, lineHeight = bodyLineHeight),
         bullet = body.copy(color = color, lineHeight = bodyLineHeight),
         table = typography.bodySmall.copy(color = color),

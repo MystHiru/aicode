@@ -1884,12 +1884,11 @@ private fun RawOutputBottomSheet(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
-    val light = settingsLightMode()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = if (light) Color.White else MaterialTheme.colorScheme.surface
+        containerColor = MaterialTheme.semanticColors.cardSurface
     ) {
         Column(
             modifier = Modifier

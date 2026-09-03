@@ -19,11 +19,12 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.aicode.core.theme.semanticColors
 
 /**
  * 全局统一的 App 输入框颜色规范：
- * - 浅色模式：纯白背景卡片 + 柔和外边框 + 聚焦主色高光；
- * - 暗色模式：深蓝表面底色（surface/surfaceVariant）+ 蓝灰描边 + 聚焦主色微光。
+ * - 浅色模式：主题卡片色背景 + 柔和外边框 + 聚焦主色高光；
+ * - 暗色模式：深色表面底色（surface/surfaceVariant）+ 描边 + 聚焦主色微光。
  */
 @Composable
 fun appTextFieldColors(
@@ -33,8 +34,9 @@ fun appTextFieldColors(
         unfocusedBorderColor = if (isLight) MaterialTheme.colorScheme.outlineVariant
         else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
         focusedBorderColor = MaterialTheme.colorScheme.primary,
-        unfocusedContainerColor = if (isLight) Color.White else MaterialTheme.colorScheme.surface,
-        focusedContainerColor = if (isLight) Color.White else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
+        unfocusedContainerColor = MaterialTheme.semanticColors.cardSurface,
+        focusedContainerColor = if (isLight) MaterialTheme.semanticColors.cardSurface
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
         focusedLabelColor = MaterialTheme.colorScheme.primary,
         unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
         cursorColor = MaterialTheme.colorScheme.primary,

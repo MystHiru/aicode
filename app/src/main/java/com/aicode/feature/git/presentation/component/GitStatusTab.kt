@@ -58,7 +58,6 @@ import com.aicode.feature.git.domain.model.GitFileChange
 import com.aicode.feature.git.domain.model.GitStatus
 import com.aicode.feature.settings.presentation.component.SettingsDivider
 import com.aicode.feature.settings.presentation.component.SettingsGroup
-import com.aicode.feature.settings.presentation.component.settingsLightMode
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Check
 import compose.icons.feathericons.ChevronDown
@@ -438,7 +437,7 @@ private fun StatusOverview(status: GitStatus?, clean: Boolean) {
     val untracked = status?.untracked?.size ?: 0
 
     Surface(
-        color = if (settingsLightMode()) Color.White else MaterialTheme.colorScheme.surface,
+        color = MaterialTheme.semanticColors.cardSurface,
         shape = RoundedCornerShape(Radius.lg),
         modifier = Modifier.fillMaxWidth()
     ) {
