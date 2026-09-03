@@ -73,6 +73,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.aicode.R
 
 internal val DiffAddBg = Color(0x2622C55E)
@@ -414,12 +416,21 @@ internal fun ToolStatusDot(running: Boolean, isError: Boolean) {
     } else {
         1f
     }
+    val statusLabel = stringResource(
+        when {
+            running -> R.string.chat_tool_running
+            isError -> R.string.chat_tool_failed
+            else -> R.string.chat_tool_succeeded
+        }
+    )
     Box(
         modifier = Modifier
             .size(8.dp)
             .graphicsLayer { alpha = dotAlpha }
             .clip(CircleShape)
             .background(baseColor)
+            // 颜色是唯一信号，读屏与色弱用户没法区分，补上文字语义。
+            .semantics { contentDescription = statusLabel }
     )
 }
 

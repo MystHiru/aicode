@@ -55,6 +55,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -460,7 +462,16 @@ internal fun SendButton(
         contentAlignment = Alignment.Center
     ) {
         if (clampedProgress > 0f) {
-            Canvas(modifier = Modifier.size(44.dp)) {
+            val usageLabel = stringResource(
+                R.string.chat_context_usage,
+                (clampedProgress * 100).toInt()
+            )
+            Canvas(
+                modifier = Modifier
+                    .size(44.dp)
+                    // 上下文用量只靠这圈弧表达，给读屏补上百分比。
+                    .semantics { contentDescription = usageLabel }
+            ) {
                 val stroke = 3.dp.toPx()
                 val arcSize = size.minDimension - stroke
                 val topLeft = androidx.compose.ui.geometry.Offset(stroke / 2f, stroke / 2f)

@@ -460,9 +460,14 @@
     <string name="chat_copy">复制</string>
     <string name="chat_task_duration">本轮总耗时 %1$s</string>
     <string name="chat_cache_hit_rate">缓存命中率 %1$s</string>
+    <string name="chat_status_generating">正在生成</string>
+    <string name="chat_tool_running">工具执行中</string>
+    <string name="chat_tool_succeeded">工具执行成功</string>
+    <string name="chat_tool_failed">工具执行失败</string>
+    <string name="chat_context_usage">上下文已用 %1$d%%</string>
     <string name="chat_bg_command_done">后台命令已完成</string>
-    <string name="chat_bg_commands_done">%1$d 个后台任务已完成：%2$s</string>
-    <string name="chat_bg_commands_partial_failed">%1$d 个后台任务结束，%2$d 个失败：%3$s</string>
+    <string name="chat_bg_commands_done">%1$d 个后台任务已完成</string>
+    <string name="chat_bg_commands_partial_failed">%1$d 个后台任务结束，%2$d 个失败</string>
     <string name="chat_context_compressed">上下文已压缩</string>
     <string name="chat_compaction_failed">上下文压缩失败</string>
     <string name="chat_compressing_context">正在压缩上下文</string>

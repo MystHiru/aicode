@@ -436,14 +436,13 @@ private fun BackgroundNotificationBar(message: AgentUIMessage) {
     val label = when {
         summaries.size <= 1 -> summaries.firstOrNull() ?: stringResource(R.string.chat_bg_command_done)
         else -> {
+            // 摘要原文由 domain 层生成（同一份还要喂给 AI），这里不按中文标记切字符串取任务名——
+            // 换文案或切到英文界面这段解析就废了。多条时只报数量与失败数。
             val failedCount = statuses.count { it != "completed" }
-            val namePart = summaries.joinToString("、") { s ->
-                s.removePrefix("后台任务「").removePrefix("子代理「").substringBefore("」")
-            }
             if (failedCount > 0) {
-                stringResource(R.string.chat_bg_commands_partial_failed, summaries.size, failedCount, namePart)
+                stringResource(R.string.chat_bg_commands_partial_failed, summaries.size, failedCount)
             } else {
-                stringResource(R.string.chat_bg_commands_done, summaries.size, namePart)
+                stringResource(R.string.chat_bg_commands_done, summaries.size)
             }
         }
     }

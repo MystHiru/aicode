@@ -43,6 +43,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -599,9 +601,13 @@ internal fun TypingDots(
     dotSize: androidx.compose.ui.unit.Dp = 6.dp
 ) {
     val transition = rememberInfiniteTransition(label = "typing-dots")
+    val label = stringResource(R.string.chat_status_generating)
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.height(dotSize + 10.dp)
+        // 给读屏一个语义：三个跳动的点对 TalkBack 本来完全不可见。
+        modifier = Modifier
+            .height(dotSize + 10.dp)
+            .semantics { contentDescription = label }
     ) {
         repeat(3) { index ->
             val offsetY by transition.animateFloat(
