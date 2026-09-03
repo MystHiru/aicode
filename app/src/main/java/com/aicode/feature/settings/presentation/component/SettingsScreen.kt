@@ -56,7 +56,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.aicode.core.theme.AppThemePreset
 import com.aicode.core.theme.Spacing
+import com.aicode.core.theme.isDynamicColorSupported
 import com.aicode.core.theme.semanticColors
 import com.aicode.core.util.LogLevel
 import com.aicode.R
@@ -158,6 +160,8 @@ fun SettingsScreen(
     val keepaliveEnabled by viewModel.keepaliveEnabled.collectAsStateWithLifecycle()
     val agentSoundEnabled by viewModel.agentSoundEnabled.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+    val themePresetId by viewModel.themePresetId.collectAsStateWithLifecycle()
+    val dynamicColorEnabled by viewModel.dynamicColorEnabled.collectAsStateWithLifecycle()
     val backgroundImagePath by viewModel.backgroundImagePath.collectAsStateWithLifecycle()
     val backgroundAlpha by viewModel.backgroundAlpha.collectAsStateWithLifecycle()
     val languageTag by viewModel.languageTag.collectAsStateWithLifecycle()
@@ -257,6 +261,8 @@ fun SettingsScreen(
     val menuBody: @Composable () -> Unit = {
         SettingsMenu(
             themeMode = themeMode,
+            themePresetId = themePresetId,
+            dynamicColorEnabled = dynamicColorEnabled,
             terminalSettings = terminalSettings,
             currentLanguageDisplayName = currentLanguageDisplayName,
             backgroundImagePath = backgroundImagePath,
@@ -640,7 +646,11 @@ fun SettingsScreen(
     if (showThemeSheet) {
         ThemeSelectionSheet(
             selected = themeMode,
+            selectedPresetId = themePresetId,
+            dynamicColorEnabled = dynamicColorEnabled,
             onSelected = { viewModel.setThemeMode(it) },
+            onPresetSelected = { viewModel.setThemePreset(it) },
+            onDynamicColorChanged = { viewModel.setDynamicColorEnabled(it) },
             onDismiss = { showThemeSheet = false }
         )
     }
@@ -821,6 +831,8 @@ private fun SettingsDetailPlaceholder() {
 @Composable
 internal fun SettingsMenu(
     themeMode: AppThemeMode,
+    themePresetId: String?,
+    dynamicColorEnabled: Boolean,
     terminalSettings: TerminalSettings,
     currentLanguageDisplayName: String,
     backgroundImagePath: String?,
@@ -926,8 +938,13 @@ internal fun SettingsMenu(
                 title = stringResource(R.string.settings_theme_title),
                 onClick = onOpenThemeSheet,
                 trailing = {
+                    val colorLabel = if (dynamicColorEnabled && isDynamicColorSupported) {
+                        stringResource(R.string.theme_dynamic_color)
+                    } else {
+                        stringResource(AppThemePreset.findById(themePresetId).nameRes)
+                    }
                     Text(
-                        text = stringResource(themeMode.labelRes),
+                        text = "${stringResource(themeMode.labelRes)} · $colorLabel",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.semanticColors.subtleText
                     )

@@ -80,6 +80,15 @@
     <string name="settings_title_follow_chat">跟随当前聊天模型</string>    <string name="settings_theme_title">外观主题</string>    <string name="theme_auto">自动</string>
     <string name="theme_dark">深色</string>
     <string name="theme_light">浅色</string>
+    <string name="theme_mode_section">明暗模式</string>
+    <string name="theme_preset_section">配色方案</string>
+    <string name="theme_preset_default">默认蓝</string>
+    <string name="theme_preset_coffee">咖啡</string>
+    <string name="theme_preset_graphite">石墨</string>
+    <string name="theme_preset_forest">森林</string>
+    <string name="theme_dynamic_color">莫奈取色</string>
+    <string name="theme_dynamic_color_desc">从系统壁纸提取配色，开启后配色方案不再生效</string>
+    <string name="theme_dynamic_color_unsupported">需要 Android 12 及以上系统</string>
     <string name="settings_background_image">背景图</string>
     <string name="settings_background_image_none">未设置</string>
     <string name="settings_background_image_alpha">透明度</string>

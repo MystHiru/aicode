@@ -80,6 +80,15 @@
     <string name="settings_title_follow_chat">Follow current chat model</string>    <string name="settings_theme_title">Appearance</string>    <string name="theme_auto">Auto</string>
     <string name="theme_dark">Dark</string>
     <string name="theme_light">Light</string>
+    <string name="theme_mode_section">Appearance mode</string>
+    <string name="theme_preset_section">Color theme</string>
+    <string name="theme_preset_default">Default Blue</string>
+    <string name="theme_preset_coffee">Coffee</string>
+    <string name="theme_preset_graphite">Graphite</string>
+    <string name="theme_preset_forest">Forest</string>
+    <string name="theme_dynamic_color">Dynamic color</string>
+    <string name="theme_dynamic_color_desc">Derive colors from your wallpaper. Overrides the color theme above.</string>
+    <string name="theme_dynamic_color_unsupported">Requires Android 12 or newer</string>
     <string name="settings_background_image">Background image</string>
     <string name="settings_background_image_none">None</string>
     <string name="settings_background_image_alpha">Opacity</string>

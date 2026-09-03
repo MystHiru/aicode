@@ -314,6 +314,8 @@ class BackupManagerImpl @Inject constructor(
         mcpServers = if (options.mcpServers) mcpConfigRepository.getGlobalServers() else emptyList(),
         globalPermissionRules = if (options.permissionRules) permissionRulesRepository.getGlobalRulesOnce() else emptyList(),
         themeMode = if (options.appSettings) themeSettingsRepository.snapshot() else null,
+        themePresetId = if (options.appSettings) themeSettingsRepository.presetSnapshot() else null,
+        dynamicColorEnabled = if (options.appSettings) themeSettingsRepository.dynamicColorSnapshot() else false,
         keepaliveEnabled = if (options.appSettings) keepaliveSettingsRepository.snapshot() else false,
         agentSoundEnabled = if (options.appSettings) agentSoundSettingsRepository.snapshot() else false,
         logLevel = if (options.appSettings) logSettingsRepository.snapshot() else null,
@@ -559,6 +561,7 @@ class BackupManagerImpl @Inject constructor(
             permissionRulesRepository.setGlobalRules(meta.globalPermissionRules)
         }
         meta.themeMode?.let { themeSettingsRepository.restore(it) }
+        themeSettingsRepository.restoreColors(meta.themePresetId, meta.dynamicColorEnabled)
         keepaliveSettingsRepository.restore(meta.keepaliveEnabled)
         agentSoundSettingsRepository.restore(meta.agentSoundEnabled)
         logSettingsRepository.restore(meta.logLevel)

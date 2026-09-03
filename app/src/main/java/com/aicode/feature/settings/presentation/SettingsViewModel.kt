@@ -383,6 +383,12 @@ class SettingsViewModel @Inject constructor(
     private val _themeMode = MutableStateFlow(AppThemeMode.AUTO)
     val themeMode: StateFlow<AppThemeMode> = _themeMode.asStateFlow()
 
+    private val _themePresetId = MutableStateFlow<String?>(null)
+    val themePresetId: StateFlow<String?> = _themePresetId.asStateFlow()
+
+    private val _dynamicColorEnabled = MutableStateFlow(false)
+    val dynamicColorEnabled: StateFlow<Boolean> = _dynamicColorEnabled.asStateFlow()
+
     /** 全局自定义背景图文件路径（null=未设置），供设置弹窗展示与预览。 */
     private val _backgroundImagePath = MutableStateFlow<String?>(null)
     val backgroundImagePath: StateFlow<String?> = _backgroundImagePath.asStateFlow()
@@ -596,6 +602,18 @@ class SettingsViewModel @Inject constructor(
             launch {
                 themeSettingsRepository.themeModeFlow.collectLatest {
                     _themeMode.value = it
+                }
+            }
+
+            launch {
+                themeSettingsRepository.themePresetIdFlow.collectLatest {
+                    _themePresetId.value = it
+                }
+            }
+
+            launch {
+                themeSettingsRepository.dynamicColorFlow.collectLatest {
+                    _dynamicColorEnabled.value = it
                 }
             }
 
@@ -1019,6 +1037,18 @@ class SettingsViewModel @Inject constructor(
     fun setThemeMode(mode: AppThemeMode) {
         viewModelScope.launch {
             themeSettingsRepository.setThemeMode(mode)
+        }
+    }
+
+    fun setThemePreset(id: String) {
+        viewModelScope.launch {
+            themeSettingsRepository.setThemePresetId(id)
+        }
+    }
+
+    fun setDynamicColorEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            themeSettingsRepository.setDynamicColorEnabled(enabled)
         }
     }
 

@@ -33,6 +33,8 @@ class ThemeSettingsRepository @Inject constructor(
     private companion object {
         val THEME_MODE_KEY = stringPreferencesKey("theme_mode")
         val DARK_THEME_KEY = booleanPreferencesKey("dark_theme_enabled")
+        val THEME_PRESET_KEY = stringPreferencesKey("theme_preset_id")
+        val DYNAMIC_COLOR_KEY = booleanPreferencesKey("dynamic_color_enabled")
     }
 
     val themeModeFlow: Flow<AppThemeMode> = context.themeDataStore.data.map { prefs ->
@@ -41,8 +43,23 @@ class ThemeSettingsRepository @Inject constructor(
             ?: AppThemeMode.AUTO
     }
 
+    /** 配色主题 id，对应 `AppThemePreset.id`；未设置时为 null，由调用方回退默认。 */
+    val themePresetIdFlow: Flow<String?> = context.themeDataStore.data.map { it[THEME_PRESET_KEY] }
+
+    /** 是否启用系统莫奈取色。开启后配色主题的选择不再生效。 */
+    val dynamicColorFlow: Flow<Boolean> =
+        context.themeDataStore.data.map { it[DYNAMIC_COLOR_KEY] == true }
+
     suspend fun setThemeMode(mode: AppThemeMode) {
         context.themeDataStore.edit { it[THEME_MODE_KEY] = mode.name }
+    }
+
+    suspend fun setThemePresetId(id: String) {
+        context.themeDataStore.edit { it[THEME_PRESET_KEY] = id }
+    }
+
+    suspend fun setDynamicColorEnabled(enabled: Boolean) {
+        context.themeDataStore.edit { it[DYNAMIC_COLOR_KEY] = enabled }
     }
 
     /** 备份快照：返回当前持久化的主题模式名（未设置时为 null，导入时回退默认）。 */
@@ -52,6 +69,20 @@ class ThemeSettingsRepository @Inject constructor(
     suspend fun restore(value: String?) {
         context.themeDataStore.edit {
             if (value == null) it.remove(THEME_MODE_KEY) else it[THEME_MODE_KEY] = value
+        }
+    }
+
+    /** 备份快照：当前配色主题 id。 */
+    suspend fun presetSnapshot(): String? = themePresetIdFlow.first()
+
+    /** 备份快照：莫奈取色开关。 */
+    suspend fun dynamicColorSnapshot(): Boolean = dynamicColorFlow.first()
+
+    /** 从备份还原配色主题与莫奈开关；id 为 null 时清除键回退默认。 */
+    suspend fun restoreColors(presetId: String?, dynamicColor: Boolean) {
+        context.themeDataStore.edit {
+            if (presetId == null) it.remove(THEME_PRESET_KEY) else it[THEME_PRESET_KEY] = presetId
+            it[DYNAMIC_COLOR_KEY] = dynamicColor
         }
     }
 }

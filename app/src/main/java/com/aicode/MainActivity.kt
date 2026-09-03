@@ -61,6 +61,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.aicode.core.theme.AIEditorTheme
+import com.aicode.core.theme.AppThemePreset
 import com.aicode.core.ui.VerticalSplitHandle
 import com.aicode.core.ui.drawerWidth
 import com.aicode.core.ui.isExpandedWidth
@@ -172,6 +173,8 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             val themeMode by themeSettings.themeModeFlow.collectAsStateWithLifecycle(initialValue = AppThemeMode.AUTO)
+            val themePresetId by themeSettings.themePresetIdFlow.collectAsStateWithLifecycle(initialValue = null)
+            val dynamicColor by themeSettings.dynamicColorFlow.collectAsStateWithLifecycle(initialValue = false)
             val systemDarkTheme = isSystemInDarkTheme()
             val darkTheme = when (themeMode) {
                 AppThemeMode.AUTO -> systemDarkTheme
@@ -185,7 +188,11 @@ class MainActivity : ComponentActivity() {
                 controller.isAppearanceLightNavigationBars = !darkTheme
             }
 
-            AIEditorTheme(darkTheme = darkTheme) {
+            AIEditorTheme(
+                darkTheme = darkTheme,
+                preset = AppThemePreset.findById(themePresetId),
+                dynamicColor = dynamicColor
+            ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
