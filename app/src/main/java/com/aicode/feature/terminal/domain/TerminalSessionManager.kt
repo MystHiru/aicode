@@ -83,6 +83,10 @@ class TerminalSessionManager @Inject constructor(
 
     fun tab(id: String): TerminalTab? = _tabs.value.firstOrNull { it.id == id }
 
+    /** 是否有后台终端标签仍在运行（用于判断 KeepaliveService 能否停）。 */
+    fun hasBackgroundTabs(): Boolean =
+        _tabs.value.any { it.isBackground && it.runState is RunState.Running }
+
     /** 终端页进入时调用：没有任何标签则建一个交互 shell。幂等。 */
     suspend fun ensureInitialTab() {
         if (_tabs.value.isEmpty()) {

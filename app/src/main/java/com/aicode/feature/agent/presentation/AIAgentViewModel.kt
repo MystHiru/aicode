@@ -3,6 +3,7 @@ package com.aicode.feature.agent.presentation
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
@@ -24,6 +25,7 @@ import com.aicode.feature.agent.domain.container.LinuxContainerEngine
 import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import com.aicode.feature.settings.data.repository.AgentSoundSettingsRepository
 import com.aicode.feature.settings.data.repository.DefaultModelSettingsRepository
+import com.aicode.feature.settings.data.repository.KeepaliveSettingsRepository
 import com.aicode.feature.settings.data.repository.ModelReasoningEffortRepository
 import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.model.AgentImage
@@ -41,6 +43,7 @@ import com.aicode.feature.agent.domain.subagent.SubAgentEventType
 import com.aicode.feature.agent.domain.workflow.AgentWorkflow
 import com.aicode.feature.terminal.domain.TabFinishedEvent
 import com.aicode.feature.terminal.domain.TAIL_LINES
+import com.aicode.feature.terminal.domain.TerminalKeepaliveService
 import com.aicode.feature.terminal.domain.TerminalSessionManager
 import com.aicode.feature.terminal.domain.takeTailLines
 import com.aicode.feature.workspace.domain.FileAccessProvider
@@ -120,6 +123,7 @@ class AIAgentViewModel @Inject constructor(
     private val backupManager: BackupManager,
     private val mcpManager: McpManager,
     private val agentSoundSettings: AgentSoundSettingsRepository,
+    private val keepaliveSettings: KeepaliveSettingsRepository,
     private val subAgentEventBus: SubAgentEventBus,
     private val agentDefinitionRepository: AgentDefinitionRepository,
     val fileAccess: FileAccessProvider,
@@ -128,6 +132,20 @@ class AIAgentViewModel @Inject constructor(
 ) : ViewModel(), SlashCommandContext {
 
     private val sessionJobs = mutableMapOf<String, Job>()
+
+    /**
+     * agent 执行期间持有的 CPU 唤醒锁：熄屏后系统会挂起进程，使流式响应中断、工具调用卡死。
+     * 不计数（setReferenceCounted(false)），多会话共用一把锁，最后一个任务结束时统一释放。
+     */
+    private val wakeLock by lazy {
+        (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AiCode:AgentWorkflow")
+            .apply { setReferenceCounted(false) }
+    }
+
+    /** 设置里用户手动开启的常驻保活；agent 任务收尾时不能把它一并关掉。 */
+    @Volatile
+    private var userKeepaliveEnabled = false
 
     /**
      * AI 忙碌期间到达的后台任务完成事件缓冲区（按会话累积）。
@@ -572,6 +590,25 @@ class AIAgentViewModel @Inject constructor(
         return sessions.value.any { sessionJobs[it.id]?.isActive == true }
     }
 
+    /** 任务开始：拿 CPU 唤醒锁并拉起前台保活通知，避免熄屏或切后台时进程被挂起、回收。 */
+    private fun acquireKeepalive() {
+        TerminalKeepaliveService.enablePersistent(context)
+        if (wakeLock.isHeld) return
+        runCatching { wakeLock.acquire(KEEPALIVE_TIMEOUT_MS) }
+            .onFailure { FileLogger.e(TAG, "acquire wakeLock failed", it) }
+    }
+
+    /** 任务收尾：释放唤醒锁；仅当既无后台终端任务、用户也没手动开保活时才停前台服务。 */
+    private fun releaseKeepalive() {
+        if (wakeLock.isHeld) {
+            runCatching { wakeLock.release() }
+                .onFailure { FileLogger.e(TAG, "release wakeLock failed", it) }
+        }
+        if (!userKeepaliveEnabled && !terminalSessionManager.hasBackgroundTabs()) {
+            TerminalKeepaliveService.disablePersistent(context)
+        }
+    }
+
     /** App 退到后台时 Agent 完成，弹一条可点击的系统通知（标题=任务完成，正文=用户消息）。 */
     private fun showAgentCompletedNotification(userRequest: String) {
         val openAppIntent = PendingIntent.getActivity(
@@ -622,6 +659,8 @@ class AIAgentViewModel @Inject constructor(
         const val TAG = "AIAgentViewModel"
         const val AGENT_COMPLETE_CHANNEL = "agent_complete"
         const val AGENT_COMPLETE_NOTIFICATION_ID = 100
+        /** wakeLock 超时保险：构建、装依赖类工具动辄十几分钟，给足 60 分钟；任务正常结束会主动释放。 */
+        const val KEEPALIVE_TIMEOUT_MS = 60 * 60 * 1000L
         /** 从后台任务通知文本中提取 <title> 内容，供系统通知正文展示。 */
         val TASK_NOTIFICATION_TITLE_REGEX = Regex("<title>([^<]+)</title>")
         /** 文件浏览排序：目录在前，同类按名称不区分大小写。 */
@@ -661,6 +700,10 @@ class AIAgentViewModel @Inject constructor(
             terminalSessionManager.tabFinishedEvents.collect { event ->
                 handleBackgroundCommandFinished(event)
             }
+        }
+
+        viewModelScope.launch {
+            keepaliveSettings.enabledFlow.collect { userKeepaliveEnabled = it }
         }
 
         // 订阅子代理生命周期事件（类比 terminal 的 notify=true 异步回调）：
@@ -971,6 +1014,7 @@ class AIAgentViewModel @Inject constructor(
         coroutineContext[Job]?.let { sessionJobs[sessionId] = it }
         FileLogger.d(TAG, "stream start: sid=$sessionId prevState=${_agentStates.value[sessionId]} isAutoTrigger=$isAutoTrigger")
         setAgentState(sessionId, AgentUIState.Streaming)
+        acquireKeepalive()
 
         try {
             var failed = false
@@ -1227,6 +1271,11 @@ class AIAgentViewModel @Inject constructor(
             if (currentState !is AgentUIState.Loading && currentState !is AgentUIState.Streaming) {
                 processNextInQueue(sessionId)
             }
+            // 放在队列处理之后：flushMergedNotifications / processNextInQueue 会同步注册接替的 job，
+            // 此时 hasRunningSessions 才能反映真实状态，不会刚释放又立即重新获取。
+            if (!hasRunningSessionsInCurrentWorkspace()) {
+                releaseKeepalive()
+            }
         }
     }.also { job ->
         // 同步注册 job：launch 内的 sessionJobs 赋值是异步的，finally 中 flushMergedNotifications
@@ -1264,6 +1313,7 @@ class AIAgentViewModel @Inject constructor(
         _streamingReasonings.value = emptyMap()
         _runningTools.value = emptyMap()
         _retryStates.value = emptyMap()
+        releaseKeepalive()
     }
 
     /**
