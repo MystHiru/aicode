@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
@@ -258,7 +259,10 @@ fun WiFiFtpServerSection(
                         viewModel.saveFtpServerConfig(p, editUsername, editPassword, editAnonymous, editAutoStart)
                         android.widget.Toast.makeText(context, context.getString(R.string.ftp_config_saved), android.widget.Toast.LENGTH_SHORT).show()
                     },
-                    modifier = Modifier.align(Alignment.End)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    shape = RoundedCornerShape(12.dp)
                 ) {
                     Text(stringResource(R.string.ftp_save_config))
                 }

@@ -6,6 +6,7 @@ import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ContentTransform
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -280,8 +281,12 @@ fun SettingsScreen(
     }
 
     // 菜单内容：窄窗当首页用，大屏当常驻左栏用，共用同一份。
+    // 滚动位置必须提到 AnimatedContent 之外持有：菜单页作为分区分支被切走时会被 dispose，
+    // 内部 rememberScrollState 一并丢弃，从二级页返回就跳回顶部。
+    val menuScrollState = rememberScrollState()
     val menuBody: @Composable () -> Unit = {
         SettingsMenu(
+            scrollState = menuScrollState,
             themeMode = themeMode,
             themePresetId = themePresetId,
             dynamicColorEnabled = dynamicColorEnabled,
@@ -868,6 +873,7 @@ private fun SettingsDetailPlaceholder() {
 /** 设置首页：每个分区一个可点击的二级菜单入口。 */
 @Composable
 internal fun SettingsMenu(
+    scrollState: ScrollState,
     themeMode: AppThemeMode,
     themePresetId: String?,
     dynamicColorEnabled: Boolean,
@@ -885,7 +891,7 @@ internal fun SettingsMenu(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = Spacing.lg)
             .padding(bottom = Spacing.xl),
         verticalArrangement = Arrangement.spacedBy(Spacing.sm)

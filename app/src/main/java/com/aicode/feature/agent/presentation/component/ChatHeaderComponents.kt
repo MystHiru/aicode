@@ -231,8 +231,8 @@ internal fun WelcomeState(modifier: Modifier = Modifier) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(Spacing.sm),
-            // 底部悬浮输入框占据大量空间，纯居中会显得偏下；整体上移 8% 屏高，视觉重心回到中部
-            modifier = Modifier.offset(y = -(maxHeight * 0.08f))
+            // 底部悬浮输入框占据大量空间，纯居中会显得偏下；整体上移 13% 屏高，让重心落在顶栏与输入框之间的空白正中
+            modifier = Modifier.offset(y = -(maxHeight * 0.13f))
         ) {
             Text(
                 text = stringResource(R.string.chat_placeholder),

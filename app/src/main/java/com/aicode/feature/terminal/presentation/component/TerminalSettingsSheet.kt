@@ -4,7 +4,6 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,7 +42,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -119,10 +117,14 @@ fun TerminalSettingsSheet(
                 verticalArrangement = Arrangement.spacedBy(Spacing.sm)
             ) {
                 TerminalThemePreset.ALL_PRESETS.forEach { preset ->
-                    ThemePresetChip(
-                        preset = preset,
-                        isSelected = preset.id == settings.themeId,
-                        onSelect = { onSelectTheme(preset.id) }
+                    FilterChip(
+                        selected = preset.id == settings.themeId,
+                        onClick = { onSelectTheme(preset.id) },
+                        label = { Text(stringResource(preset.nameRes)) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     )
                 }
             }
@@ -399,39 +401,6 @@ private fun TerminalPreviewCard(settings: TerminalSettings) {
                         .background(cursorColor)
                 )
             }
-        }
-    }
-}
-
-/** 主题选择色块 Chip。 */
-@Composable
-private fun ThemePresetChip(
-    preset: TerminalThemePreset,
-    isSelected: Boolean,
-    onSelect: () -> Unit
-) {
-    Surface(
-        modifier = Modifier
-            .clip(RoundedCornerShape(Radius.sm))
-            .clickable(onClick = onSelect)
-            .border(
-                width = if (isSelected) 1.5.dp else 1.dp,
-                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-                shape = RoundedCornerShape(Radius.sm)
-            ),
-        shape = RoundedCornerShape(Radius.sm),
-        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surfaceVariant
-    ) {
-        Box(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = stringResource(preset.nameRes),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-            )
         }
     }
 }

@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -59,7 +60,7 @@ internal fun SkillsSection(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(vertical = 48.dp),
+                .padding(horizontal = Spacing.xl, vertical = 48.dp),
             contentAlignment = Alignment.Center
         ) {
             Column(
@@ -87,7 +88,8 @@ internal fun SkillsSection(
                 Text(
                     text = stringResource(R.string.skills_empty_hint),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
                 )
             }
         }

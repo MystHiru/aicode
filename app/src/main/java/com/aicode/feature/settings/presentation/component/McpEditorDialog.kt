@@ -33,6 +33,7 @@ import com.aicode.core.ui.AppSwitch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import com.aicode.core.ui.AppTextField
+import com.aicode.core.ui.SegmentedTabs
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -43,8 +44,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
@@ -170,40 +169,16 @@ fun McpServerEditDialog(
                     }
                 }
 
-                // ── Tab Segmented Control ──
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                        .background(
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                            RoundedCornerShape(12.dp)
-                        )
-                        .padding(3.dp),
-                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
-                    val tabs = listOf(stringResource(R.string.mcp_basic_settings), stringResource(R.string.common_tool))
-                    tabs.forEachIndexed { index, title ->
-                        val isSelected = selectedTab == index
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent)
-                                .clickable { selectedTab = index }
-                                .padding(vertical = 8.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                ),
-                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
+                // ── Tab Segmented Control（与侧边栏共用同一份滑块分段控件）──
+                SegmentedTabs(
+                    selected = selectedTab,
+                    labels = listOf(
+                        stringResource(R.string.mcp_basic_settings),
+                        stringResource(R.string.common_tool)
+                    ),
+                    onSelect = { selectedTab = it },
+                    modifier = Modifier.padding(horizontal = 20.dp)
+                )
 
                 Spacer(modifier = Modifier.height(10.dp))
 
@@ -231,41 +206,15 @@ fun McpServerEditDialog(
                                     style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(
-                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                                            RoundedCornerShape(12.dp)
-                                        )
-                                        .padding(3.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    val scopes = listOf(
-                                        McpScope.GLOBAL to stringResource(R.string.mcp_scope_global),
-                                        McpScope.PROJECT to stringResource(R.string.mcp_scope_project)
-                                    )
-                                    scopes.forEach { (s, label) ->
-                                        val selected = scope == s
-                                        Box(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent)
-                                                .clickable { scope = s }
-                                                .padding(vertical = 8.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = label,
-                                                style = MaterialTheme.typography.bodyMedium.copy(
-                                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                                                ),
-                                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
+                                val scopes = listOf(McpScope.GLOBAL, McpScope.PROJECT)
+                                SegmentedTabs(
+                                    selected = scopes.indexOf(scope).coerceAtLeast(0),
+                                    labels = listOf(
+                                        stringResource(R.string.mcp_scope_global),
+                                        stringResource(R.string.mcp_scope_project)
+                                    ),
+                                    onSelect = { scope = scopes[it] }
+                                )
                             }
 
                             // 是否启用 Card
@@ -277,6 +226,7 @@ fun McpServerEditDialog(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
+                                        .heightIn(min = 44.dp)
                                         .padding(horizontal = 16.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -310,38 +260,14 @@ fun McpServerEditDialog(
                                     style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(
-                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                                            RoundedCornerShape(12.dp)
-                                        )
-                                        .padding(3.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    val types = listOf(false to stringResource(R.string.mcp_remote_http), true to stringResource(R.string.mcp_local_stdio))
-                                    types.forEach { (stdioFlag, label) ->
-                                        val selected = isStdio == stdioFlag
-                                        Box(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent)
-                                                .clickable { isStdio = stdioFlag }
-                                                .padding(vertical = 8.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = label,
-                                                style = MaterialTheme.typography.bodyMedium.copy(
-                                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                                                ),
-                                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
+                                SegmentedTabs(
+                                    selected = if (isStdio) 1 else 0,
+                                    labels = listOf(
+                                        stringResource(R.string.mcp_remote_http),
+                                        stringResource(R.string.mcp_local_stdio)
+                                    ),
+                                    onSelect = { isStdio = it == 1 }
+                                )
                             }
 
                             // 具体表单字段
@@ -486,10 +412,13 @@ fun McpServerEditDialog(
                 }
 
                 // ── 底部保存按钮（删除在列表左滑）──
+                // 底部留白向容器编辑弹窗对齐：按钮不贴屏底，下方给一段间距再加导航栏高度。
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                        .padding(horizontal = 20.dp)
+                        .padding(top = 12.dp, bottom = 24.dp)
+                        .navigationBarsPadding(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(

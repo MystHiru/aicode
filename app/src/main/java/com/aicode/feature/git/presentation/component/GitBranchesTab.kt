@@ -40,6 +40,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.rememberModalBottomSheetState
 import com.aicode.core.ui.AppTextField
+import com.aicode.core.ui.dialogTextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -224,21 +225,17 @@ internal fun BranchesTab(
                     Text(stringResource(R.string.git_create_and_switch))
                     AppSwitch(checked = checkout, onCheckedChange = { checkout = it })
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(onClick = { showCreateDialog = false }) { Text(stringResource(R.string.common_cancel)) }
-                    Spacer(Modifier.width(Spacing.sm))
-                    Button(
-                        onClick = {
-                            onCreateBranch(newName.trim(), startPoint, checkout)
-                            showCreateDialog = false
-                        },
-                        enabled = newName.isNotBlank()
-                    ) { Text(stringResource(R.string.common_create)) }
-                }
+                Button(
+                    onClick = {
+                        onCreateBranch(newName.trim(), startPoint, checkout)
+                        showCreateDialog = false
+                    },
+                    enabled = newName.isNotBlank(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) { Text(stringResource(R.string.common_create)) }
             }
         }
     }
@@ -278,7 +275,8 @@ internal fun BranchesTab(
                         onValueChange = { newName = it },
                         label = stringResource(R.string.git_new_branch_name),
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = dialogTextFieldColors()
                     )
                 }
             },

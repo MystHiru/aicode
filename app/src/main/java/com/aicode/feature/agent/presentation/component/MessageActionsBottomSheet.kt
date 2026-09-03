@@ -28,6 +28,7 @@ import com.aicode.R
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.feature.agent.presentation.AgentUIMessage
+import com.aicode.feature.agent.presentation.hasVisibleContent
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Copy
 import compose.icons.feathericons.Edit2
@@ -77,15 +78,17 @@ internal fun MessageActionsBottomSheet(
                 }
             )
 
-            // 复制文本
-            MessageActionItem(
-                icon = FeatherIcons.Copy,
-                title = stringResource(R.string.chat_action_copy),
-                onClick = {
-                    onDismiss()
-                    onCopyClick()
-                }
-            )
+            // 复制文本：纯图片消息没有文字可复制，隐藏该项
+            if (message.content.hasVisibleContent()) {
+                MessageActionItem(
+                    icon = FeatherIcons.Copy,
+                    title = stringResource(R.string.chat_action_copy),
+                    onClick = {
+                        onDismiss()
+                        onCopyClick()
+                    }
+                )
+            }
 
             // 删除消息
             MessageActionItem(

@@ -303,23 +303,25 @@ internal fun AgentMessageItem(
                 if (isUser && hasAttachments) {
                     MessageAttachmentPreviewRow(attachments = message.attachments)
                 }
-                // 气泡下方复制按钮（工具消息不显示）
-                if (message.content.hasVisibleContent() && message.role != MessageRole.TOOL) {
+                // 气泡下方操作行（工具消息不显示）。纯图片消息没有文字，同样要能撤销/删除，故附件也算
+                if ((hasContent || (isUser && hasAttachments)) && message.role != MessageRole.TOOL) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         val iconTint = MaterialTheme.colorScheme.onSurfaceVariant
-                        MessageActionIconButton(
-                            icon = if (copied) FeatherIcons.Check else FeatherIcons.Copy,
-                            contentDescription = if (copied) stringResource(R.string.chat_copied) else stringResource(R.string.chat_copy),
-                            tint = iconTint,
-                            onClick = {
-                                copyScope.launch {
-                                    clipboard.setClipEntry(
-                                        ClipEntry(ClipData.newPlainText("message", message.content))
-                                    )
-                                    copied = true
+                        if (hasContent) {
+                            MessageActionIconButton(
+                                icon = if (copied) FeatherIcons.Check else FeatherIcons.Copy,
+                                contentDescription = if (copied) stringResource(R.string.chat_copied) else stringResource(R.string.chat_copy),
+                                tint = iconTint,
+                                onClick = {
+                                    copyScope.launch {
+                                        clipboard.setClipEntry(
+                                            ClipEntry(ClipData.newPlainText("message", message.content))
+                                        )
+                                        copied = true
+                                    }
                                 }
-                            }
-                        )
+                            )
+                        }
                         if (isUser && onRewindClick != null) {
                             MessageActionIconButton(
                                 icon = FeatherIcons.RotateCcw,

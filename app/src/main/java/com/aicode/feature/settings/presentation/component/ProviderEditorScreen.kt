@@ -1068,7 +1068,9 @@ private fun AddModelSheet(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .padding(horizontal = 20.dp)
+                    .padding(top = 12.dp, bottom = Spacing.xl)
+                    .navigationBarsPadding()
             ) {
                 Button(
                     enabled = canSave,

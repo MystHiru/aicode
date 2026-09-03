@@ -58,6 +58,7 @@ import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.GitStatusColors
 import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.AppTextField
+import com.aicode.core.ui.dialogTextFieldColors
 import com.aicode.core.ui.FloatingTabBar
 import com.aicode.core.ui.FloatingTabItem
 import com.aicode.feature.settings.presentation.component.settingsLightMode
@@ -404,7 +405,8 @@ private fun CommitDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
                 label = stringResource(R.string.git_commit_message),
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = false,
-                minLines = 2
+                minLines = 2,
+                colors = dialogTextFieldColors()
             )
         },
         confirmButton = {

@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import com.aicode.core.ui.AppTextField
+import com.aicode.core.ui.dialogTextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -54,7 +55,6 @@ import com.aicode.feature.workspace.domain.model.WorkspaceType
 import com.aicode.feature.workspace.presentation.WorkspaceViewModel
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Folder
-import compose.icons.feathericons.FolderPlus
 import compose.icons.feathericons.HardDrive
 import compose.icons.feathericons.MoreHorizontal
 import compose.icons.feathericons.Plus
@@ -524,9 +524,7 @@ private fun CreateWorkspaceDialog(
                     label = stringResource(R.string.common_name),
                     placeholder = stringResource(R.string.workspace_name_hint),
                     isError = duplicate,
-                    leadingIcon = {
-                        Icon(FeatherIcons.FolderPlus, contentDescription = null)
-                    }
+                    colors = dialogTextFieldColors()
                 )
                 if (duplicate) {
                     Spacer(Modifier.height(Spacing.xs))

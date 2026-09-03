@@ -333,15 +333,11 @@ private fun tzOffsetNow(): Long =
 
 @Composable
 private fun EmptyStatsPlaceholder() {
+    // 外层 SettingsGroup 已是卡片，占位不能再画自己的背景与圆角，否则出现卡片套卡片
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(Spacing.md)
-            .height(80.dp)
-            .background(
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                RoundedCornerShape(10.dp)
-            ),
+            .height(72.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(

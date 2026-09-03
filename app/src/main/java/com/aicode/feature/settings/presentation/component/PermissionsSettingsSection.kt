@@ -38,7 +38,7 @@ import com.aicode.feature.agent.domain.permission.PermissionRule
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.CheckCircle
 import compose.icons.feathericons.ChevronRight
-import compose.icons.feathericons.Globe
+import compose.icons.feathericons.Plus
 import compose.icons.feathericons.XCircle
 
 /**
@@ -114,7 +114,6 @@ internal fun PermissionsSection(
             }
         }
 
-        FooterNote(stringResource(R.string.perm_whitelist_short))
         FooterNote(stringResource(R.string.perm_rules_short))
     }
 }
@@ -172,7 +171,7 @@ internal fun RuleRow(
             if (onPromote != null) {
                 IconButton(onClick = onPromote) {
                     Icon(
-                        imageVector = FeatherIcons.Globe,
+                        imageVector = FeatherIcons.Plus,
                         contentDescription = stringResource(R.string.perm_promote_to_global),
                         tint = iconTint,
                         modifier = Modifier.size(18.dp)

@@ -1,13 +1,9 @@
 package com.aicode.feature.agent.presentation.component
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -47,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import com.aicode.core.ui.AppTextField
+import com.aicode.core.ui.dialogTextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -57,10 +53,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,7 +62,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
-import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.SegmentedTabs
 import com.aicode.feature.settings.presentation.component.SettingsDivider
 import com.aicode.feature.settings.presentation.component.SettingsGroup
 import com.aicode.feature.settings.presentation.component.SettingsGroupHeader
@@ -157,8 +151,12 @@ fun ChatDrawerContent(
         verticalArrangement = Arrangement.spacedBy(Spacing.sm)
     ) {
         // 顶部 Tab 切换
-        DrawerTopTabs(
+        SegmentedTabs(
             selected = selectedTab,
+            labels = listOf(
+                stringResource(R.string.subagent_tab_sessions),
+                stringResource(R.string.drawer_tab_files)
+            ),
             onSelect = { selectedTab = it }
         )
 
@@ -248,7 +246,8 @@ fun ChatDrawerContent(
                     onValueChange = { renameText = it },
                     singleLine = true,
                     label = stringResource(R.string.chat_session_name),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = dialogTextFieldColors()
                 )
             },
             confirmButton = {
@@ -264,74 +263,6 @@ fun ChatDrawerContent(
                 TextButton(onClick = { pendingRename = null }) { Text(stringResource(R.string.common_cancel)) }
             }
         )
-    }
-}
-
-/**
- * 侧边栏顶部 Tab 切换条（会话 / 文件）。
- * iOS 风分段控件：中性灰轨道 + 白色（深色下为抬起灰）滑块，选中时滑块弹性滑到对应一侧。
- * 不用主题蓝填充，让整体与下方扫描式列表协调，只用中性色与轻阴影表现层次。
- */
-@Composable
-private fun DrawerTopTabs(
-    selected: Int,
-    onSelect: (Int) -> Unit
-) {
-    val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val trackColor = MaterialTheme.semanticColors.mutedSurface
-    val thumbColor = if (dark) MaterialTheme.semanticColors.capsuleSurface else MaterialTheme.semanticColors.cardSurface
-    val labels = listOf(R.string.subagent_tab_sessions, R.string.drawer_tab_files)
-
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(34.dp)
-            .clip(RoundedCornerShape(9.dp))
-            .background(trackColor)
-            .padding(3.dp)
-    ) {
-        val thumbWidth = maxWidth / 2
-        // 选中滑块位移：临界阻尼弹簧（不过冲），切换时滑块顺滑到位，不是硬切。
-        val thumbOffset by animateDpAsState(
-            targetValue = if (selected == 0) 0.dp else thumbWidth,
-            animationSpec = spring(dampingRatio = 1f, stiffness = Spring.StiffnessMediumLow),
-            label = "tab-thumb"
-        )
-        Surface(
-            modifier = Modifier
-                .offset(x = thumbOffset)
-                .width(thumbWidth)
-                .fillMaxHeight(),
-            shape = RoundedCornerShape(7.dp),
-            color = thumbColor,
-            shadowElevation = 2.dp,
-            content = {}
-        )
-        Row(modifier = Modifier.fillMaxSize()) {
-            labels.forEachIndexed { index, labelRes ->
-                val isSelected = selected == index
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(7.dp))
-                        // 禁用点击波纹：选中滑块位移已是反馈，ripple 残留的深色阴影反而吓眼。
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) { onSelect(index) },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = stringResource(labelRes),
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (isSelected) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -678,7 +609,8 @@ private fun FileNameInputDialog(
                 onValueChange = { name = it },
                 singleLine = true,
                 label = stringResource(R.string.file_browser_name_label),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                colors = dialogTextFieldColors()
             )
         },
         confirmButton = {

@@ -686,8 +686,6 @@
     <string name="git_restore_file_confirm">恢复已删除的 %1$s？将从上次提交取回这个文件。</string>
     <string name="git_revert_all_confirm">丢弃全部未暂存的改动（%1$d 个文件），还原到上次暂存或提交的内容？已暂存的内容不受影响，但丢弃的改动无法找回。</string>
     <string name="git_delete_untracked_confirm">删除 %1$s？它从未被提交过，删除后无法通过 Git 恢复。</string>
-    <string name="git_untracked_dir_expand_hint">点击展开目录内的文件</string>
-    <string name="git_untracked_dir_file_count">%1$d 个未跟踪文件</string>
 
     <!-- Git Identity -->
     <string name="git_tab_identity">署名</string>
@@ -741,7 +739,7 @@
 
     <!-- Skills Settings -->
     <string name="skills_empty">还没有安装技能</string>
-    <string name="skills_empty_hint">技能放在 ~/.aicode/skills/（全局）或项目 .aicode/skills/（项目级）目录，含 SKILL.md 即自动识别</string>
+    <string name="skills_empty_hint">把含 SKILL.md 的目录放进 ~/.aicode/skills/</string>
     <string name="skills_no_project_skills">当前项目暂无技能</string>
     <string name="skills_no_global_skills">暂无全局技能</string>
     <string name="skills_enable">是否启用</string>
@@ -754,7 +752,7 @@
     <!-- Subagent Settings -->
     <string name="settings_subagents">子代理</string>
     <string name="subagents_empty">还没有自定义子代理</string>
-    <string name="subagents_empty_hint">子代理定义放在 ~/.aicode/agents/（全局）或项目 .aicode/agents/（项目级）目录，一个 .md 文件一个 agent</string>
+    <string name="subagents_empty_hint">把 agent 的 .md 定义放进 ~/.aicode/agents/</string>
     <string name="subagents_no_project">当前项目暂无子代理</string>
     <string name="subagents_no_global">暂无全局子代理</string>
     <string name="subagents_delete_confirm_title">删除子代理</string>
@@ -787,7 +785,6 @@
     <string name="mcp_add_env_var">添加环境变量</string>
 
     <!-- Permissions Settings -->
-    <string name="perm_whitelist_short">系统预设 ls、pwd、cat 等只读命令免弹窗放行</string>
     <string name="perm_rules_short">对话中选「始终允许」会按命令或路径生成记忆规则</string>
     <string name="perm_current_project">当前项目：%1$s</string>
     <string name="perm_current_project_none">当前项目（未选择）</string>
