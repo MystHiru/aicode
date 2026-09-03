@@ -57,6 +57,7 @@ import com.aicode.feature.settings.data.repository.LanguageSettingsRepository
 import com.aicode.feature.settings.data.repository.LogSettingsRepository
 import com.aicode.feature.settings.data.repository.ProxyConfig
 import com.aicode.feature.settings.data.repository.ProxySettingsRepository
+import com.aicode.feature.settings.data.repository.ScreenOnSettingsRepository
 import com.aicode.feature.settings.data.repository.ThemeSettingsRepository
 import com.aicode.feature.settings.data.repository.BackgroundSettingsRepository
 import com.aicode.feature.settings.data.repository.VisionModelSettingsRepository
@@ -232,6 +233,7 @@ class SettingsViewModel @Inject constructor(
     private val themeSettingsRepository: ThemeSettingsRepository,
     private val backgroundSettingsRepository: BackgroundSettingsRepository,
     private val keepaliveSettingsRepository: KeepaliveSettingsRepository,
+    private val screenOnSettingsRepository: ScreenOnSettingsRepository,
     private val agentSoundSettingsRepository: AgentSoundSettingsRepository,
     private val languageSettingsRepository: LanguageSettingsRepository,
     private val mcpConfigRepository: McpConfigRepository,
@@ -376,6 +378,9 @@ class SettingsViewModel @Inject constructor(
 
     private val _keepaliveEnabled = MutableStateFlow(false)
     val keepaliveEnabled: StateFlow<Boolean> = _keepaliveEnabled.asStateFlow()
+
+    private val _screenOnEnabled = MutableStateFlow(false)
+    val screenOnEnabled: StateFlow<Boolean> = _screenOnEnabled.asStateFlow()
 
     private val _agentSoundEnabled = MutableStateFlow(false)
     val agentSoundEnabled: StateFlow<Boolean> = _agentSoundEnabled.asStateFlow()
@@ -590,6 +595,12 @@ class SettingsViewModel @Inject constructor(
             launch {
                 keepaliveSettingsRepository.enabledFlow.collectLatest {
                     _keepaliveEnabled.value = it
+                }
+            }
+
+            launch {
+                screenOnSettingsRepository.enabledFlow.collectLatest {
+                    _screenOnEnabled.value = it
                 }
             }
 
@@ -1025,6 +1036,13 @@ class SettingsViewModel @Inject constructor(
     fun setKeepaliveEnabled(enabled: Boolean) {
         viewModelScope.launch {
             keepaliveSettingsRepository.setEnabled(enabled)
+        }
+    }
+
+    // 仅持久化标志位——窗口 FLAG_KEEP_SCREEN_ON 的增删由 MainActivity 监听 enabledFlow 统一完成。
+    fun setScreenOnEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            screenOnSettingsRepository.setEnabled(enabled)
         }
     }
 

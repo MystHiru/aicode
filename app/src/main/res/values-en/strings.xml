@@ -132,6 +132,8 @@
     <string name="provider_balance_interval_30m">Every 30 mins</string>
     <string name="settings_keepalive_title">Background keepalive</string>
     <string name="settings_keepalive_subtitle">Foreground notification prevents background kill</string>
+    <string name="settings_screen_on_title">Keep screen on</string>
+    <string name="settings_screen_on_subtitle">Screen stays awake while the app is in the foreground</string>
     <string name="settings_agent_sound_title">Agent completion notification</string>
     <string name="settings_agent_sound_subtitle">Pop a notification when agent finishes in background</string>
     <string name="agent_complete_notification_title">Task complete</string>

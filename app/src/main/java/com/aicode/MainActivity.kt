@@ -76,6 +76,7 @@ import com.aicode.feature.git.presentation.component.GitScreen
 import com.aicode.feature.settings.data.repository.KeepaliveSettingsRepository
 import com.aicode.feature.settings.data.repository.AppThemeMode
 import com.aicode.feature.settings.data.repository.BackgroundSettingsRepository
+import com.aicode.feature.settings.data.repository.ScreenOnSettingsRepository
 import com.aicode.feature.settings.data.repository.ThemeSettingsRepository
 import com.aicode.feature.settings.presentation.SettingsViewModel
 import com.aicode.feature.settings.presentation.UpdateCheckUiState
@@ -111,6 +112,10 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var backgroundSettings: BackgroundSettingsRepository
+
+    /** 屏幕常亮开关：只在 App 前台约束屏幕，切后台由系统自动失效。 */
+    @Inject
+    lateinit var screenOnSettings: ScreenOnSettingsRepository
 
     /** 语言偏好：attachBaseContext 时同步读取以应用 locale，变化时 recreate。 */
     @Inject
@@ -164,6 +169,16 @@ class MainActivity : ComponentActivity() {
                     app.resources.updateConfiguration(config, app.resources.displayMetrics)
                 }
                 recreate()
+            }
+        }
+        // 屏幕常亮：窗口标志只在 Activity 可见时约束屏幕，退到后台系统自动放开，无需手动释放。
+        lifecycleScope.launch {
+            screenOnSettings.enabledFlow.collect { enabled ->
+                if (enabled) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
             }
         }
         // API 30+：全局切到 ADJUST_NOTHING，由 rememberImeBottomInset() 接管键盘内边距。

@@ -132,6 +132,8 @@
     <string name="provider_balance_interval_30m">每 30 分钟</string>
     <string name="settings_keepalive_title">后台运行保活</string>
     <string name="settings_keepalive_subtitle">显示前台通知，防止后台被杀</string>
+    <string name="settings_screen_on_title">屏幕常亮</string>
+    <string name="settings_screen_on_subtitle">App 在前台时不自动息屏</string>
     <string name="settings_agent_sound_title">Agent 完成通知</string>
     <string name="settings_agent_sound_subtitle">退到后台时 Agent 完成弹出通知</string>
     <string name="agent_complete_notification_title">任务完成</string>

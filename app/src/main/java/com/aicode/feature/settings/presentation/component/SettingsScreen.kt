@@ -179,6 +179,7 @@ fun SettingsScreen(
     val projectRules by viewModel.projectRules.collectAsStateWithLifecycle()
     val currentProjectName by viewModel.currentProjectName.collectAsStateWithLifecycle()
     val keepaliveEnabled by viewModel.keepaliveEnabled.collectAsStateWithLifecycle()
+    val screenOnEnabled by viewModel.screenOnEnabled.collectAsStateWithLifecycle()
     val agentSoundEnabled by viewModel.agentSoundEnabled.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val themePresetId by viewModel.themePresetId.collectAsStateWithLifecycle()
@@ -626,6 +627,8 @@ fun SettingsScreen(
                 SettingsSection.AppPermissions -> AppPermissionsSection(
                     keepaliveEnabled = keepaliveEnabled,
                     onToggleKeepalive = { viewModel.setKeepaliveEnabled(it) },
+                    screenOnEnabled = screenOnEnabled,
+                    onToggleScreenOn = { viewModel.setScreenOnEnabled(it) },
                     agentSoundEnabled = agentSoundEnabled,
                     onToggleAgentSound = { viewModel.setAgentSoundEnabled(it) }
                 )
