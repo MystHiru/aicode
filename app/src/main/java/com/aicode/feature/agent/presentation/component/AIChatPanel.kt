@@ -102,11 +102,15 @@ private const val STREAMING_TAIL_RETAIN_MS = 150L
 /** 滚动到底部按钮直径（dp）。 */
 private const val SCROLL_TO_BOTTOM_BTN_SIZE = 34
 
-/** 新消息入场动画判定窗口（ms）：timestamp 距今小于该值视为刚插入的新消息。 */
-private const val MESSAGE_ENTRY_WINDOW_MS = 10_000L
+/** 连续新消息的入场错开间隔（ms）与总上限：一次插入很多卡片时不能让最后一张等好几秒。 */
+private const val MESSAGE_ENTRY_STAGGER_MS = 90L
+private const val MESSAGE_ENTRY_MAX_STAGGER_MS = 360L
 
-/** 连续新消息的入场动画间隔（ms）：多条消息同时插入时逐个出现。 */
-private const val MESSAGE_ENTRY_STAGGER_MS = 100L
+/** AI 收工后继续逐帧校准的时长（ms）：md 异步解析仍可能改高度，不能一停就收手。 */
+private const val CALIBRATE_TAIL_MS = 1_200L
+
+/** 消息未就绪时延迟多久才显示加载提示（ms）：本地读库很快，立即显示反而闪。 */
+private const val MESSAGES_LOADING_HINT_DELAY_MS = 220L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -126,30 +130,11 @@ fun AIChatPanel(
     val messagesState by viewModel.messagesState.collectAsStateWithLifecycle()
     val messages = messagesState.messages
 
-    // 工具调用卡片入场动画：仅流式期间新插入的 TOOL 消息按顺序分配递增延迟，逐个淡入展开；
-    // 落库后的历史（timestamp 旧）直接显示不重播。
-    val messageEntryDelays = remember(messages) {
-        val now = System.currentTimeMillis()
-        val map = mutableMapOf<String, Long>()
-        // 消息按时间升序：先定位窗口起点（从最新往回找首个未超窗消息），
-        // 长历史时每次落库只遍历窗口内尾部，而不是全量扫描旧消息。
-        var start = messages.size - 1
-        while (start >= 0 && now - messages[start].timestamp < MESSAGE_ENTRY_WINDOW_MS) start--
-        start++
-        var consecutive = 0
-        for (i in start until messages.size) {
-            val m = messages[i]
-            if (m.role == MessageRole.TOOL && now - m.timestamp < MESSAGE_ENTRY_WINDOW_MS) {
-                map[m.id] = consecutive * MESSAGE_ENTRY_STAGGER_MS.toLong()
-                consecutive++
-            } else {
-                consecutive = 0
-            }
-        }
-        map
-    }
-
     val currentSessionId by viewModel.currentSessionId.collectAsStateWithLifecycle()
+    // 工具卡片入场调度：只排本次浏览期间新追加到尾部的 TOOL 消息，逐个错开淡入。
+    // 换会话时调度器重建，新会话的存量消息不入场。
+    val entryScheduler = remember(currentSessionId) { MessageEntryScheduler() }
+    val messageEntryDelays = remember(messages, entryScheduler) { entryScheduler.schedule(messages) }
     val currentSessionState by viewModel.currentSessionState.collectAsStateWithLifecycle()
     val currentSession = currentSessionState
     val sessionTitle = currentSession?.title?.takeIf { it.isNotBlank() } ?: stringResource(R.string.chat_new_session_btn)
@@ -952,6 +937,64 @@ fun AIChatPanel(
         }
         }
     }
+    }
+}
+
+/**
+ * 记住最后一个非空值，供 [AnimatedVisibility] 的退出动画继续渲染旧内容。
+ *
+ * 用普通对象而不是 [androidx.compose.runtime.MutableState] 持有：这里只需要跨重组留住上一个值，
+ * 不需要它自己触发重组（源值变化本身就会重组读取点），进快照系统反而会多引发一次无效重组。
+ */
+@Composable
+internal fun <T : Any> rememberLastNonNull(value: T?): T? {
+    val holder = remember { LastNonNullHolder<T>() }
+    if (value != null) holder.value = value
+    return holder.value
+}
+
+private class LastNonNullHolder<T : Any>(var value: T? = null)
+
+/**
+ * 工具卡片入场动画的调度器：决定哪些消息该播入场、以及各自错开多久。
+ *
+ * 判据是「本调度器存续期间新追加到尾部」，而不是「timestamp 距今 N 秒内」——
+ * 后者在切页返回时会把仍在时间窗内的那批消息再判成新消息，动画重播一遍。
+ * 首次调用时列表里已有的消息一律记为存量；向上翻页加载进来的历史比已见最大时间戳更旧，
+ * 同样不入场。会话切换时整个调度器重建，新会话的存量消息也不入场。
+ */
+private class MessageEntryScheduler {
+    private val seen = mutableSetOf<String>()
+    private val delays = mutableMapOf<String, Long>()
+    private var initialized = false
+    private var maxSeenTimestamp = Long.MIN_VALUE
+
+    /** 返回「消息 id → 入场延迟（ms）」；不在表内的消息直接显示。 */
+    fun schedule(messages: List<AgentUIMessage>): Map<String, Long> {
+        if (!initialized) {
+            initialized = true
+            messages.forEach { seen += it.id }
+            maxSeenTimestamp = messages.maxOfOrNull { it.timestamp } ?: Long.MIN_VALUE
+            return emptyMap()
+        }
+        var consecutive = 0
+        for (message in messages) {
+            if (message.id in seen) {
+                consecutive = 0
+                continue
+            }
+            seen += message.id
+            val appendedAtTail = message.timestamp >= maxSeenTimestamp
+            maxSeenTimestamp = maxOf(maxSeenTimestamp, message.timestamp)
+            if (appendedAtTail && message.role == MessageRole.TOOL) {
+                delays[message.id] = (consecutive * MESSAGE_ENTRY_STAGGER_MS)
+                    .coerceAtMost(MESSAGE_ENTRY_MAX_STAGGER_MS)
+                consecutive++
+            } else {
+                consecutive = 0
+            }
+        }
+        return delays.toMap()
     }
 }
 

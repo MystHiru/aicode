@@ -1,10 +1,9 @@
 package com.aicode.feature.agent.presentation.component
 
 import android.content.ClipData
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -43,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
@@ -77,6 +77,10 @@ import kotlin.math.roundToInt
 
 /** 落库思考气泡保持展开的窗口（ms）：刚结束的思考不立即折叠回缩，防止高度骤变抽搐。 */
 private const val REASONING_FRESH_WINDOW_MS = 5_000L
+
+/** 工具卡片入场时长（ms）与上浮起点：略微下移再淡入到位，只走 draw 层不影响布局。 */
+private const val MESSAGE_ENTRY_ANIM_MS = 260
+private val MESSAGE_ENTRY_RISE = 10.dp
 
 /**
  * 每轮任务的总耗时（毫秒）：轮末助手消息落库时刻 − 该轮用户消息发出时刻，即用户按下发送
@@ -193,18 +197,24 @@ internal fun AgentMessageItem(
     val clipboard = LocalClipboard.current
     val copyScope = rememberCoroutineScope()
 
-    // 工具调用卡片入场动画：仅流式期间新插入时淡入展开；历史/落库后直接显示不重播。
-    // item 滚出视口重新组合时若消息已过新消息窗口，entryDelayMs 为 null，同样直接显示。
-    // 播完即进 saveable：仍在新消息窗口内（entryDelayMs 非 null）时切页返回或 item 回收
-    // 重挂载，不会再播一遍入场。
+    // 工具卡片入场：只对本次浏览期间新追加进来的消息播（entryDelayMs 非空），
+    // 历史、切页返回、item 回收重挂载都直接显示（谁该入场由 MessageEntryScheduler 定）。
+    // 入场只改 alpha 与 translationY（draw 阶段生效），卡片高度从插入那一帧就到位：
+    // 用 AnimatedVisibility 的话未入场的卡片完全不占位，每张卡片入场都让列表高度跳一次，
+    // 与贴底跟随的 scrollToItem 叠加就是一连串抖动——而那正是这个动画本来要消除的。
+    // 现在列表高度只在消息插入时变一次，之后动画全程不碰布局。
     var entered by rememberSaveable(message.id) { mutableStateOf(entryDelayMs == null) }
-    LaunchedEffect(entryDelayMs) {
-        val delayMs = entryDelayMs
-        if (delayMs != null) {
-            delay(delayMs)
-            entered = true
-        }
+    LaunchedEffect(message.id) {
+        if (entered) return@LaunchedEffect
+        val delayMs = entryDelayMs ?: return@LaunchedEffect
+        if (delayMs > 0) delay(delayMs)
+        entered = true
     }
+    val entryProgress by animateFloatAsState(
+        targetValue = if (entered) 1f else 0f,
+        animationSpec = tween(durationMillis = MESSAGE_ENTRY_ANIM_MS, easing = LinearOutSlowInEasing),
+        label = "tool-entry"
+    )
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -226,19 +236,18 @@ internal fun AgentMessageItem(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         if (message.role == MessageRole.TOOL) {
-                            // 工具调用卡片：仅流式期间新插入时淡入展开；落库后的历史直接显示不重播
-                            AnimatedVisibility(
-                                visible = entered,
-                                enter = fadeIn(tween(180)) + slideInVertically(tween(180)) { it / 3 }
+                            Surface(
+                                shape = RoundedCornerShape(Radius.md, Radius.md, Radius.md, Radius.xs),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                border = null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .graphicsLayer {
+                                        alpha = entryProgress
+                                        translationY = (1f - entryProgress) * MESSAGE_ENTRY_RISE.toPx()
+                                    }
                             ) {
-                                Surface(
-                                    shape = RoundedCornerShape(Radius.md, Radius.md, Radius.md, Radius.xs),
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
-                                    border = null,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    ToolMessageBody(message, liveOutput = liveOutput, onToggle = onToolToggle)
-                                }
+                                ToolMessageBody(message, liveOutput = liveOutput, onToggle = onToolToggle)
                             }
                         } else {
                             Surface(
