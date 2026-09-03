@@ -406,6 +406,7 @@ private fun EditorSurface(
 ) {
     // 与实际渲染出的 Compose 主题保持一致，而非跟随系统设置——应用内可单独切换主题。
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val themeSurface = MaterialTheme.colorScheme.surface
     // sora 的语法分析在后台线程跑，首帧必然还没上色。用一次渐显护住这段窗口，
     // 把「先纯文本后突然上色」的跳变变成内容渐现。
     var revealed by remember(state.content) { mutableStateOf(false) }
@@ -437,6 +438,7 @@ private fun EditorSurface(
                 nonPrintablePaintingFlags =
                     nonPrintableFlags(settings.showWhitespace, settings.showWrapArrow)
                 colorScheme = TextMateColorScheme.create(ThemeRegistry.getInstance())
+                applyThemedBackground(this, themeSurface)
                 applyLineNumberBackground(this, dark)
                 state.scopeName?.let { scope ->
                     setEditorLanguage(TextMateLanguage.create(scope, false))
@@ -473,10 +475,11 @@ private fun EditorSurface(
 
     // 深浅主题切换时重设配色，而非重建编辑器——保住未保存内容与撤销栈。
     val editor = editorRef.value
-    LaunchedEffect(dark, editor) {
+    LaunchedEffect(dark, themeSurface, editor) {
         editor ?: return@LaunchedEffect
         TextMateSetup.applyTheme(dark)
         editor.colorScheme = TextMateColorScheme.create(ThemeRegistry.getInstance())
+        applyThemedBackground(editor, themeSurface)
         applyLineNumberBackground(editor, dark)
         editor.invalidate()
         onBackgroundResolved(Color(editor.colorScheme.getColor(EditorColorScheme.WHOLE_BACKGROUND)))
@@ -586,6 +589,21 @@ private fun HintText(text: String) {
 }
 
 /** 行号 gutter 背景与编辑区拉开一点亮度差便于区分。基于编辑器背景色自适应，随主题走。 */
+/**
+ * 给编辑器底色掺入当前主题的表面色。
+ *
+ * TextMate 主题的背景（Dark+ 的 #1E1E1E、Light+ 的纯白）是照 VSCode 的中性色调的，
+ * 原样使用会让编辑器在带色温的主题下明显脱离其余界面。保留一成原色以维持编辑区的基调。
+ */
+private fun applyThemedBackground(editor: CodeEditor, themeSurface: Color) {
+    val scheme = editor.colorScheme
+    val base = Color(scheme.getColor(EditorColorScheme.WHOLE_BACKGROUND))
+    scheme.setColor(
+        EditorColorScheme.WHOLE_BACKGROUND,
+        lerp(base, themeSurface, EDITOR_THEME_TINT).toArgb()
+    )
+}
+
 private fun applyLineNumberBackground(editor: CodeEditor, dark: Boolean) {
     val scheme = editor.colorScheme
     val base = Color(scheme.getColor(EditorColorScheme.WHOLE_BACKGROUND))
@@ -658,3 +676,6 @@ private const val FILE_ENCODING = "UTF-8"
 
 /** 垂直额外视口空间系数（占编辑器高度的比例，取值 [0,1]），用于底部过度滚动。 */
 private const val VERTICAL_EXTRA_SPACE_FACTOR = 0.5f
+
+/** 编辑器底色向主题表面色靠拢的比例。 */
+private const val EDITOR_THEME_TINT = 0.9f
