@@ -44,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -76,6 +77,7 @@ import compose.icons.feathericons.Save
 import compose.icons.feathericons.Settings
 import compose.icons.feathericons.X
 import io.github.rosemoe.sora.event.ContentChangeEvent
+import io.github.rosemoe.sora.event.ScrollEvent
 import io.github.rosemoe.sora.event.SelectionChangeEvent
 import io.github.rosemoe.sora.langs.textmate.TextMateColorScheme
 import io.github.rosemoe.sora.langs.textmate.TextMateLanguage
@@ -83,6 +85,7 @@ import io.github.rosemoe.sora.langs.textmate.registry.ThemeRegistry
 import io.github.rosemoe.sora.text.UndoManager
 import io.github.rosemoe.sora.widget.CodeEditor
 import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
+import kotlin.math.abs
 
 /**
  * 独立全屏代码编辑页。支持语法高亮、撤销/重做、底部符号快捷栏与保存。
@@ -417,6 +420,10 @@ private fun EditorSurface(
         label = "editor-reveal"
     )
 
+    // 用户自己滚过之后就不再自动定位到目标行。View 只创建一次，标记要用实例稳定的 State
+    // 承载（factory 闭包捕获的是首次那个实例），换文件时由下面的 effect 显式复位。
+    val scrolledByUser = remember { mutableStateOf(false) }
+
     AndroidView(
         modifier = modifier.graphicsLayer { alpha = contentAlpha },
         factory = { ctx ->
@@ -462,6 +469,18 @@ private fun EditorSurface(
                 subscribeAlways(SelectionChangeEvent::class.java) {
                     onCursorChanged(cursor.leftLine + 1, cursor.leftColumn + 1)
                 }
+                subscribeAlways(ScrollEvent::class.java) { event ->
+                    // sora 在尺寸变化后会经 touchHandler 做一次滚动 clamp，事件 cause 同样是
+                    // CAUSE_USER_DRAG 但首尾坐标相同（y=0->0）。编辑器刚打开就会连发几条这种
+                    // 零位移事件，只看 cause 会把它们当成「用户已手动滚动」而放弃行号定位。
+                    val moved = event.startY != event.endY || event.startX != event.endX
+                    if (moved &&
+                        (event.cause == ScrollEvent.CAUSE_USER_DRAG ||
+                            event.cause == ScrollEvent.CAUSE_USER_FLING)
+                    ) {
+                        scrolledByUser.value = true
+                    }
+                }
                 editorRef.value = this
             }
         },
@@ -490,11 +509,53 @@ private fun EditorSurface(
     LaunchedEffect(settings.wordWrap, editor) {
         editor?.setWordwrap(settings.wordWrap)
     }
-    // 从聊天区链接带行号打开时，内容就绪后跳到目标行并滚动到可视区（行号 1 基，sora 为 0 基）。
-    LaunchedEffect(editor, initialLine, state.content) {
-        if (editor != null && initialLine > 0) {
-            val target = (initialLine - 1).coerceIn(0, (editor.lineCount - 1).coerceAtLeast(0))
-            editor.jumpToLine(target)
+    // 从聊天区链接带行号打开时跳到目标行并滚动到可视区（行号 1 基，sora 为 0 基）。
+    //
+    // 必须等编辑器完成首次布局：ensurePositionVisible 按 getHeight() 算滚动量，而 onSizeChanged
+    // 会按新尺寸 clamp 滚动偏移、自动换行下还会重建整个布局——宽高仍为 0 时跳的那一下会被随后的
+    // 首次布局抹掉，表现就是「停在文件开头没跳过去」。
+    //
+    // 字号与自动换行读自 DataStore，真实值往往比首帧晚到，setTextSize / setWordwrap 同样重建布局
+    // 打乱位置，所以它们也进 key 重新定位一次；用户自己滚动过之后（scrolledByUser）不再拽回目标行。
+    LaunchedEffect(state.content, initialLine) { scrolledByUser.value = false }
+    LaunchedEffect(editor, initialLine, state.content, settings.wordWrap, settings.fontSizeSp) {
+        val editorView = editor ?: return@LaunchedEffect
+        if (initialLine <= 0 || scrolledByUser.value) return@LaunchedEffect
+        var frames = 0
+        while ((editorView.width == 0 || editorView.height == 0) &&
+            frames < LINE_JUMP_LAYOUT_WAIT_FRAMES
+        ) {
+            withFrameNanos { }
+            frames++
+        }
+        if (editorView.width == 0 || editorView.height == 0 || scrolledByUser.value) {
+            return@LaunchedEffect
+        }
+        val line = (initialLine - 1).coerceIn(0, (editorView.lineCount - 1).coerceAtLeast(0))
+        // 定位后校验目标行是否真的停在期望位置，没停上就重试：布局重建（设置迟到、语法
+        // 分析完成、自动换行重排）会把刚定好的位置冲掉，单次定位不够。
+        var attempt = 0
+        while (attempt < LINE_JUMP_MAX_ATTEMPTS && !scrolledByUser.value) {
+            editorView.setSelection(line, 0)
+            val desired = centerScrollOffset(editorView, line)
+            if (desired != null) {
+                scrollVerticallyTo(editorView, desired)
+            } else {
+                // 拿不到布局信息时退回官方的「仅保证可见」，无动画避免被布局重建打断在半路。
+                editorView.ensurePositionVisible(line, 0, true)
+            }
+            repeat(LINE_JUMP_VERIFY_FRAMES) { withFrameNanos { } }
+            val settled = if (desired != null) {
+                abs(editorView.offsetY - desired) <= editorView.rowHeight
+            } else {
+                runCatching {
+                    val layout = editorView.layout
+                    line in layout.getLineNumberForRow(editorView.firstVisibleRow)..
+                        layout.getLineNumberForRow(editorView.lastVisibleRow)
+                }.getOrDefault(true)
+            }
+            if (settled) break
+            attempt++
         }
     }
     LaunchedEffect(settings.showIndentGuide, editor) {
@@ -679,3 +740,30 @@ private const val VERTICAL_EXTRA_SPACE_FACTOR = 0.5f
 
 /** 编辑器底色向主题表面色靠拢的比例。 */
 private const val EDITOR_THEME_TINT = 0.9f
+
+/** 带行号打开时等编辑器完成首次布局的最多帧数，避免宽高迟迟不就绪时死等。 */
+private const val LINE_JUMP_LAYOUT_WAIT_FRAMES = 30
+
+/** 定位后校验目标行是否停在期望位置的重试次数，以及每次校验前等待的帧数。 */
+private const val LINE_JUMP_MAX_ATTEMPTS = 8
+private const val LINE_JUMP_VERIFY_FRAMES = 3
+
+/**
+ * 让目标行居中所需的垂直滚动量（已按可滚范围收敛，文件首尾附近自然贴边）。
+ * 布局尚不可用时返回 null，由调用方退回官方的「仅保证可见」。
+ */
+private fun centerScrollOffset(editor: CodeEditor, line: Int): Int? = runCatching {
+    // getCharLayoutOffset 返回的 [0] 是该行所在 row 的底部 y。
+    val rowBottom = editor.layout.getCharLayoutOffset(line, 0)[0]
+    val rowTop = rowBottom - editor.rowHeight
+    (rowTop - (editor.height - editor.rowHeight) / 2f).toInt()
+        .coerceIn(0, editor.scrollMaxY.coerceAtLeast(0))
+}.getOrNull()
+
+/** 无动画落位到指定垂直滚动量，与 sora 内部 ensurePositionVisible 的无动画分支同款做法。 */
+private fun scrollVerticallyTo(editor: CodeEditor, offsetY: Int) {
+    val scroller = editor.scroller
+    scroller.startScroll(editor.offsetX, editor.offsetY, 0, offsetY - editor.offsetY, 0)
+    scroller.abortAnimation()
+    editor.invalidate()
+}
