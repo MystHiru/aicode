@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">AiCode</h1>
   <p align="center">
-    AI-powered coding assistant for Android · Built-in Linux terminal · AI Agent · MCP · Git integration
+    AI-powered coding assistant for Android · Built-in Linux terminal · AI Agent & subagents · Code editor · MCP · Git integration
     <br />
     <a href="README.md">中文</a> · <a href="README.en.md">English</a>
   </p>
@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Language-Kotlin-purple.svg" alt="Kotlin" />
   <img src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4.svg" alt="Jetpack Compose UI" />
   <img src="https://img.shields.io/badge/MinSDK-26-orange.svg" alt="Min SDK 26 (Android 8.0)" />
-  <a href="https://github.com/jieapi/aicode/releases/latest"><img src="https://img.shields.io/github/v/release/jieapi/aicode?display_name=tag&include_prereleases" alt="Latest Release" /></a>
+  <a href="https://github.com/jieapi/aicode/releases"><img src="https://img.shields.io/github/v/release/jieapi/aicode?display_name=tag&include_prereleases" alt="Latest Release" /></a>
   <a href="https://github.com/jieapi/aicode/releases"><img src="https://img.shields.io/github/downloads/jieapi/aicode/total" alt="Total Downloads" /></a>
 </p>
 
@@ -44,26 +44,42 @@
 
 AiCode is an AI-powered coding assistant that runs natively on Android. It integrates large language models with a local Linux development environment. The built-in Alpine Linux container and terminal emulator let the AI directly read/write files, execute shell commands, and run build tools. It also supports remote SSH servers as the execution backend, turning your phone into a mobile workstation for remote projects.
 
+Beyond AI chat and the terminal, the app ships a file tree with a full-screen code editor, a visual Git panel, and subagents that work in parallel in the background. On tablets, unfolded foldables and desktop windows it automatically switches to a side-by-side two-pane workbench.
+
 ## Advertisement
 
 | Icon | Description |
 |------|-------------|
 | <img src="https://opencode.ai/favicon-96x96-v3.png" width="24" alt="OpenCode" /> | **[OpenCode Go](https://opencode.ai/go?ref=8Q5GA5B1NY)** — Low-cost subscription with generous limits and reliable access to the most capable open-source models |
-| <img src="https://www.rainyun.com/favicon.ico" width="24" alt="RainYun" /> | **[RainYun](https://www.rainyun.com/logins_)** — Cost-effective cloud servers, new user discounts |
+| <img src="https://www.rainyun.com/favicon.ico" width="24" alt="RainYun" /> | **[RainYun](https://www.rainyun.com/logins_)** — Chinese cloud provider specializing in VPS and game hosting (one-click Minecraft and other game servers), plus bare-metal machines and object storage; discounts for new users |
 
 ## Features
 
-- **AI Agent** — Supports OpenAI / Anthropic / Gemini compatible protocols with multiple providers; built-in tools for file read/write, shell execution, background terminal, code & web search, image recognition, asking the user, etc.; streaming output with automatic context compression for long conversations
+### AI & Agent
+
+- **AI Agent** — Compatible with OpenAI / Anthropic / Gemini protocols; switch between providers, rotate multiple keys of one provider automatically, and tune reasoning effort; built-in tools for file read/write/edit, shell execution, background terminal, code & web search, image recognition, todo lists, asking the user, and more; streaming output with live Markdown rendering and automatic context compression for long conversations
+- **Parallel subagents** — The main session can spawn subagents with their own isolated context to research, review or compare approaches in the background without blocking your current chat; a read-only **Explore** subagent is built in, and you can define your own with a custom model, tool set and prompt — all listed under their parent session in the sidebar
+- **Three run modes** — BUILD for normal development, PLAN to block every write operation at the tool layer for read-only planning, AUTO to approve everything without prompts — pick the permission scope you trust
 - **Checkpoints & Undo** — File snapshots are recorded before the agent modifies code; one-tap rollback from the conversation, restoring code, chat history, or both
-- **Built-in Terminal & Container** — A local Linux container built on Termux components and PRoot with a built-in Alpine image; supports importing custom rootfs images and mounting host directories; terminals can run in the background
-- **Remote SSH Mode** — Use a remote server as the execution backend: commands via exec channel, files via SFTP, terminal via shell channel — operate on remote projects directly from your phone
+- **Skills & Auto Memory** — Global/project-level skills and long-term memory let the AI reuse experience and project conventions across sessions
 - **MCP Protocol** — Connect to local (stdio) or remote (HTTP) MCP servers to dynamically extend AI tool capabilities
-- **Skills & Auto Memory** — Global/project-level skills and long-term memory let the AI reuse experience and conventions across sessions
-- **Git Integration** — Built-in Git status, branches, commits, diffs and tag management, with sign-off and credential configuration
+- **Tool permissions & custom prompts** — Per-tool authorization rules; system prompts can be overridden by the user and survive app upgrades
+
+### Development Environment
+
+- **Built-in Terminal & Container** — A local Linux container built on Termux components and PRoot with a built-in Alpine image; supports importing custom rootfs images and mounting host directories; multi-tab terminals that can stay alive in the background
+- **Remote SSH Mode** — Use a remote server as the execution backend: commands via exec channel, files via SFTP, terminal via shell channel — operate on remote projects directly from your phone
+- **File tree & code editor** — An inline indented file tree; tap a file for the full-screen editor with syntax highlighting for mainstream languages (Kotlin / Java / Python / JS·TS / Go / Rust / C·C++ / PHP and more), VS Code color schemes that follow the app theme, Markdown preview, undo/redo and a symbol shortcut bar; `file:line` links in AI replies open the file and jump to that line, in both local and remote SSH workspaces
+- **Git Integration** — Visual management of status, branches, commit history, diffs and tags, with staging/discarding changes plus sign-off and credential configuration
 - **Workspace Sync** — SFTP / FTP synchronization with a built-in FTP server for desktop file management
+
+### Experience
+
+- **Tablet & large screen** — Layout responds to window width: a persistent sidebar on wide screens with code or terminal open next to the chat, falling back to a single pane when the window shrinks
+- **Token stats** — Usage and cost estimates per provider and model, with a drill-down into individual calls
+- **Appearance & language** — Light/dark themes, preset color schemes, Material You colors, custom background images, and a bilingual (Chinese/English) UI
+- **Network proxy** — Configure a global proxy and per-provider proxies separately
 - **Backup & Restore** — Encrypted export/import of provider configs, credentials, chat history and workspace files
-- **Markdown Rendering** — Real-time Markdown rendering with code highlighting
-- **Custom Prompts** — System prompts can be overridden by the user and survive app upgrades
 
 ## Getting Started
 
@@ -73,7 +89,7 @@ AiCode is an AI-powered coding assistant that runs natively on Android. It integ
 | Download | [GitHub Releases](https://github.com/jieapi/aicode/releases/latest): pick `armsolo` for real devices, `x86solo` for emulators, `universal` for both |
 | Quick start | Settings → AI Providers to add a model → Container & Image to pick local or SSH → new session and chat |
 | Changelog | [Releases](https://github.com/jieapi/aicode/releases) (all versions & notes) |
-| User guide | [GitHub Wiki](https://github.com/jieapi/aicode/wiki) |
+| User guide | [Online docs](https://aicode.murk.top): quick start, feature manual and advanced guides (same content as the in-app docs) |
 
 ## Star
 
