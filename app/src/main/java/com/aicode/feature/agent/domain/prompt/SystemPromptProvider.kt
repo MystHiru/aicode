@@ -106,7 +106,7 @@ class SystemPromptProvider @Inject constructor(
             val cached = cachedByKey[key]
             if (cached != null) return cached.ifEmpty { null }
             val entries = try {
-                agentDefinitionRepository.listAll()
+                agentDefinitionRepository.listEnabled()
             } catch (e: Exception) {
                 FileLogger.w(TAG, "扫描子代理定义失败: ${e.message}", e)
                 return null

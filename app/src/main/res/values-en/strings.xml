@@ -759,7 +759,7 @@
     <!-- Subagent Settings -->
     <string name="settings_subagents">Subagents</string>
     <string name="subagents_empty">No custom subagents yet</string>
-    <string name="subagents_empty_hint">Put an agent\'s .md definition into ~/.aicode/agents/</string>
+    <string name="subagents_empty_hint">Tap + in the top bar to create one, or drop an agent\'s .md definition into ~/.aicode/agents/</string>
     <string name="subagents_no_project">No subagents in this project</string>
     <string name="subagents_no_global">No global subagents</string>
     <string name="subagents_delete_confirm_title">Delete subagent</string>
@@ -774,6 +774,45 @@
     <string name="subagent_tools_allow">Allowed only: %1$s</string>
     <string name="subagent_tools_deny">Denied: %1$s</string>
     <string name="subagent_inject_none">No extra prompt injected</string>
+    <string name="subagent_add">New subagent</string>
+    <string name="subagent_edit">Edit subagent</string>
+    <string name="subagent_enable">Enable this subagent</string>
+    <string name="subagent_enable_hint">When off, the AI can no longer dispatch it; running subagents are unaffected</string>
+    <string name="subagent_editor_new">New subagent</string>
+    <string name="subagent_editor_edit">Edit subagent</string>
+    <string name="subagent_editor_basic">Basics</string>
+    <string name="subagent_editor_description">Description</string>
+    <string name="subagent_editor_scope">Scope</string>
+    <string name="subagent_scope_global">Global</string>
+    <string name="subagent_scope_project">This project</string>
+    <string name="subagent_name_hint">Lowercase is recommended, e.g. researcher</string>
+    <string name="subagent_description_hint">When to dispatch it; the main session picks agents by this text</string>
+    <string name="subagent_editor_model_group">Model</string>
+    <string name="subagent_editor_effort">Reasoning effort</string>
+    <string name="subagent_editor_tools_allow">Allowed tools</string>
+    <string name="subagent_editor_tools_allow_hint">Leave empty to allow every tool except task</string>
+    <string name="subagent_editor_tools_deny">Denied tools</string>
+    <string name="subagent_editor_tools_deny_hint">Takes precedence over the allow list</string>
+    <string name="subagent_editor_tools_search">Search tools</string>
+    <string name="subagent_editor_selected_count">%1$d selected</string>
+    <string name="subagent_editor_none">None</string>
+    <string name="subagent_editor_clear">Clear</string>
+    <string name="subagent_prompt_hint">Describe its role, how it should work and what to deliver</string>
+    <string name="subagent_no_models">No models available. Add and configure a model under AI Providers first.</string>
+    <string name="subagent_editor_error_invalid_name">Invalid name: it cannot be empty or contain path separators and other special characters</string>
+    <string name="subagent_editor_error_empty_prompt">The agent prompt cannot be empty</string>
+    <string name="subagent_editor_error_name_conflict">A subagent with this name already exists in this scope</string>
+    <string name="subagent_editor_error_io">Failed to write the definition file, please try again</string>
+    <string name="subagent_inject_base">Subagent baseline</string>
+    <string name="subagent_inject_base_hint">Tool usage and path conventions, lightweight</string>
+    <string name="subagent_inject_main_rules">Full common rules</string>
+    <string name="subagent_inject_main_rules_hint">Pick either this or the subagent baseline; enabling both injects overlapping rules</string>
+    <string name="subagent_inject_skills">Skill list</string>
+    <string name="subagent_inject_skills_hint">Lets it load and run project skills</string>
+    <string name="subagent_inject_memory">Memory summaries</string>
+    <string name="subagent_inject_memory_hint">Injects global and project long-term memories</string>
+    <string name="subagent_inject_project_rules">Project rules</string>
+    <string name="subagent_inject_project_rules_hint">Injects AGENTS.md or CLAUDE.md</string>
 
     <!-- MCP stdio Fields -->
     <string name="mcp_command">Command</string>

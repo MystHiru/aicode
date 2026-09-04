@@ -2,6 +2,7 @@ package com.aicode.feature.agent.domain.subagent
 
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -129,5 +130,72 @@ class AgentDefinitionParserTest {
     @Test
     fun scan_missingRootReturnsEmpty() {
         assertTrue(AgentDefinitionDirectoryScanner.scan(File(tempFolder.root, "not-exists")).isEmpty())
+    }
+
+    /**
+     * 设置页存盘走 serialize，再读回来必须与存进去的完全一致；
+     * 描述里的冒号、井号与引号是 YAML 重灾区，专门放进测数据。
+     */
+    @Test
+    fun serialize_roundTripsThroughParse() {
+        val text = AgentDefinitionParser.serialize(
+            name = "researcher",
+            description = "只读调研：先 search 定位，再 readFile 核实 #1 优先，别改文件",
+            providerId = "deepseek",
+            model = "deepseek-reasoner",
+            reasoningEffort = "high",
+            allowedTools = listOf("readFile", "search"),
+            disallowedTools = listOf("Bash"),
+            inject = setOf(InjectPart.BASE, InjectPart.PROJECT_RULES),
+            prompt = "你是调研专家。\n\n结论要带 文件:行号 引用。"
+        )
+
+        val def = AgentDefinitionParser.parse(write("researcher.md", text))!!
+
+        assertEquals("researcher", def.name)
+        assertEquals("只读调研：先 search 定位，再 readFile 核实 #1 优先，别改文件", def.description)
+        assertEquals("deepseek", def.providerId)
+        assertEquals("deepseek-reasoner", def.model)
+        assertEquals("high", def.reasoningEffort)
+        assertEquals(listOf("readFile", "search"), def.allowedTools)
+        assertEquals(listOf("Bash"), def.disallowedTools)
+        assertEquals(setOf(InjectPart.BASE, InjectPart.PROJECT_RULES), def.inject)
+        assertEquals("你是调研专家。\n\n结论要带 文件:行号 引用。", def.prompt)
+    }
+
+    /** 空注入集必须写成 [none]：省略会被解成默认注入项，恰好与用户的选择相反。 */
+    @Test
+    fun serialize_emptyInjectStaysEmptyAfterParse() {
+        val text = AgentDefinitionParser.serialize(
+            name = "bare",
+            description = "",
+            providerId = null,
+            model = null,
+            reasoningEffort = null,
+            allowedTools = emptyList(),
+            disallowedTools = emptyList(),
+            inject = emptySet(),
+            prompt = "只用自己的提示词。"
+        )
+
+        val def = AgentDefinitionParser.parse(write("bare.md", text))!!
+
+        assertTrue(def.inject.isEmpty())
+        assertNull(def.providerId)
+        assertNull(def.model)
+        assertNull(def.reasoningEffort)
+        assertTrue(def.allowedTools.isEmpty())
+    }
+
+    @Test
+    fun isValidName_rejectsPathSeparatorsAndEmpty() {
+        assertTrue(AgentDefinitionRepository.isValidName("researcher"))
+        assertTrue(AgentDefinitionRepository.isValidName("代码审查"))
+        assertFalse(AgentDefinitionRepository.isValidName(""))
+        assertFalse(AgentDefinitionRepository.isValidName("  "))
+        assertFalse(AgentDefinitionRepository.isValidName(".."))
+        assertFalse(AgentDefinitionRepository.isValidName("a/b"))
+        assertFalse(AgentDefinitionRepository.isValidName("a:b"))
+        assertFalse(AgentDefinitionRepository.isValidName("a".repeat(41)))
     }
 }

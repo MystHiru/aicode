@@ -1048,7 +1048,7 @@ class AIAgentViewModel @Inject constructor(
             // 子会话的 subagentType 存的是自定义 agent 名；能查到定义时提示词与工具集都按它组装。
             val agentDefinition = sessionEntity?.takeIf { it.parentId != null }
                 ?.subagentType
-                ?.let { agentDefinitionRepository.find(it) }
+                ?.let { agentDefinitionRepository.findIncludingDisabled(it) }
 
             val agentContext = AgentContext(
                 currentFile = currentFile,

@@ -151,7 +151,7 @@ class TaskTool @Inject constructor(
         if (agentName != null) {
             definition = agentDefinitionRepository.find(agentName)
             if (definition == null) {
-                val available = agentDefinitionRepository.listAll().map { it.definition.name }
+                val available = agentDefinitionRepository.listEnabled().map { it.definition.name }
                 val hint = if (available.isEmpty()) "当前未定义任何自定义子代理" else "可用：${available.joinToString(", ")}"
                 return ToolResult.Error("子代理定义不存在: $agentName（$hint）", "AGENT_NOT_FOUND")
             }

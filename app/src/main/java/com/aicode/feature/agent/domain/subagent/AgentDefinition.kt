@@ -10,21 +10,21 @@ enum class AgentDefinitionScope { GLOBAL, PROJECT }
  *
  * BASE 与 MAIN_RULES 互斥语义上并不强制，同时写则两者都注入（MAIN_RULES 在前）。
  */
-enum class InjectPart {
+enum class InjectPart(val token: String) {
     /** 子代理专用精简基线（`90-subagent-base.md`）：工具用法、路径约定、安全边界。 */
-    BASE,
+    BASE("base"),
 
     /** 主代理的完整静态规则基线（`00`~`70` 全部片段），需要子代理与主代理行为完全一致时使用。 */
-    MAIN_RULES,
+    MAIN_RULES("mainRules"),
 
     /** 可用技能清单（子代理可 loadSkill）。 */
-    SKILLS,
+    SKILLS("skills"),
 
     /** 全局 + 项目记忆的摘要清单。 */
-    MEMORY,
+    MEMORY("memory"),
 
     /** 项目规则（AGENTS.md / CLAUDE.md）。 */
-    PROJECT_RULES;
+    PROJECT_RULES("projectRules");
 
     companion object {
         /** frontmatter 里的宽松写法映射：忽略大小写、连字符与下划线差异。 */
@@ -110,3 +110,31 @@ data class AgentDefinitionEntry(
     val definition: AgentDefinition,
     val scope: AgentDefinitionScope
 )
+
+/** 设置页新建/编辑子代理时提交的表单快照。 */
+data class AgentDefinitionForm(
+    val name: String,
+    val description: String,
+    val providerId: String? = null,
+    val model: String? = null,
+    val reasoningEffort: String? = null,
+    val allowedTools: List<String> = emptyList(),
+    val disallowedTools: List<String> = emptyList(),
+    val inject: Set<InjectPart> = AgentDefinition.DEFAULT_INJECT,
+    val prompt: String = ""
+)
+
+/** 保存子代理定义失败的原因。 */
+enum class AgentSaveError {
+    /** 名称为空、过长或含不能做文件名的字符。 */
+    INVALID_NAME,
+
+    /** 提示词正文为空：解析器会直接丢掉这种定义，存下来也用不了。 */
+    EMPTY_PROMPT,
+
+    /** 同作用域已有同名子代理。 */
+    NAME_CONFLICT,
+
+    /** 写盘失败。 */
+    IO_FAILED
+}
