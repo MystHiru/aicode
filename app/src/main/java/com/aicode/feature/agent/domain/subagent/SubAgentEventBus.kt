@@ -46,8 +46,23 @@ class SubAgentEventBus @Inject constructor() {
     /** 运行中的子代理数量。 */
     val activeCount: Int get() = _activeSubSessionIds.value.size
 
-    /** 是否已达并发上限（5）。 */
-    val isFull: Boolean get() = activeCount >= 5
+    /** 是否已达并发上限。 */
+    val isFull: Boolean get() = activeCount >= MAX_RUNNING
+
+    /**
+     * 直接把某个子代理移出活跃集合，不广播事件；返回它此前是否处于活跃状态。
+     *
+     * 用户在界面上手动停止或删除运行中的子会话时走这条路径：不能改用 [emit]，
+     * 因为 ViewModel 收到 STOPPED 事件后又会回调 stopAgentSession，形成无限循环。
+     * 返回值同时用于区分「用户手动终止」与「TaskTool 已处理过」（后者返回 false），
+     * 避免向父代理重复投递通知。
+     */
+    fun release(subSessionId: String): Boolean {
+        val current = _activeSubSessionIds.value
+        if (subSessionId !in current) return false
+        _activeSubSessionIds.value = current - subSessionId
+        return true
+    }
 
     fun emit(event: SubAgentEvent) {
         // 同步维护活跃集合
@@ -60,5 +75,10 @@ class SubAgentEventBus @Inject constructor() {
             }
         }
         _events.tryEmit(event)
+    }
+
+    companion object {
+        /** 同时运行的子代理上限。判定以此为准，工具层只引用不自己再写一份。 */
+        const val MAX_RUNNING = 5
     }
 }

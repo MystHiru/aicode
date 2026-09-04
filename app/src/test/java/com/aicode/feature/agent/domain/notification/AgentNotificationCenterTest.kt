@@ -14,7 +14,7 @@ class AgentNotificationCenterTest {
         kind = AgentNotificationKind.BACKGROUND_TASK,
         sourceId = id,
         title = "build $id",
-        succeeded = true,
+        outcome = NotificationOutcome.COMPLETED,
         exitCode = 0
     )
 

@@ -68,6 +68,7 @@ object AgentNotificationFormatter {
         }
         appendLine("  <status>${statusText()}</status>")
         appendLine("  <summary>${summaryText()}</summary>")
+        detail?.takeIf { it.isNotBlank() }?.let { appendLine("  <detail>${escapeXml(it)}</detail>") }
         // 转义尖括号：输出里若含 <status>/<summary> 等字样会污染提示条的正则提取。
         tailOutput?.takeIf { it.isNotBlank() }?.let { appendLine("  <tail-output>${escapeXml(it)}</tail-output>") }
         append("</$tag>")
@@ -90,24 +91,36 @@ object AgentNotificationFormatter {
         }
         put("status", statusText())
         put("summary", summaryText())
+        detail?.takeIf { it.isNotBlank() }?.let { put("detail", JsonPrimitive(it)) }
         tailOutput?.takeIf { it.isNotBlank() }?.let { put("tail_output", JsonPrimitive(it)) }
         put("hint", singleHint())
     }
 
-    private fun PendingNotification.statusText(): String = if (succeeded) "completed" else "failed"
+    private fun PendingNotification.statusText(): String = when (outcome) {
+        NotificationOutcome.COMPLETED -> "completed"
+        NotificationOutcome.FAILED -> "failed"
+        NotificationOutcome.STOPPED -> "stopped"
+    }
 
     private fun PendingNotification.summaryText(): String = when (kind) {
         AgentNotificationKind.BACKGROUND_TASK ->
-            "后台任务「$title」已结束（退出码 ${exitCode ?: "未知"}）"
-        AgentNotificationKind.SUBAGENT ->
-            "子代理「$title」已${if (succeeded) "执行完成" else "执行失败"}"
+            "后台任务「$title」已${if (outcome == NotificationOutcome.STOPPED) "被终止" else "结束（退出码 ${exitCode ?: "未知"}）"}"
+        AgentNotificationKind.SUBAGENT -> when (outcome) {
+            NotificationOutcome.COMPLETED -> "子代理「$title」已执行完成"
+            NotificationOutcome.FAILED -> "子代理「$title」已执行失败"
+            NotificationOutcome.STOPPED -> "子代理「$title」已被用户手动终止，任务未完成"
+        }
     }
 
     private fun PendingNotification.singleHint(): String = when (kind) {
         AgentNotificationKind.BACKGROUND_TASK ->
             "通知已携带该终端最后 $TAIL_LINES 行输出；如需完整日志可用 terminal(action=\"read\", tab_id=\"$sourceId\") 读取。"
-        AgentNotificationKind.SUBAGENT ->
-            "可用 task(action=\"read\", id=\"$sourceId\") 读取子代理的最后输出。"
+        AgentNotificationKind.SUBAGENT -> when (outcome) {
+            NotificationOutcome.STOPPED ->
+                "该子代理已停止，不会再有后续通知；如需看它停止前的进展可用 task(action=\"read\", id=\"$sourceId\") 读取。是否重新派发请征求用户意见，不要自行重试。"
+            else ->
+                "可用 task(action=\"read\", id=\"$sourceId\") 读取子代理的最后输出。"
+        }
     }
 
     private fun buildHint(items: List<PendingNotification>): String {

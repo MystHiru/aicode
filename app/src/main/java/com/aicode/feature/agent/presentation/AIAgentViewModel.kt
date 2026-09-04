@@ -36,6 +36,7 @@ import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.agent.domain.notification.AgentNotificationCenter
 import com.aicode.feature.agent.domain.notification.AgentNotificationFormatter
 import com.aicode.feature.agent.domain.notification.AgentNotificationKind
+import com.aicode.feature.agent.domain.notification.NotificationOutcome
 import com.aicode.feature.agent.domain.notification.PendingNotification
 import com.aicode.feature.agent.domain.permission.PermissionChoice
 import com.aicode.feature.agent.domain.mcp.McpManager
@@ -781,22 +782,47 @@ class AIAgentViewModel @Inject constructor(
     private fun enqueueSubAgentNotification(event: SubAgentEvent) {
         viewModelScope.launch {
             val title = sessionUseCase.getSessionById(event.subSessionId)?.title ?: "子代理"
-            val item = PendingNotification(
-                kind = AgentNotificationKind.SUBAGENT,
-                sourceId = event.subSessionId,
+            notifyParentSubAgentFinished(
+                parentSessionId = event.parentSessionId,
+                subSessionId = event.subSessionId,
                 title = title,
-                succeeded = event.type != SubAgentEventType.FAILED
-            )
-            if (sessionJobs[event.parentSessionId]?.isActive == true) {
-                agentNotificationCenter.enqueue(event.parentSessionId, item)
-                return@launch
-            }
-            enqueueAgentRequest(
-                request = AgentNotificationFormatter.buildMessage(listOf(item)),
-                projectRoot = _currentWorkspace.value,
-                targetSessionId = event.parentSessionId
+                outcome = if (event.type == SubAgentEventType.FAILED) {
+                    NotificationOutcome.FAILED
+                } else {
+                    NotificationOutcome.COMPLETED
+                },
+                detail = event.detail.takeIf { it.isNotBlank() && event.type == SubAgentEventType.FAILED }
             )
         }
+    }
+
+    /**
+     * 向父会话投递一条子代理结束通知：父会话忙碌时入队搭车，空闲时立即注入触发新一轮。
+     * 失败与被终止都要带上原因，否则父代理只知道「没成」，还得再 read 一次才可能拿到线索。
+     */
+    private suspend fun notifyParentSubAgentFinished(
+        parentSessionId: String,
+        subSessionId: String,
+        title: String,
+        outcome: NotificationOutcome,
+        detail: String?
+    ) {
+        val item = PendingNotification(
+            kind = AgentNotificationKind.SUBAGENT,
+            sourceId = subSessionId,
+            title = title,
+            outcome = outcome,
+            detail = detail
+        )
+        if (sessionJobs[parentSessionId]?.isActive == true) {
+            agentNotificationCenter.enqueue(parentSessionId, item)
+            return
+        }
+        enqueueAgentRequest(
+            request = AgentNotificationFormatter.buildMessage(listOf(item)),
+            projectRoot = _currentWorkspace.value,
+            targetSessionId = parentSessionId
+        )
     }
 
     /**
@@ -840,7 +866,7 @@ class AIAgentViewModel @Inject constructor(
         kind = AgentNotificationKind.BACKGROUND_TASK,
         sourceId = tabId,
         title = title,
-        succeeded = exitCode == 0,
+        outcome = if (exitCode == 0) NotificationOutcome.COMPLETED else NotificationOutcome.FAILED,
         command = command,
         exitCode = exitCode,
         tailOutput = tailOutput
@@ -1307,6 +1333,24 @@ class AIAgentViewModel @Inject constructor(
     fun stopAgentSession(sessionId: String) {
         val job = sessionJobs[sessionId] ?: return
         if (!job.isActive) return
+        // 用户在界面上手动停止运行中的子代理：交回并发槽位并告知父代理，否则槽位泄漏到进程重启，
+        // 且父代理会一直等一条永不到达的完成通知。TaskTool 的 stop/del 已在 emit(STOPPED) 时释放过，
+        // 那条路径下 release 返回 false，不会重复通知。
+        if (subAgentEventBus.release(sessionId)) {
+            viewModelScope.launch {
+                val sub = sessionUseCase.getSessionById(sessionId)
+                val parentId = sub?.parentId
+                if (parentId != null) {
+                    notifyParentSubAgentFinished(
+                        parentSessionId = parentId,
+                        subSessionId = sessionId,
+                        title = sub.title,
+                        outcome = NotificationOutcome.STOPPED,
+                        detail = "用户在界面上手动停止了这个子代理，任务未完成。"
+                    )
+                }
+            }
+        }
         val runningTools = _runningTools.value[sessionId]?.values?.toList() ?: emptyList()
         val streamingText = _streamingTexts.value[sessionId]
         val streamingReasoning = _streamingReasonings.value[sessionId]
@@ -1545,10 +1589,16 @@ class AIAgentViewModel @Inject constructor(
     }
 
     fun deleteSession(id: String) = viewModelScope.launch {
+        // 删掉运行中的子代理时先取它的父会话与标题（删库后就取不到了），稍后告知父代理。
+        // 删的是父会话时无需通知（父会话本身也没了），但级联删掉的子会话仍要交回并发槽位。
+        val deletedSession = sessionUseCase.getSessionById(id)
+        val stoppedSubAgent = deletedSession?.takeIf { it.parentId != null && subAgentEventBus.release(id) }
+
         checkpointManager.clearSessionCheckpoints(id)
         val deletedIds = sessionUseCase.deleteSession(id)
 
         deletedIds.forEach { sid ->
+            subAgentEventBus.release(sid)
             sessionJobs[sid]?.cancel()
             sessionJobs.remove(sid)
             _agentStates.value = _agentStates.value - sid
@@ -1573,6 +1623,16 @@ class AIAgentViewModel @Inject constructor(
                     _currentSessionId.value = createAndUpsertSession(ws)
                 }
             }
+        }
+
+        stoppedSubAgent?.let { sub ->
+            notifyParentSubAgentFinished(
+                parentSessionId = sub.parentId!!,
+                subSessionId = sub.id,
+                title = sub.title,
+                outcome = NotificationOutcome.STOPPED,
+                detail = "用户删除了这个子代理会话，任务未完成，其对话记录已不可读取。"
+            )
         }
     }
 

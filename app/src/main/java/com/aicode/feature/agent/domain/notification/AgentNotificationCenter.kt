@@ -8,19 +8,27 @@ import javax.inject.Singleton
 enum class AgentNotificationKind { BACKGROUND_TASK, SUBAGENT }
 
 /**
+ * 异步任务的结束方式。[STOPPED] 与 [FAILED] 必须区分：被用户手动终止不是执行出错，
+ * 混为一谈会让 AI 把人为中断当成故障去排查或重试。
+ */
+enum class NotificationOutcome { COMPLETED, FAILED, STOPPED }
+
+/**
  * 一条待送给 AI 的异步完成通知（后台终端命令 / 子代理）。
  *
  * @property sourceId 终端 tabId 或子代理会话 id，AI 据此调 terminal(read) / task(read) 取完整结果。
+ * @property detail 结束原因补充：子代理失败时的错误信息、被终止时的说明；正常完成时为 null。
  * @property seq [AgentNotificationCenter] 分配的单调序号，供 peek 后精确 ack；未入队时为 0。
  */
 data class PendingNotification(
     val kind: AgentNotificationKind,
     val sourceId: String,
     val title: String,
-    val succeeded: Boolean,
+    val outcome: NotificationOutcome,
     val command: String? = null,
     val exitCode: Int? = null,
     val tailOutput: String? = null,
+    val detail: String? = null,
     val seq: Long = 0
 )
 

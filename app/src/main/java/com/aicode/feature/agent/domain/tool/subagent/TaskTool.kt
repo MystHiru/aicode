@@ -58,7 +58,6 @@ class TaskTool @Inject constructor(
     private companion object {
         const val TAG = "TaskTool"
         const val TASK_DESCRIPTION_MAX = 30
-        const val MAX_RUNNING_SUBAGENTS = 5
         /** 未指定 agent 时子会话记录的类型标识。 */
         const val DEFAULT_SUBAGENT_TYPE = "subagent"
     }
@@ -131,7 +130,7 @@ class TaskTool @Inject constructor(
         // 检查并发上限
         if (eventBus.isFull) {
             return ToolResult.Error(
-                "子代理已达上限（最多 $MAX_RUNNING_SUBAGENTS 个同时运行），请先等待其中某个完成或用 stop 停止后再创建",
+                "子代理已达上限（最多 ${SubAgentEventBus.MAX_RUNNING} 个同时运行），请先等待其中某个完成或用 stop 停止后再创建",
                 "MAX_SUBAGENTS_REACHED"
             )
         }
@@ -320,7 +319,7 @@ class TaskTool @Inject constructor(
                 put("subagents", jsonArray)
                 put("count", subs.size)
                 put("runningCount", activeIds.size)
-                put("maxRunning", MAX_RUNNING_SUBAGENTS)
+                put("maxRunning", SubAgentEventBus.MAX_RUNNING)
             }
         )
     }

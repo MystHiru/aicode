@@ -18,7 +18,7 @@ class AgentNotificationFormatterTest {
         kind = AgentNotificationKind.BACKGROUND_TASK,
         sourceId = "term-2",
         title = "gradle build",
-        succeeded = false,
+        outcome = NotificationOutcome.FAILED,
         command = "./gradlew assemble",
         exitCode = 1,
         tailOutput = "error: <unresolved> & failed"
@@ -28,7 +28,15 @@ class AgentNotificationFormatterTest {
         kind = AgentNotificationKind.SUBAGENT,
         sourceId = "sub-1",
         title = "调研缓存实现",
-        succeeded = true
+        outcome = NotificationOutcome.COMPLETED
+    )
+
+    private val stoppedSubAgent = PendingNotification(
+        kind = AgentNotificationKind.SUBAGENT,
+        sourceId = "sub-2",
+        title = "重构缓存层",
+        outcome = NotificationOutcome.STOPPED,
+        detail = "用户在界面上手动停止了这个子代理，任务未完成。"
     )
 
     @Test
@@ -103,5 +111,37 @@ class AgentNotificationFormatterTest {
         val obj = array[0] as JsonObject
 
         assertEquals("error: <unresolved> & failed", (obj["tail_output"] as JsonPrimitive).content)
+    }
+
+    /**
+     * 被用户手动停止不能报成 failed：那会让 AI 把人为中断当成故障去排查或直接重试。
+     * detail 携带停止原因，免得父代理只知道「没成」。
+     */
+    @Test
+    fun message_stoppedSubAgentCarriesReasonAndNoRetryHint() {
+        val text = AgentNotificationFormatter.buildMessage(listOf(stoppedSubAgent))
+
+        assertTrue(text.contains("<status>stopped</status>"))
+        assertTrue(text.contains("<summary>子代理「重构缓存层」已被用户手动终止，任务未完成</summary>"))
+        assertTrue(text.contains("<detail>用户在界面上手动停止了这个子代理，任务未完成。</detail>"))
+        assertTrue(text.contains("不要自行重试"))
+    }
+
+    @Test
+    fun jsonArray_stoppedSubAgentCarriesDetail() {
+        val array = AgentNotificationFormatter.buildJsonArray(listOf(stoppedSubAgent))
+        val obj = array[0] as JsonObject
+
+        assertEquals("stopped", (obj["status"] as JsonPrimitive).content)
+        assertTrue((obj["detail"] as JsonPrimitive).content.contains("手动停止"))
+    }
+
+    /** 正常完成不带 detail，避免白白占用上下文。 */
+    @Test
+    fun jsonArray_completedSubAgentHasNoDetail() {
+        val array = AgentNotificationFormatter.buildJsonArray(listOf(subAgent))
+        val obj = array[0] as JsonObject
+
+        assertEquals(null, obj["detail"])
     }
 }
