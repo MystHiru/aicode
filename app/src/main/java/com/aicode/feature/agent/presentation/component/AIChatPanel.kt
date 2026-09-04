@@ -450,17 +450,23 @@ fun AIChatPanel(
     )
 
     // 自动滚动跟随
-    var positionedSession by remember { mutableStateOf<String?>(null) }
-    var followBottom by remember { mutableStateOf(true) }
+    // 两个状态都必须 saveable：窄窗打开编辑器 / 终端 / Git / 设置都是全屏路由，聊天页整棵组合
+    // 被 dispose。用普通 remember 的话返回时 positionedSession 归 null（当成换了会话重新贴底）、
+    // followBottom 归 true（校准循环把恢复出的位置拉回底部），浏览历史的位置就丢了。
+    var positionedSession by rememberSaveable { mutableStateOf<String?>(null) }
+    var followBottom by rememberSaveable { mutableStateOf(true) }
 
     // key 必须带上 inputBarReservePx：闭包捕获的是创建时的值，用无 key 的 remember 会让
     // 判定永远停在首帧的兜底留白（156dp）上，面板展开把悬浮层顶高后仍按旧安全区算。
     val isAtBottom by remember(inputBarReservePx) {
         derivedStateOf {
-            if (!listState.canScrollForward) return@derivedStateOf true
             val layout = listState.layoutInfo
+            // 列表还没测量（首帧、或消息未就绪期间 LazyColumn 未挂载）时 layoutInfo 为空、
+            // canScrollForward 恒 false。此时不能判「在底部」——从别的页面返回的首帧会因此
+            // 恢复跟随，把 listState 刚恢复出的滚动位置拉回底部。
             val lastVisible = layout.visibleItemsInfo.lastOrNull()
-                ?: return@derivedStateOf true
+                ?: return@derivedStateOf false
+            if (!listState.canScrollForward) return@derivedStateOf true
             val lastIndex = layout.totalItemsCount - 1
             // 到底 = 最后内容底部停在安全区（悬浮层上沿）附近，而非视口底：
             // 判定更严格，避免用户拖走一小段后仍被判「在底部」而恢复跟随、立即被拉回。
