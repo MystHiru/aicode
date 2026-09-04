@@ -605,7 +605,12 @@ class AIAgentViewModel @Inject constructor(
     }
 
     fun hasRunningSessionsInCurrentWorkspace(): Boolean {
-        return sessions.value.any { sessionJobs[it.id]?.isActive == true }
+        if (sessions.value.any { sessionJobs[it.id]?.isActive == true }) return true
+        // 子代理会话不在 sessions（只含根会话）里：漏掉它们会在父代理这一轮结束时
+        // 提前释放唤醒锁与前台服务，仍在跑的子代理会被系统挂起。
+        return subSessionsByParent.value.values.any { subs ->
+            subs.any { sessionJobs[it.id]?.isActive == true }
+        }
     }
 
     /** 任务开始：拿 CPU 唤醒锁并拉起前台保活通知，避免熄屏或切后台时进程被挂起、回收。 */

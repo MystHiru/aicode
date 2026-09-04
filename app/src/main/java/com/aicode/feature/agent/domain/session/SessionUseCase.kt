@@ -121,6 +121,9 @@ class SessionUseCase @Inject constructor(
             workspacePath = parent.workspacePath,
             createdAt = now,
             updatedAt = now,
+            // 必须继承父会话 mode：权限引擎按会话 mode 判定写拦截，默认 BUILD 会让 PLAN
+            // 模式下派出的子代理绕过只读限制，反过来 AUTO 模式的子代理又会弹授权窗打扰用户。
+            mode = parent.mode,
             providerId = providerId ?: parent.providerId,
             model = model ?: parent.model,
             reasoningEffort = reasoningEffort ?: parent.reasoningEffort,
