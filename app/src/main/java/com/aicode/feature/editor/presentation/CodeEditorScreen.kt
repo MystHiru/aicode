@@ -1,6 +1,7 @@
 package com.aicode.feature.editor.presentation
 
 import android.graphics.Typeface
+import android.view.ViewGroup
 import android.util.TypedValue
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -431,6 +432,13 @@ private fun EditorSurface(
             // sora 默认把 8 秒内的连续输入并成一条撤销记录，一次撤销会吞掉整段输入。
             UndoManager.setMergeTimeLimit(UNDO_MERGE_WINDOW_MS)
             CodeEditor(ctx).apply {
+                // sora 的 getScrollMaxY() 在 LayoutParams 为空或高度是 WRAP_CONTENT 时会跳过
+                // verticalExtraSpaceFactor，底部额外滚动空间（下面那行设的半屏留白）就没了。
+                // Compose 的 AndroidView 添加子 View 时用的正是默认 WRAP_CONTENT，必须显式改掉。
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
                 isEditable = true
                 typefaceText = Typeface.MONOSPACE
                 setTextSize(settings.fontSizeSp.toFloat())
