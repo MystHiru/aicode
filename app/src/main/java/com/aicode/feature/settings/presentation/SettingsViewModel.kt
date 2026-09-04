@@ -30,9 +30,12 @@ import com.aicode.feature.agent.domain.permission.PermissionRulesRepository
 import com.aicode.feature.agent.domain.skill.SkillConfigRepository
 import com.aicode.feature.agent.domain.skill.SkillRepository
 import com.aicode.feature.agent.domain.skill.SkillScope
+import com.aicode.feature.agent.domain.subagent.AgentDefinitionForm
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionRepository
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionScope
+import com.aicode.feature.agent.domain.subagent.AgentSaveError
 import com.aicode.feature.agent.domain.subagent.InjectPart
+import com.aicode.feature.agent.domain.tool.ToolRegistry
 import com.aicode.feature.settings.data.remote.ModelApiService
 import com.aicode.feature.settings.data.remote.ContainerImageDownloader
 import com.aicode.feature.settings.data.remote.ModelMetadataService
@@ -198,11 +201,12 @@ data class SkillUiEntry(
     val instructions: String
 )
 
-/** 子代理列表页的 UI 状态：定义内容 + 来源作用域。 */
+/** 子代理列表页的 UI 状态：定义内容 + 来源作用域 + 启停状态。 */
 data class SubAgentUiEntry(
     val name: String,
     val description: String,
     val scope: AgentDefinitionScope,
+    val disabled: Boolean,
     val providerId: String?,
     val model: String?,
     val reasoningEffort: String?,
@@ -212,6 +216,13 @@ data class SubAgentUiEntry(
     val prompt: String,
     val filePath: String?
 )
+
+/** 子代理编辑页的保存结果：UI 据此决定是退回列表还是就地报错。 */
+sealed interface SubAgentSaveState {
+    data object Idle : SubAgentSaveState
+    data object Saved : SubAgentSaveState
+    data class Failed(val error: AgentSaveError) : SubAgentSaveState
+}
 
 /**
  * 把趋势聚合补全为周期内的完整时间轴：无记录的天/小时补 0，避免周期内调用集中在同一天时
@@ -258,6 +269,7 @@ class SettingsViewModel @Inject constructor(
     private val permissionRulesRepository: PermissionRulesRepository,
     private val skillRepository: SkillRepository,
     private val agentDefinitionRepository: AgentDefinitionRepository,
+    private val toolRegistry: ToolRegistry,
     private val skillConfigRepository: SkillConfigRepository,
     private val visionModelSettingsRepository: VisionModelSettingsRepository,
     private val compactionModelSettingsRepository: CompactionModelSettingsRepository,
@@ -437,6 +449,9 @@ class SettingsViewModel @Inject constructor(
 
     private val _subAgents = MutableStateFlow<List<SubAgentUiEntry>>(emptyList())
     val subAgents: StateFlow<List<SubAgentUiEntry>> = _subAgents.asStateFlow()
+
+    private val _subAgentSaveState = MutableStateFlow<SubAgentSaveState>(SubAgentSaveState.Idle)
+    val subAgentSaveState: StateFlow<SubAgentSaveState> = _subAgentSaveState.asStateFlow()
 
     val mcpStatuses: StateFlow<List<McpServerStatus>> = mcpManager.statuses
 
@@ -915,6 +930,7 @@ class SettingsViewModel @Inject constructor(
                         name = entry.definition.name,
                         description = entry.definition.description,
                         scope = entry.scope,
+                        disabled = agentDefinitionRepository.isDisabled(entry.definition.name),
                         providerId = entry.definition.providerId,
                         model = entry.definition.model,
                         reasoningEffort = entry.definition.reasoningEffort,
@@ -930,6 +946,43 @@ class SettingsViewModel @Inject constructor(
     }
 
     /** 删除指定作用域的子代理定义文件（不可恢复），随后立即刷新列表。 */
+    /** 切换子代理启用/禁用（写入对应作用域的 agents.json）；禁用后不再进主代理的可派发清单。 */
+    fun setSubAgentEnabled(name: String, enabled: Boolean, scope: AgentDefinitionScope) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { agentDefinitionRepository.setDisabled(name, !enabled, scope) }
+            refreshSubAgents()
+        }
+    }
+
+    /**
+     * 保存子代理定义。[originalName] 为编辑前的名称，新建时为 null；
+     * 结果转成 [subAgentSaveState]，编辑页据此退回列表或就地报错。
+     */
+    fun saveSubAgent(
+        form: AgentDefinitionForm,
+        scope: AgentDefinitionScope,
+        originalName: String? = null
+    ) {
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                agentDefinitionRepository.save(form, scope, originalName)
+            }
+            _subAgentSaveState.value = if (error == null) {
+                SubAgentSaveState.Saved
+            } else {
+                SubAgentSaveState.Failed(error)
+            }
+            if (error == null) refreshSubAgents()
+        }
+    }
+
+    fun clearSubAgentSaveState() {
+        _subAgentSaveState.value = SubAgentSaveState.Idle
+    }
+
+    /** 当前已注册的全部工具名（含 MCP 动态工具），供编辑页勾选工具白名单与黑名单。 */
+    fun availableToolNames(): List<String> = toolRegistry.getAvailableTools().map { it.name }
+
     fun deleteSubAgent(name: String, scope: AgentDefinitionScope) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { agentDefinitionRepository.delete(name, scope) }

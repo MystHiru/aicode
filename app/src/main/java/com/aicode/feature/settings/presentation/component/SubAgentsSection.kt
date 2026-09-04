@@ -44,6 +44,7 @@ import compose.icons.feathericons.Users
 /**
  * 子代理二级页：与「技能」一致的折叠分组列表——「当前项目 / 全局」两组各自可折叠，
  * 每行一个子代理（图标 + 名称 + 描述 + 模型标签），左滑删除，点击行进入详情。
+ * 新建入口在顶栏的「＋」，启用开关与编辑入口在详情页。
  */
 @Composable
 internal fun SubAgentsSection(
@@ -210,6 +211,14 @@ private fun SubAgentRow(
                             text = model,
                             textColor = MaterialTheme.colorScheme.tertiary,
                             backgroundColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f)
+                        )
+                    }
+                    // 只在禁用时挂标签：默认启用是常态，每行都挂一个反而护不住重点。
+                    if (entry.disabled) {
+                        McpPill(
+                            text = stringResource(R.string.common_disabled),
+                            textColor = MaterialTheme.colorScheme.outline,
+                            backgroundColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
                         )
                     }
                 }

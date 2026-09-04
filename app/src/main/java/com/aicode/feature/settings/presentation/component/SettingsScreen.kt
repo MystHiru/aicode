@@ -97,6 +97,7 @@ import compose.icons.feathericons.Image
 import compose.icons.feathericons.Info
 import compose.icons.feathericons.Lock
 import compose.icons.feathericons.Moon
+import compose.icons.feathericons.Edit2
 import compose.icons.feathericons.Plus
 import compose.icons.feathericons.RefreshCw
 import compose.icons.feathericons.Save
@@ -133,6 +134,7 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     SkillDetail(R.string.settings_skills),
     SubAgents(R.string.settings_subagents),
     SubAgentDetail(R.string.settings_subagents),
+    SubAgentEditor(R.string.settings_subagents),
     Container(R.string.settings_container),
     ContainerDownloads(R.string.container_download_image),
     Proxy(R.string.proxy_title),
@@ -146,13 +148,16 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
 }
 
 /**
- * 分区层级：0 首页菜单，1 一级分区，2 分区里再翻一层的详情 / 编辑页。
+ * 分区层级：0 首页菜单，1 一级分区，2 分区里再翻一层的详情 / 编辑页，3 详情页之上的编辑页。
  *
  * 只用于判定切换方向（变浅算返回）。[SettingsSection.Log] 的上一层是动态的（见 logReturnSection），
  * 统一当二级算：从菜单直接进它仍是 0 → 2 的「前进」，方向不会反。
  */
 private fun SettingsSection.depth(): Int = when (this) {
     SettingsSection.Menu -> 0
+    // 子代理编辑页既可从列表(1) 进也可从详情页(2) 进，必须比详情页更深：
+    // 同深度会让「编辑 → 详情」也被当成前进，返回时页面从右侧滑入，方向是反的。
+    SettingsSection.SubAgentEditor -> 3
     SettingsSection.ProviderEditor,
     SettingsSection.SkillDetail,
     SettingsSection.SubAgentDetail,
@@ -176,6 +181,7 @@ fun SettingsScreen(
     val mcpReloading by viewModel.mcpReloading.collectAsStateWithLifecycle()
     val skills by viewModel.skills.collectAsStateWithLifecycle()
     val subAgents by viewModel.subAgents.collectAsStateWithLifecycle()
+    val subAgentSaveState by viewModel.subAgentSaveState.collectAsStateWithLifecycle()
     val globalRules by viewModel.globalRules.collectAsStateWithLifecycle()
     val projectRules by viewModel.projectRules.collectAsStateWithLifecycle()
     val currentProjectName by viewModel.currentProjectName.collectAsStateWithLifecycle()
@@ -234,6 +240,12 @@ fun SettingsScreen(
     var skillToDelete by remember { mutableStateOf<SkillUiEntry?>(null) }
     var selectedSubAgent by remember { mutableStateOf<SubAgentUiEntry?>(null) }
     var subAgentToDelete by remember { mutableStateOf<SubAgentUiEntry?>(null) }
+    // 子代理编辑目标：null 表示新建一个；编辑现有定义时指向被编辑的条目。
+    var editingSubAgent by remember { mutableStateOf<SubAgentUiEntry?>(null) }
+    // 编辑页的返回目标：从详情页进就回详情页，从列表顶栏「＋」进就回列表。
+    var subAgentEditorReturn by remember { mutableStateOf(SettingsSection.SubAgents) }
+    // 保存后要在详情页展示的子代理名：列表刷新是异步的，先记名字等刷新完再换快照。
+    var pendingSubAgentName by remember { mutableStateOf<String?>(null) }
     // 子代理提示词 Markdown 解析缓存：与技能详情同理，避免重复解析卡顿
     val subAgentMarkdownCache = remember { MarkdownRenderCache() }
     // 技能正文 Markdown 解析缓存：详情页多次进入复用，避免重复解析卡顿
@@ -258,6 +270,7 @@ fun SettingsScreen(
         SettingsSection.Log -> logReturnSection.takeUnless { expanded && it == SettingsSection.Menu }
         SettingsSection.SkillDetail -> SettingsSection.Skills
         SettingsSection.SubAgentDetail -> SettingsSection.SubAgents
+        SettingsSection.SubAgentEditor -> subAgentEditorReturn
         SettingsSection.ContainerDownloads -> SettingsSection.Container
         else -> if (expanded) null else SettingsSection.Menu
     }
@@ -271,6 +284,15 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         viewModel.refreshSkills()
         viewModel.refreshSubAgents()
+    }
+
+    // 编辑保存后回详情页：等列表刷新出新快照再换，避免详情页停在保存前的旧值（改名时按新名找）。
+    LaunchedEffect(subAgents, pendingSubAgentName) {
+        val target = pendingSubAgentName ?: return@LaunchedEffect
+        subAgents.firstOrNull { it.name.equals(target, ignoreCase = true) }?.let { fresh ->
+            selectedSubAgent = fresh
+            pendingSubAgentName = null
+        }
     }
 
     // 首次（或公告内容更新后）进入「容器与镜像」页自动弹出使用说明；哈希比对在 ViewModel 完成。
@@ -364,6 +386,28 @@ fun SettingsScreen(
                 onNavigateBack = { section = SettingsSection.Providers },
                 onSave = { provider ->
                     viewModel.saveProvider(provider)
+                }
+            )
+
+            current == SettingsSection.SubAgentEditor -> SubAgentEditorScreen(
+                initial = editingSubAgent,
+                providers = providers,
+                modelMetadata = modelMetadata,
+                availableTools = remember { viewModel.availableToolNames() },
+                saveState = subAgentSaveState,
+                onLoadMetadata = { viewModel.loadAllModelMetadata() },
+                onSave = { form, scope -> viewModel.saveSubAgent(form, scope, editingSubAgent?.name) },
+                onSaved = { savedName ->
+                    viewModel.clearSubAgentSaveState()
+                    // 从详情页进来的改完回详情页，但得等新快照到位再展示
+                    if (subAgentEditorReturn == SettingsSection.SubAgentDetail) {
+                        pendingSubAgentName = savedName
+                    }
+                    section = subAgentEditorReturn
+                },
+                onNavigateBack = {
+                    viewModel.clearSubAgentSaveState()
+                    section = subAgentEditorReturn
                 }
             )
 
@@ -469,6 +513,32 @@ fun SettingsScreen(
                                 )
                             }
                         }
+                        SettingsSection.SubAgents -> IconButton(onClick = {
+                            editingSubAgent = null
+                            subAgentEditorReturn = SettingsSection.SubAgents
+                            section = SettingsSection.SubAgentEditor
+                        }) {
+                            Icon(
+                                FeatherIcons.Plus,
+                                contentDescription = stringResource(R.string.subagent_add),
+                                tint = MaterialTheme.colorScheme.onBackground,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        SettingsSection.SubAgentDetail -> selectedSubAgent?.let { entry ->
+                            IconButton(onClick = {
+                                editingSubAgent = entry
+                                subAgentEditorReturn = SettingsSection.SubAgentDetail
+                                section = SettingsSection.SubAgentEditor
+                            }) {
+                                Icon(
+                                    FeatherIcons.Edit2,
+                                    contentDescription = stringResource(R.string.subagent_edit),
+                                    tint = MaterialTheme.colorScheme.onBackground,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
                         SettingsSection.Log -> {
                             IconButton(onClick = { viewModel.refreshLogs() }) {
                                 Icon(FeatherIcons.RefreshCw, contentDescription = stringResource(R.string.settings_refresh_logs))
@@ -570,7 +640,12 @@ fun SettingsScreen(
                 SettingsSection.SubAgentDetail -> selectedSubAgent?.let { entry ->
                     SubAgentDetailSection(
                         entry = entry,
-                        cache = subAgentMarkdownCache
+                        cache = subAgentMarkdownCache,
+                        onToggle = { enabled ->
+                            viewModel.setSubAgentEnabled(entry.name, enabled, entry.scope)
+                            // 同步更新详情页快照，开关立即响应
+                            selectedSubAgent = selectedSubAgent?.copy(disabled = !enabled)
+                        }
                     )
                 }
                 SettingsSection.Container -> ContainerSection(
@@ -650,6 +725,7 @@ fun SettingsScreen(
                     onSelectModelPage = { viewModel.setModelStatsPage(it) }
                 )
                 SettingsSection.ProviderEditor -> {} // 已在上方 early return 处理
+                SettingsSection.SubAgentEditor -> {} // 已在上方 early return 处理
                 SettingsSection.RemoteServers -> {} // 已在上方 early return 处理
                 SettingsSection.About -> AboutSection(
                     updateCheckEnabled = updateCheckEnabled,
