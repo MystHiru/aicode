@@ -697,12 +697,14 @@ class BackupManagerImpl @Inject constructor(
 
     private fun ChatSessionEntity.toDto() = ChatSessionDto(
         id = id, title = title, createdAt = createdAt, updatedAt = updatedAt, workspacePath = workspacePath,
-        mode = mode, reasoningEffort = reasoningEffort, providerId = providerId, model = model, isPinned = isPinned
+        mode = mode, reasoningEffort = reasoningEffort, providerId = providerId, model = model, isPinned = isPinned,
+        parentId = parentId, subagentType = subagentType
     )
 
     private fun ChatSessionDto.toEntity() = ChatSessionEntity(
         id = id, title = title, createdAt = createdAt, updatedAt = updatedAt, workspacePath = workspacePath,
-        mode = mode, reasoningEffort = reasoningEffort, providerId = providerId, model = model, isPinned = isPinned
+        mode = mode, reasoningEffort = reasoningEffort, providerId = providerId, model = model, isPinned = isPinned,
+        parentId = parentId, subagentType = subagentType
     )
 
     private fun AgentMessageEntity.toDto() = AgentMessageDto(
