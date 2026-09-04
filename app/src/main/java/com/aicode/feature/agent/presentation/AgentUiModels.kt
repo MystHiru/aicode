@@ -161,12 +161,20 @@ internal val BLANK_GLYPH_CODE_POINTS: Set<Char> = setOf(
  * 注意：保留代理对(emoji 等)与普通可见字符；零宽连接符 ZWJ 只在「整条文本是否为空」上当空，
  * 不会从展示文本里被剔除，故 emoji 连字序列不受影响。
  */
-fun CharSequence.hasVisibleContent(): Boolean = any { ch ->
-    !ch.isWhitespace() &&
-        ch.category != CharCategory.FORMAT &&
-        ch.category != CharCategory.CONTROL &&
-        ch.category != CharCategory.SURROGATE &&
-        ch !in BLANK_GLYPH_CODE_POINTS
+fun CharSequence.hasVisibleContent(): Boolean {
+    var i = 0
+    while (i < length) {
+        val ch = get(i)
+        if (!ch.isWhitespace() && ch.category != CharCategory.FORMAT &&
+            ch.category != CharCategory.CONTROL && ch !in BLANK_GLYPH_CODE_POINTS
+        ) {
+            // 代理区划（emoji 所在补全平面）仅在成对的合法高/低代理时算可见，孤立或残缺代理仍判空
+            if (ch.category != CharCategory.SURROGATE) return true
+            if (Character.isHighSurrogate(ch) && i + 1 < length && Character.isLowSurrogate(get(i + 1))) return true
+        }
+        i++
+    }
+    return false
 }
 
 /**
