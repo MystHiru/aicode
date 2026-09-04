@@ -66,4 +66,5 @@
 | 主题 | 说明 |
 | --- | --- |
 | 在容器中编译 Android 应用 | 搭 JDK 与 Android SDK，从源码出 APK → [文档](/advanced/build-android-app) |
+| 安装 Playwright 浏览器自动化 | 容器内装 Chromium 并接入 Playwright MCP，让 AI 操作网页 → [文档](/advanced/playwright-mcp) |
 | 自定义面板 | 用脚本在输入框上方画余额或用量卡片 → [文档](/advanced/dashboard-cards) |
