@@ -348,8 +348,8 @@ internal fun AgentMessageItem(
                             )
                         }
                         if (message.role == MessageRole.ASSISTANT && (message.inputTokens > 0 || message.outputTokens > 0)) {
-                            val inStr = formatTokenCount(message.inputTokens)
-                            val outStr = formatTokenCount(message.outputTokens)
+                            val inStr = formatTokenCount(message.inputTokens.toLong())
+                            val outStr = formatTokenCount(message.outputTokens.toLong())
                             Text(
                                 text = "↑$inStr ↓$outStr",
                                 style = MaterialTheme.typography.labelSmall,

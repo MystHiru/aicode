@@ -1505,8 +1505,8 @@ class AIAgentViewModel @Inject constructor(
             appendLine("| 模式 | ${session.mode.name} |")
             appendLine("| 工作区 | ${escapeMd(session.workspacePath)} |")
             appendLine("| 消息数 | $msgCount |")
-            appendLine("| 输入 tokens | ${formatTokenCount(session.totalInputTokens)} |")
-            appendLine("| 输出 tokens | ${formatTokenCount(session.totalOutputTokens)} |")
+            appendLine("| 输入 tokens | ${formatTokenCount(session.totalInputTokens.toLong())} |")
+            appendLine("| 输出 tokens | ${formatTokenCount(session.totalOutputTokens.toLong())} |")
         }
         viewModelScope.launch {
             sessionUseCase.touch(sid, messagePersistenceUseCase.nextTimestamp())

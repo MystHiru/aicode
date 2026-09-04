@@ -219,8 +219,8 @@ private fun ConnectionIndicator(
 
 @Composable
 private fun TokenStats(inputTokens: Int, outputTokens: Int) {
-    val inStr = formatTokenCount(inputTokens)
-    val outStr = formatTokenCount(outputTokens)
+    val inStr = formatTokenCount(inputTokens.toLong())
+    val outStr = formatTokenCount(outputTokens.toLong())
     Text(
         text = "↑$inStr ↓$outStr",
         style = MaterialTheme.typography.bodySmall,

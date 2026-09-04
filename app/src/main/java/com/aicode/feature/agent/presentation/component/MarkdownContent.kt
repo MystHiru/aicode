@@ -57,9 +57,10 @@ internal class MarkdownRenderCache(
     }
 }
 
-internal fun formatTokenCount(tokens: Int): String = when {
-    tokens >= 1_000_000 -> "%.1fM".format(tokens / 1_000_000.0)
-    tokens >= 1_000 -> "%.1fk".format(tokens / 1_000.0)
+internal fun formatTokenCount(tokens: Long): String = when {
+    tokens >= 1_000_000_000L -> "%.1fB".format(tokens / 1_000_000_000.0)
+    tokens >= 1_000_000L -> "%.1fM".format(tokens / 1_000_000.0)
+    tokens >= 1_000L -> "%.1fk".format(tokens / 1_000.0)
     else -> tokens.toString()
 }
 

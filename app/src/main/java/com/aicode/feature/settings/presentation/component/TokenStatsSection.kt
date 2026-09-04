@@ -130,7 +130,7 @@ internal fun TokenStatsSection(
         ) {
             SummaryCard(
                 label = stringResource(R.string.settings_token_stats_total),
-                value = if (hasData) formatTokenCount((summary.inputTokens + summary.outputTokens).toInt()) else "-",
+                value = if (hasData) formatTokenCount(summary.inputTokens + summary.outputTokens) else "-",
                 modifier = Modifier.weight(1f)
             )
             SummaryCard(
@@ -285,7 +285,7 @@ private fun TokenTrendChart(trend: List<DayCallStats>, isHourly: Boolean) {
     )
     // y 轴：token 数用 k/M 单位展示，避免大数字拥挤
     val yAxisFormatter = remember {
-        CartesianValueFormatter { _, value, _ -> formatTokenCount(value.toLong().toInt()) }
+        CartesianValueFormatter { _, value, _ -> formatTokenCount(value.toLong()) }
     }
     // x 直接用真实 day/hour 序号（padTrend 已保证连续，差恒为 1，xStep 稳定），
     // formatter 对任意值都能格式化出标签，满足 Vico 2.4「formatter 不得返回空字符串」的约束
@@ -402,7 +402,7 @@ private fun ProviderStatsRow(p: ProviderCallStats) {
             )
             Spacer(Modifier.width(Spacing.md))
             Text(
-                text = "↑${formatTokenCount(p.inputTokens.toInt())} ↓${formatTokenCount(p.outputTokens.toInt())}",
+                text = "↑${formatTokenCount(p.inputTokens)} ↓${formatTokenCount(p.outputTokens)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -453,7 +453,7 @@ private fun ModelStatsRow(m: ModelCallStats) {
                 modifier = Modifier.weight(1f)
             )
             Text(
-                text = "↑${formatTokenCount(m.inputTokens.toInt())} ↓${formatTokenCount(m.outputTokens.toInt())}",
+                text = "↑${formatTokenCount(m.inputTokens)} ↓${formatTokenCount(m.outputTokens)}",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -619,7 +619,7 @@ private fun TableCell(text: String, color: Color, width: Dp, fontWeight: FontWei
 
 /** 与对话页头部一致的 token 缩写格式（见 MarkdownContent.formatTokenCount）：1234 -> 1.2k。 */
 private fun formatCache(context: android.content.Context, cached: Long): String =
-    if (cached > 0) context.getString(R.string.settings_token_stats_cached, formatTokenCount(cached.toInt())) else ""
+    if (cached > 0) context.getString(R.string.settings_token_stats_cached, formatTokenCount(cached)) else ""
 
 private fun formatCallTime(epochMillis: Long): String =
     SimpleDateFormat("yyyy/M/d HH:mm", Locale.getDefault()).format(Date(epochMillis))
