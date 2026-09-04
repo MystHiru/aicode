@@ -83,4 +83,49 @@ object AgentDefinitionParser {
     }
 
     private val VALID_EFFORTS = ReasoningEffort.entries.map { it.apiValue }.toSet()
+
+    /**
+     * 把设置页表单写回定义文件文本（frontmatter + 正文），与 [parse] 成对。
+     *
+     * `name` 总是写出来并与文件名保持一致，避免出现「文件名一个名、frontmatter 另一个名」。
+     * 工具名是标识符，直接进方括号列表；其余文本字段一律加引号，免得描述里的冒号或 # 把 YAML 弄坏。
+     */
+    fun serialize(
+        name: String,
+        description: String,
+        providerId: String?,
+        model: String?,
+        reasoningEffort: String?,
+        allowedTools: List<String>,
+        disallowedTools: List<String>,
+        inject: Set<InjectPart>,
+        prompt: String
+    ): String = buildString {
+        appendLine("---")
+        appendLine("name: ${quote(name)}")
+        appendLine("description: ${quote(description)}")
+        providerId?.takeIf { it.isNotBlank() }?.let { appendLine("provider: ${quote(it)}") }
+        model?.takeIf { it.isNotBlank() }?.let { appendLine("model: ${quote(it)}") }
+        reasoningEffort?.takeIf { it in VALID_EFFORTS }?.let { appendLine("reasoningEffort: $it") }
+        if (allowedTools.isNotEmpty()) appendLine("tools: [${allowedTools.joinToString(", ")}]")
+        if (disallowedTools.isNotEmpty()) appendLine("disallowedTools: [${disallowedTools.joinToString(", ")}]")
+        // 空集必须显式写 [none]：省略会被解成默认注入项，恰好与用户「什么都不注入」的选择相反。
+        val injectTokens = if (inject.isEmpty()) {
+            "none"
+        } else {
+            InjectPart.entries.filter { it in inject }.joinToString(", ") { it.token }
+        }
+        appendLine("inject: [$injectTokens]")
+        appendLine("---")
+        appendLine(prompt.trim())
+    }
+
+    /** frontmatter 字符串值：双引号包裹，转义反斜杠与引号，换行压成空格保证单行。 */
+    private fun quote(value: String): String {
+        val escaped = value.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace(Regex("\\s*\\n\\s*"), " ")
+            .trim()
+        return "\"$escaped\""
+    }
 }

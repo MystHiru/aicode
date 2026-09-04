@@ -13,7 +13,7 @@ class ProjectDirectoryAgentSource @Inject constructor(
     private val workspaceRepository: WorkspaceRepository
 ) : AgentDefinitionSource {
 
-    private val agentsRoot: File
+    val agentsRoot: File
         get() = File(File(workspaceRepository.currentPath(), ".aicode"), "agents")
 
     override fun listDefinitions(): List<AgentDefinition> =
