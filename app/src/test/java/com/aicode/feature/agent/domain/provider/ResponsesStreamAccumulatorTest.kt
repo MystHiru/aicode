@@ -391,4 +391,29 @@ class ResponsesStreamAccumulatorTest {
 
         assertEquals("抱歉，我不能帮助这个请求。", acc.toResponse().content)
     }
+
+    @Test
+    fun reasoning_encrypted_content_in_stream_is_captured_in_thinking_blocks_json() {
+        val acc = ResponsesStreamAccumulator()
+
+        val reasoningItem = JsonObject().apply {
+            addProperty("type", "reasoning")
+            addProperty("encrypted_content", "gAAAAABtest_stream")
+            add("summary", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("type", "summary_text")
+                    addProperty("text", "思考总结")
+                })
+            })
+        }
+        acc.accept(itemEvent(ResponsesEvent.OUTPUT_ITEM_DONE, 0, reasoningItem))
+        acc.accept(event("{'type':'response.reasoning_summary_text.delta','delta':'思考总结'}"))
+        acc.accept(event("{'type':'response.output_text.delta','delta':'正文'}"))
+        acc.accept(terminalEvent(ResponsesEvent.COMPLETED, "completed"))
+
+        val resp = acc.toResponse()
+        assertEquals("正文", resp.content)
+        assertEquals("思考总结", resp.reasoning)
+        assertTrue(resp.thinkingBlocksJson != null && resp.thinkingBlocksJson!!.contains("gAAAAABtest_stream"))
+    }
 }

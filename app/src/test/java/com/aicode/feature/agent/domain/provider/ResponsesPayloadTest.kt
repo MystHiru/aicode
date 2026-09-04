@@ -324,4 +324,48 @@ class ResponsesPayloadTest {
         )
         assertTrue(items.isEmpty())
     }
+
+    @Test
+    fun encrypted_reasoning_snapshot_is_sent_back_when_valid() {
+        // OpenAI 官方/通用 Responses 规范：当存有包含有效 encrypted_content 的快照时，回传合法 reasoning item
+        val snapshot = """{"type":"reasoning","encrypted_content":"gAAAAABtest","summary":[{"type":"summary_text","text":"已完成分析"}]}"""
+        val items = buildResponsesInput(
+            systemPrompt = "",
+            systemRole = "system",
+            messages = listOf(
+                AgentMessage.AssistantMessage(
+                    id = "a1",
+                    content = "最终回复",
+                    thinkingBlocksJson = snapshot
+                )
+            )
+        )
+        assertEquals(2, items.size)
+        assertEquals(ResponsesItem.REASONING, items[0]["type"])
+        assertEquals("gAAAAABtest", items[0]["encrypted_content"])
+        @Suppress("UNCHECKED_CAST")
+        val summary = items[0]["summary"] as List<Map<String, Any>>
+        assertEquals(1, summary.size)
+        assertEquals("已完成分析", summary[0]["text"])
+        assertEquals("assistant", items[1]["role"])
+    }
+
+    @Test
+    fun reasoning_snapshot_without_encrypted_content_is_safely_ignored() {
+        // 若快照缺少 encrypted_content，防御性过滤掉，绝不回传残缺项（防止 400）
+        val invalidSnapshot = """{"type":"reasoning","encrypted_content":"","summary":[]}"""
+        val items = buildResponsesInput(
+            systemPrompt = "",
+            systemRole = "system",
+            messages = listOf(
+                AgentMessage.AssistantMessage(
+                    id = "a1",
+                    content = "最终回复",
+                    thinkingBlocksJson = invalidSnapshot
+                )
+            )
+        )
+        assertEquals(1, items.size)
+        assertEquals("assistant", items[0]["role"])
+    }
 }

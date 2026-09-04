@@ -6,6 +6,7 @@ import com.aicode.feature.agent.data.remote.openai.ResponsesToolDefinition
 import com.aicode.feature.agent.domain.model.AgentImage
 import com.aicode.feature.agent.domain.model.AgentMessage
 import com.aicode.feature.agent.domain.tool.AgentTool
+import com.google.gson.JsonParser
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -53,9 +54,8 @@ internal fun buildResponsesTools(tools: List<AgentTool>): List<ResponsesToolDefi
  * 发空文本占位。开关存在是因为两家要求相反：
  * - DeepSeek 思考模式下只要请求带了 `tools`，历史每轮 assistant 都必须完整回传思考内容
  *   （即使该轮未实际调用工具），否则 400；它只收明文 `content`，不支持 summary / encrypted_content。
- * - OpenAI 官方的 reasoning item 必须带 `id` 与 `summary`，无状态回传还需 `encrypted_content`
- *   （靠 `include: ["reasoning.encrypted_content"]` 取回）。这些我们目前都未保存，发一个只有明文的
- *   item 反而会被官方拒，所以官方路径宁可不发。
+ * - OpenAI 官方的 reasoning item 必须带 `id`/`summary` 与 `encrypted_content`，
+ *   只有当存有合法有效密文时才予以回传；若缺失则直接略过，防止只有明文触发服务端 400 拒绝。
  */
 internal fun buildResponsesInput(
     systemPrompt: String,
@@ -89,18 +89,25 @@ internal fun buildResponsesInput(
                 // 思考模式的服务要求上一轮的思考内容原样回传，缺了报 400：
                 // The `reasoning_text` in the thinking mode must be passed back to the API。
                 val hasBody = message.content.isNotBlank() || paired.isNotEmpty()
-                if (hasBody && includeReasoningItems) {
-                    items.add(
-                        mapOf(
-                            "type" to ResponsesItem.REASONING,
-                            "content" to listOf(
-                                mapOf(
-                                    "type" to ResponsesPart.REASONING_TEXT,
-                                    "text" to message.reasoning
+                val encryptedReasoning = decodeResponsesEncryptedReasoning(message.thinkingBlocksJson)
+                if (hasBody) {
+                    if (encryptedReasoning != null) {
+                        // 优先回传 OpenAI 官方/通用 Responses 加密快照（含 summary 与 encrypted_content）
+                        items.add(encryptedReasoning)
+                    } else if (includeReasoningItems) {
+                        // DeepSeek 思考模式：回传明文 reasoning_text
+                        items.add(
+                            mapOf(
+                                "type" to ResponsesItem.REASONING,
+                                "content" to listOf(
+                                    mapOf(
+                                        "type" to ResponsesPart.REASONING_TEXT,
+                                        "text" to message.reasoning
+                                    )
                                 )
                             )
                         )
-                    )
+                    }
                 }
                 if (message.content.isNotBlank()) {
                     items.add(
@@ -137,6 +144,36 @@ internal fun buildResponsesInput(
         }
     }
     return items
+}
+
+/**
+ * 从快照 JSON 中反序列化出 OpenAI 官方 Responses 规范的加密 reasoning item。
+ * 严格按照 OpenCode / OpenAI 防御规则：只有当包含非空字符串 `encrypted_content` 时才被允许回传；
+ * 否则返回 null，绝不发送残缺的 reasoning item 导致服务端抛出 400 错误。
+ */
+internal fun decodeResponsesEncryptedReasoning(thinkingBlocksJson: String?): Map<String, Any?>? {
+    if (thinkingBlocksJson.isNullOrBlank()) return null
+    return runCatching {
+        val obj = JsonParser.parseString(thinkingBlocksJson).asJsonObject
+        if (obj.get("type")?.asString != ResponsesItem.REASONING) return null
+        val encryptedContent = obj.get("encrypted_content")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+        if (encryptedContent.isNullOrBlank()) return null
+        val summaryArr = obj.get("summary")?.takeIf { it.isJsonArray }?.asJsonArray
+        val summaryList = summaryArr?.mapNotNull { el ->
+            if (el.isJsonObject) {
+                val o = el.asJsonObject
+                val map = mutableMapOf<String, Any>()
+                o.get("type")?.takeIf { !it.isJsonNull }?.asString?.let { map["type"] = it }
+                o.get("text")?.takeIf { !it.isJsonNull }?.asString?.let { map["text"] = it }
+                map.takeIf { it.isNotEmpty() }
+            } else null
+        } ?: emptyList()
+        mapOf(
+            "type" to ResponsesItem.REASONING,
+            "summary" to summaryList,
+            "encrypted_content" to encryptedContent
+        )
+    }.getOrNull()
 }
 
 /** 用户消息内容：纯文本直接给字符串，带图时拆成 input_text / input_image part 列表。 */

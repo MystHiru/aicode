@@ -149,6 +149,7 @@ class OpenAIAdapter @Inject constructor(
         reasoningEffort: String?,
         stream: Boolean
     ): Map<String, Any?> {
+        val isDeepSeek = model.contains("deepseek", ignoreCase = true)
         val request = mutableMapOf<String, Any?>(
             "model" to model,
             "input" to buildResponsesInput(
@@ -156,8 +157,8 @@ class OpenAIAdapter @Inject constructor(
                 systemRole = systemRoleForModel(),
                 messages = messages,
                 // DeepSeek 思考模式：带 tools 的请求必须把历史每轮的思考内容回传（同 Chat
-                // Completions 那边的 reasoning_content）；官方路径缺 id / encrypted_content，不发。
-                includeReasoningItems = model.contains("deepseek", ignoreCase = true)
+                // Completions 那边的 reasoning_content）；官方/通用路径在存有合法快照时也会自动回传。
+                includeReasoningItems = isDeepSeek
             )
         )
         buildResponsesTools(tools)?.let {
@@ -165,7 +166,16 @@ class OpenAIAdapter @Inject constructor(
             request["tool_choice"] = "auto"
         }
         if (stream) request["stream"] = true
-        reasoningEffort?.let { request["reasoning"] = mapOf("effort" to it) }
+        reasoningEffort?.let { effort ->
+            if (isDeepSeek) {
+                request["reasoning"] = mapOf("effort" to effort)
+            } else {
+                // OpenAI 官方/通用 Responses 规范：显式开启思考总结（summary: "auto"），
+                // 并索取 encrypted_content 密文，供无状态多轮对话连续推理。
+                request["reasoning"] = mapOf("effort" to effort, "summary" to "auto")
+                request["include"] = listOf("reasoning.encrypted_content")
+            }
+        }
         // OpenAI 官方 Responses 原生支持 prompt_cache_key（同会话路由到同一缓存 shard）；
         // 自动管理缓存的服务（如 DeepSeek）会静默忽略该字段，不会报错。
         logSessionId?.let { request["prompt_cache_key"] = it }
@@ -210,6 +220,7 @@ class OpenAIAdapter @Inject constructor(
             toolCalls = parsed.toolCalls,
             stopReason = responsesStopReason(status, incompleteReason, parsed.toolCalls.isNotEmpty()),
             reasoning = parsed.reasoning.takeIf { it.isNotEmpty() },
+            thinkingBlocksJson = parsed.thinkingBlocksJson,
             inputTokens = usage.inputTokens,
             outputTokens = usage.outputTokens,
             cachedInputTokens = usage.cachedInputTokens

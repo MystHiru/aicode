@@ -11,7 +11,9 @@ import com.google.gson.JsonObject
 internal data class ResponsesOutput(
     val text: String = "",
     val reasoning: String = "",
-    val toolCalls: List<ToolCall> = emptyList()
+    val toolCalls: List<ToolCall> = emptyList(),
+    /** 官方 Responses 思考项快照（包含 encrypted_content 与 summary），供多轮无状态安全回传。 */
+    val thinkingBlocksJson: String? = null
 )
 
 /** Responses 的 token 用量。 */
@@ -33,6 +35,7 @@ internal fun parseResponsesOutput(output: JsonArray?): ResponsesOutput {
     val text = StringBuilder()
     val reasoning = StringBuilder()
     val toolCalls = mutableListOf<ToolCall>()
+    var thinkingBlocksSnapshot: String? = null
     output.forEach { element ->
         // 上游字段类型偶有出入，单个 item 解析失败不应废掉整个响应
         runCatching {
@@ -57,6 +60,7 @@ internal fun parseResponsesOutput(output: JsonArray?): ResponsesOutput {
 
                 // 思考内容可能在 content（reasoning_text）或 summary（summary_text），视服务而定；
                 // 两边都可能是 null（如不返回思考明文时）。
+                // 同时提取加密思考快照（encrypted_content），供无状态多轮交互安全回传。
                 ResponsesItem.REASONING -> {
                     item.arr("content")?.forEach { partEl ->
                         val part = partEl.asJsonObject
@@ -70,11 +74,20 @@ internal fun parseResponsesOutput(output: JsonArray?): ResponsesOutput {
                             reasoning.append(part.str("text").orEmpty())
                         }
                     }
+                    val encContent = item.str("encrypted_content")?.takeIf { it.isNotEmpty() }
+                    if (encContent != null && thinkingBlocksSnapshot == null) {
+                        val snapshot = JsonObject().apply {
+                            addProperty("type", ResponsesItem.REASONING)
+                            addProperty("encrypted_content", encContent)
+                            item.arr("summary")?.let { add("summary", it) } ?: add("summary", JsonArray())
+                        }
+                        thinkingBlocksSnapshot = snapshot.toString()
+                    }
                 }
             }
         }
     }
-    return ResponsesOutput(text.toString(), reasoning.toString(), toolCalls)
+    return ResponsesOutput(text.toString(), reasoning.toString(), toolCalls, thinkingBlocksSnapshot)
 }
 
 internal fun parseResponsesUsage(usage: JsonObject?): ResponsesUsage {
@@ -126,6 +139,7 @@ internal class ResponsesStreamAccumulator {
 
     private val text = StringBuilder()
     private val reasoning = StringBuilder()
+    private var thinkingBlocksSnapshotJson: String? = null
     private val calls = LinkedHashMap<String, CallAcc>()
     /** 终止事件里兜底解析出的工具调用（流中 delta 事件缺失时的补齐来源）。 */
     private val finalCalls = mutableListOf<ToolCall>()
@@ -156,11 +170,25 @@ internal class ResponsesStreamAccumulator {
 
             ResponsesEvent.OUTPUT_ITEM_ADDED, ResponsesEvent.OUTPUT_ITEM_DONE -> {
                 val item = event.obj("item") ?: return null
-                if (item.str("type") != ResponsesItem.FUNCTION_CALL) return null
-                val acc = calls.getOrPut(event.callKey()) { CallAcc() }
-                item.str("call_id")?.takeIf { it.isNotEmpty() }?.let { acc.callId = it }
-                item.str("name")?.takeIf { it.isNotEmpty() }?.let { acc.name = it }
-                item.str("arguments")?.takeIf { it.isNotEmpty() }?.let { acc.args = StringBuilder(it) }
+                when (item.str("type")) {
+                    ResponsesItem.FUNCTION_CALL -> {
+                        val acc = calls.getOrPut(event.callKey()) { CallAcc() }
+                        item.str("call_id")?.takeIf { it.isNotEmpty() }?.let { acc.callId = it }
+                        item.str("name")?.takeIf { it.isNotEmpty() }?.let { acc.name = it }
+                        item.str("arguments")?.takeIf { it.isNotEmpty() }?.let { acc.args = StringBuilder(it) }
+                    }
+                    ResponsesItem.REASONING -> {
+                        val encContent = item.str("encrypted_content")?.takeIf { it.isNotEmpty() }
+                        if (encContent != null) {
+                            val snapshot = JsonObject().apply {
+                                addProperty("type", ResponsesItem.REASONING)
+                                addProperty("encrypted_content", encContent)
+                                item.arr("summary")?.let { add("summary", it) } ?: add("summary", JsonArray())
+                            }
+                            thinkingBlocksSnapshotJson = snapshot.toString()
+                        }
+                    }
+                }
             }
 
             ResponsesEvent.FUNCTION_CALL_ARGS_DELTA -> {
@@ -213,6 +241,7 @@ internal class ResponsesStreamAccumulator {
             toolCalls = toolCalls,
             stopReason = responsesStopReason(status, incompleteReason, toolCalls.isNotEmpty()),
             reasoning = reasoning.toString().takeIf { it.isNotEmpty() },
+            thinkingBlocksJson = thinkingBlocksSnapshotJson,
             inputTokens = usage.inputTokens,
             outputTokens = usage.outputTokens,
             cachedInputTokens = usage.cachedInputTokens
@@ -229,6 +258,7 @@ internal class ResponsesStreamAccumulator {
         val parsed = parseResponsesOutput(response.arr("output"))
         if (text.isEmpty()) text.append(parsed.text)
         if (reasoning.isEmpty()) reasoning.append(parsed.reasoning)
+        if (thinkingBlocksSnapshotJson == null) thinkingBlocksSnapshotJson = parsed.thinkingBlocksJson
         finalCalls.clear()
         finalCalls.addAll(parsed.toolCalls)
     }
