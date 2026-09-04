@@ -548,13 +548,13 @@ class GeminiAdapter @Inject constructor(
         }.getOrNull()
     }
 
-    /** 思考强度 → Gemini thinkingConfig。模型名含 gemini-3 用 thinkingLevel，否则用 thinkingBudget（2.5 系）。 */
+    /** 思考强度 → Gemini thinkingConfig。模型名含 gemini-3 用 thinkingLevel，否则用 thinkingBudget（2.5 系）。显式带上 includeThoughts 以返回思考内容。 */
     private fun buildThinkingConfig(reasoningEffort: String?): Map<String, Any>? {
         if (reasoningEffort == null) return null
         return if (model.contains("gemini-3")) {
             // thinkingLevel 仅支持 minimal/low/medium/high；xhigh/max 归一到 high（元数据未命中时 UI 会给出全部档位）
             val level = if (reasoningEffort == "xhigh" || reasoningEffort == "max") "high" else reasoningEffort
-            mapOf("thinkingLevel" to level)
+            mapOf("thinkingLevel" to level, "includeThoughts" to true)
         } else {
             val budget = when (reasoningEffort) {
                 "low" -> 1024
@@ -562,7 +562,7 @@ class GeminiAdapter @Inject constructor(
                 "high", "xhigh", "max" -> 8192
                 else -> return null
             }
-            mapOf("thinkingBudget" to budget)
+            mapOf("thinkingBudget" to budget, "includeThoughts" to true)
         }
     }
 

@@ -100,7 +100,7 @@ class GeminiAdapterTest {
 
         val config = generationConfig(api.lastRequest)
         assertEquals(64000, config["maxOutputTokens"])
-        assertEquals(mapOf("thinkingBudget" to 8192), config["thinkingConfig"])
+        assertEquals(mapOf("thinkingBudget" to 8192, "includeThoughts" to true), config["thinkingConfig"])
     }
 
     @Test
