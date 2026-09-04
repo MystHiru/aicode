@@ -132,6 +132,7 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     Mcp(R.string.settings_mcp),
     Skills(R.string.settings_skills),
     SkillDetail(R.string.settings_skills),
+    SkillEditor(R.string.settings_skills),
     SubAgents(R.string.settings_subagents),
     SubAgentDetail(R.string.settings_subagents),
     SubAgentEditor(R.string.settings_subagents),
@@ -155,8 +156,9 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
  */
 private fun SettingsSection.depth(): Int = when (this) {
     SettingsSection.Menu -> 0
-    // 子代理编辑页既可从列表(1) 进也可从详情页(2) 进，必须比详情页更深：
+    // 技能/子代理编辑页既可从列表(1) 进也可从详情页(2) 进，必须比详情页更深：
     // 同深度会让「编辑 → 详情」也被当成前进，返回时页面从右侧滑入，方向是反的。
+    SettingsSection.SkillEditor,
     SettingsSection.SubAgentEditor -> 3
     SettingsSection.ProviderEditor,
     SettingsSection.SkillDetail,
@@ -180,6 +182,7 @@ fun SettingsScreen(
     val mcpStatuses by viewModel.mcpStatuses.collectAsStateWithLifecycle()
     val mcpReloading by viewModel.mcpReloading.collectAsStateWithLifecycle()
     val skills by viewModel.skills.collectAsStateWithLifecycle()
+    val skillSaveState by viewModel.skillSaveState.collectAsStateWithLifecycle()
     val subAgents by viewModel.subAgents.collectAsStateWithLifecycle()
     val subAgentSaveState by viewModel.subAgentSaveState.collectAsStateWithLifecycle()
     val globalRules by viewModel.globalRules.collectAsStateWithLifecycle()
@@ -238,6 +241,12 @@ fun SettingsScreen(
     var editingMcp by remember { mutableStateOf<McpServerEntry?>(null) }
     var selectedSkill by remember { mutableStateOf<SkillUiEntry?>(null) }
     var skillToDelete by remember { mutableStateOf<SkillUiEntry?>(null) }
+    // 技能编辑目标：null 表示新建一个；编辑现有技能时指向被编辑的条目。
+    var editingSkill by remember { mutableStateOf<SkillUiEntry?>(null) }
+    // 编辑页的返回目标：从详情页进就回详情页，从列表顶栏「＋」进就回列表。
+    var skillEditorReturn by remember { mutableStateOf(SettingsSection.Skills) }
+    // 保存后要在详情页展示的技能名：列表刷新是异步的，先记名字等刷新完再换快照。
+    var pendingSkillName by remember { mutableStateOf<String?>(null) }
     var selectedSubAgent by remember { mutableStateOf<SubAgentUiEntry?>(null) }
     var subAgentToDelete by remember { mutableStateOf<SubAgentUiEntry?>(null) }
     // 子代理编辑目标：null 表示新建一个；编辑现有定义时指向被编辑的条目。
@@ -269,6 +278,7 @@ fun SettingsScreen(
         SettingsSection.ProviderEditor -> SettingsSection.Providers
         SettingsSection.Log -> logReturnSection.takeUnless { expanded && it == SettingsSection.Menu }
         SettingsSection.SkillDetail -> SettingsSection.Skills
+        SettingsSection.SkillEditor -> skillEditorReturn
         SettingsSection.SubAgentDetail -> SettingsSection.SubAgents
         SettingsSection.SubAgentEditor -> subAgentEditorReturn
         SettingsSection.ContainerDownloads -> SettingsSection.Container
@@ -284,6 +294,15 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         viewModel.refreshSkills()
         viewModel.refreshSubAgents()
+    }
+
+    // 编辑保存后回详情页：等列表刷新出新快照再换，避免详情页停在保存前的旧值（改名时按新名找）。
+    LaunchedEffect(skills, pendingSkillName) {
+        val target = pendingSkillName ?: return@LaunchedEffect
+        skills.firstOrNull { it.name.equals(target, ignoreCase = true) }?.let { fresh ->
+            selectedSkill = fresh
+            pendingSkillName = null
+        }
     }
 
     // 编辑保存后回详情页：等列表刷新出新快照再换，避免详情页停在保存前的旧值（改名时按新名找）。
@@ -386,6 +405,24 @@ fun SettingsScreen(
                 onNavigateBack = { section = SettingsSection.Providers },
                 onSave = { provider ->
                     viewModel.saveProvider(provider)
+                }
+            )
+
+            current == SettingsSection.SkillEditor -> SkillEditorScreen(
+                initial = editingSkill,
+                saveState = skillSaveState,
+                onSave = { form, scope -> viewModel.saveSkill(form, scope, editingSkill?.name) },
+                onSaved = { savedName ->
+                    viewModel.clearSkillSaveState()
+                    // 从详情页进来的改完回详情页，但得等新快照到位再展示
+                    if (skillEditorReturn == SettingsSection.SkillDetail) {
+                        pendingSkillName = savedName
+                    }
+                    section = skillEditorReturn
+                },
+                onNavigateBack = {
+                    viewModel.clearSkillSaveState()
+                    section = skillEditorReturn
                 }
             )
 
@@ -510,6 +547,32 @@ fun SettingsScreen(
                                     contentDescription = stringResource(R.string.container_download_current_source_title),
                                     tint = MaterialTheme.colorScheme.onBackground,
                                     modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                        SettingsSection.Skills -> IconButton(onClick = {
+                            editingSkill = null
+                            skillEditorReturn = SettingsSection.Skills
+                            section = SettingsSection.SkillEditor
+                        }) {
+                            Icon(
+                                FeatherIcons.Plus,
+                                contentDescription = stringResource(R.string.skills_add),
+                                tint = MaterialTheme.colorScheme.onBackground,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        SettingsSection.SkillDetail -> selectedSkill?.let { entry ->
+                            IconButton(onClick = {
+                                editingSkill = entry
+                                skillEditorReturn = SettingsSection.SkillDetail
+                                section = SettingsSection.SkillEditor
+                            }) {
+                                Icon(
+                                    FeatherIcons.Edit2,
+                                    contentDescription = stringResource(R.string.skills_edit),
+                                    tint = MaterialTheme.colorScheme.onBackground,
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
                         }
@@ -725,6 +788,7 @@ fun SettingsScreen(
                     onSelectModelPage = { viewModel.setModelStatsPage(it) }
                 )
                 SettingsSection.ProviderEditor -> {} // 已在上方 early return 处理
+                SettingsSection.SkillEditor -> {} // 已在上方 early return 处理
                 SettingsSection.SubAgentEditor -> {} // 已在上方 early return 处理
                 SettingsSection.RemoteServers -> {} // 已在上方 early return 处理
                 SettingsSection.About -> AboutSection(

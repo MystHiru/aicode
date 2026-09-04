@@ -14,7 +14,7 @@ class ProjectDirectorySkillSource @Inject constructor(
     private val workspaceRepository: WorkspaceRepository
 ) : SkillSource {
 
-    private val skillsRoot: File
+    val skillsRoot: File
         get() = File(File(workspaceRepository.currentPath(), ".aicode"), "skills")
 
     override fun listSkills(): List<Skill> = SkillDirectoryScanner.scan(skillsRoot)

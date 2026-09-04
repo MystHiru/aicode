@@ -746,7 +746,7 @@
 
     <!-- Skills Settings -->
     <string name="skills_empty">No skills installed</string>
-    <string name="skills_empty_hint">Put a folder containing SKILL.md into ~/.aicode/skills/</string>
+    <string name="skills_empty_hint">Tap + in the top bar to create one, or put a folder containing SKILL.md into ~/.aicode/skills/</string>
     <string name="skills_no_project_skills">No skills for the current project</string>
     <string name="skills_no_global_skills">No global skills</string>
     <string name="skills_enable">Enable</string>
@@ -755,6 +755,21 @@
     <string name="skills_delete_confirm_message">This will delete the skill directory of \"%1$s\". This action cannot be undone. Delete?</string>
     <string name="skills_description">Description</string>
     <string name="skills_instructions">Instructions</string>
+    <string name="skills_add">New skill</string>
+    <string name="skills_edit">Edit skill</string>
+    <string name="skills_editor_new">New skill</string>
+    <string name="skills_editor_edit">Edit skill</string>
+    <string name="skills_editor_basic">Basics</string>
+    <string name="skills_editor_scope">Scope</string>
+    <string name="skills_scope_global">Global</string>
+    <string name="skills_scope_project">This project</string>
+    <string name="skills_name_hint">Lowercase is recommended, e.g. pdf-report</string>
+    <string name="skills_description_hint">When to use it; the AI decides whether to load it by this text</string>
+    <string name="skills_instructions_hint">Describe the standard workflow and caveats for this kind of task; Markdown supported</string>
+    <string name="skills_editor_error_invalid_name">Invalid name: it cannot be empty or contain path separators and other special characters</string>
+    <string name="skills_editor_error_empty_instructions">The instructions cannot be empty</string>
+    <string name="skills_editor_error_name_conflict">A skill with this name already exists in this scope</string>
+    <string name="skills_editor_error_io">Failed to write the skill file, please try again</string>
 
     <!-- Subagent Settings -->
     <string name="settings_subagents">Subagents</string>

@@ -123,4 +123,39 @@ class SkillRepositoryTest {
             temp.deleteRecursively()
         }
     }
+
+    @Test
+    fun isValidName_rejectsPathTraversalAndSeparators() {
+        assertTrue(SkillRepository.isValidName("pdf-report"))
+        assertTrue(SkillRepository.isValidName("中文技能名"))
+        assertTrue(!SkillRepository.isValidName(""))
+        assertTrue(!SkillRepository.isValidName("   "))
+        assertTrue(!SkillRepository.isValidName("."))
+        assertTrue(!SkillRepository.isValidName(".."))
+        assertTrue(!SkillRepository.isValidName("a/b"))
+        assertTrue(!SkillRepository.isValidName("a\\b"))
+        assertTrue(!SkillRepository.isValidName("a:b"))
+        assertTrue(!SkillRepository.isValidName("a\u0000b"))
+        assertTrue(!SkillRepository.isValidName("x".repeat(65)))
+    }
+
+    @Test
+    fun instructionFile_prefersSkillMdThenClaudeMd() {
+        val temp = java.nio.file.Files.createTempDirectory("skills-instruction-test").toFile()
+        try {
+            val both = File(temp, "both").apply { mkdirs() }
+            File(both, "CLAUDE.md").writeText("x")
+            File(both, "skill.md").writeText("x")
+            assertEquals("skill.md", SkillRepository.instructionFile(both)?.name)
+
+            val claudeOnly = File(temp, "claude-only").apply { mkdirs() }
+            File(claudeOnly, "CLAUDE.md").writeText("x")
+            assertEquals("CLAUDE.md", SkillRepository.instructionFile(claudeOnly)?.name)
+
+            val empty = File(temp, "empty").apply { mkdirs() }
+            assertEquals(null, SkillRepository.instructionFile(empty))
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
 }

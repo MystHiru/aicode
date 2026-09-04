@@ -84,4 +84,34 @@ object SkillParser {
         
         return map to rest
     }
+
+    /**
+     * 把设置页表单写回 `SKILL.md` 文本（frontmatter + 正文），与 [parse] 成对。
+     *
+     * `name` 总是写出来：技能名优先取 frontmatter，改名只需改这里而不必动目录名（技能目录
+     * 里的脚本常被正文按原路径引用，跟着改名会把引用打断）。
+     * 工具名是标识符，直接进方括号列表；其余文本字段一律加引号，免得描述里的冒号或 # 把 YAML 弄坏。
+     */
+    fun serialize(
+        name: String,
+        description: String,
+        requiredTools: List<String>,
+        instructions: String
+    ): String = buildString {
+        appendLine("---")
+        appendLine("name: ${quote(name)}")
+        appendLine("description: ${quote(description)}")
+        if (requiredTools.isNotEmpty()) appendLine("required_tools: [${requiredTools.joinToString(", ")}]")
+        appendLine("---")
+        appendLine(instructions.trim())
+    }
+
+    /** frontmatter 字符串值：双引号包裹，转义反斜杠与引号，换行压成空格保证单行。 */
+    private fun quote(value: String): String {
+        val escaped = value.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace(Regex("\\s*\\n\\s*"), " ")
+            .trim()
+        return "\"$escaped\""
+    }
 }

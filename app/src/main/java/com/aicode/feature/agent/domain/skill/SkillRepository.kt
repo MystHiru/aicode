@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.skill
 
+import com.aicode.core.util.FileLogger
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -37,6 +38,57 @@ class SkillRepository @Inject constructor(
     fun setSkillDisabled(name: String, disabled: Boolean, scope: SkillScope) =
         skillConfigRepository.setDisabled(name, disabled, scope)
 
+    /**
+     * 写入技能文件（新建或编辑）。[originalName] 为编辑前的名称，新建时传 null；返回 null 表示成功。
+     *
+     * 编辑时写回原目录里的原指令文件（可能叫 CLAUDE.md），改名只改 frontmatter 的 name、不动目录名——
+     * 技能正文常按 `~/.aicode/skills/<目录>/run.py` 引用同目录脚本，跟着改名会把这些引用打断。
+     */
+    fun save(form: SkillForm, scope: SkillScope, originalName: String? = null): SkillSaveError? {
+        val name = form.name.trim()
+        if (!isValidName(name)) return SkillSaveError.INVALID_NAME
+        if (form.instructions.isBlank()) return SkillSaveError.EMPTY_INSTRUCTIONS
+
+        val entries = listAllSkills()
+        val keepingName = originalName != null && originalName.equals(name, ignoreCase = true)
+        if (!keepingName) {
+            val taken = entries.any { it.scope == scope && it.skill.name.equals(name, ignoreCase = true) }
+            if (taken) return SkillSaveError.NAME_CONFLICT
+        }
+
+        val existingDir = originalName?.let { old ->
+            entries.firstOrNull {
+                it.scope == scope && it.skill.name.equals(old, ignoreCase = true)
+            }?.skill?.dir
+        }
+
+        val text = SkillParser.serialize(
+            name = name,
+            description = form.description,
+            requiredTools = form.requiredTools,
+            instructions = form.instructions
+        )
+
+        return try {
+            val dir = existingDir?.takeIf { it.isDirectory } ?: File(skillsRoot(scope), name)
+            dir.mkdirs()
+            val target = instructionFile(dir) ?: File(dir, INSTRUCTION_FILE)
+            target.writeText(text)
+            null
+        } catch (e: Exception) {
+            FileLogger.e(TAG, "保存技能失败: $name", e)
+            SkillSaveError.IO_FAILED
+        }
+    }
+
+    /** 指定作用域的技能根目录。 */
+    fun skillsRoot(scope: SkillScope): File =
+        if (scope == SkillScope.GLOBAL) {
+            localDirectorySkillSource.skillsRoot
+        } else {
+            projectDirectorySkillSource.skillsRoot
+        }
+
     /** 删除指定作用域的技能（删除其目录，不可恢复）。返回是否成功。 */
     fun deleteSkill(name: String, scope: SkillScope): Boolean {
         val entry = listAllSkills().firstOrNull {
@@ -47,6 +99,28 @@ class SkillRepository @Inject constructor(
     }
 
     companion object {
+        private const val TAG = "SkillRepository"
+
+        /** 新建技能时写入的指令文件名。 */
+        private const val INSTRUCTION_FILE = "SKILL.md"
+
+        /** 名称同时用作目录名，禁掉路径分隔符与保留字符；长度上限防止极端目录名。 */
+        internal fun isValidName(name: String): Boolean {
+            if (name.isBlank() || name.length > MAX_NAME_LENGTH) return false
+            if (name == "." || name == "..") return false
+            return name.none { it in ILLEGAL_NAME_CHARS || it.isISOControl() }
+        }
+
+        private const val MAX_NAME_LENGTH = 64
+        private val ILLEGAL_NAME_CHARS = charArrayOf('/', '\\', ':', '*', '?', '"', '<', '>', '|')
+
+        /** 目录里已有的指令文件：SKILL.md 优先，其次 CLAUDE.md（与 [SkillParser.parse] 同一套回退）。 */
+        internal fun instructionFile(dir: File): File? {
+            val files = dir.listFiles()?.filter { it.isFile } ?: return null
+            return files.firstOrNull { it.name.equals("SKILL.md", ignoreCase = true) }
+                ?: files.firstOrNull { it.name.equals("CLAUDE.md", ignoreCase = true) }
+        }
+
         /** 合并两级来源：同名项目级覆盖全局，按名称排序。 */
         internal fun mergeAll(global: List<Skill>, project: List<Skill>): List<SkillEntry> {
             val byName = LinkedHashMap<String, SkillEntry>()

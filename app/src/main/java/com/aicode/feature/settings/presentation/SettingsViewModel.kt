@@ -28,7 +28,9 @@ import com.aicode.feature.agent.domain.mcp.McpToolDescriptor
 import com.aicode.feature.agent.domain.permission.PermissionRule
 import com.aicode.feature.agent.domain.permission.PermissionRulesRepository
 import com.aicode.feature.agent.domain.skill.SkillConfigRepository
+import com.aicode.feature.agent.domain.skill.SkillForm
 import com.aicode.feature.agent.domain.skill.SkillRepository
+import com.aicode.feature.agent.domain.skill.SkillSaveError
 import com.aicode.feature.agent.domain.skill.SkillScope
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionForm
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionRepository
@@ -198,7 +200,9 @@ data class SkillUiEntry(
     val description: String,
     val scope: SkillScope,
     val disabled: Boolean,
-    val instructions: String
+    val instructions: String,
+    /** 手写技能里的 `required_tools`，编辑页不展示，保存时原样写回。 */
+    val requiredTools: List<String> = emptyList()
 )
 
 /** 子代理列表页的 UI 状态：定义内容 + 来源作用域 + 启停状态。 */
@@ -216,6 +220,13 @@ data class SubAgentUiEntry(
     val prompt: String,
     val filePath: String?
 )
+
+/** 技能编辑页的保存结果：UI 据此决定是退回列表还是就地报错。 */
+sealed interface SkillSaveState {
+    data object Idle : SkillSaveState
+    data object Saved : SkillSaveState
+    data class Failed(val error: SkillSaveError) : SkillSaveState
+}
 
 /** 子代理编辑页的保存结果：UI 据此决定是退回列表还是就地报错。 */
 sealed interface SubAgentSaveState {
@@ -446,6 +457,9 @@ class SettingsViewModel @Inject constructor(
 
     private val _skills = MutableStateFlow<List<SkillUiEntry>>(emptyList())
     val skills: StateFlow<List<SkillUiEntry>> = _skills.asStateFlow()
+
+    private val _skillSaveState = MutableStateFlow<SkillSaveState>(SkillSaveState.Idle)
+    val skillSaveState: StateFlow<SkillSaveState> = _skillSaveState.asStateFlow()
 
     private val _subAgents = MutableStateFlow<List<SubAgentUiEntry>>(emptyList())
     val subAgents: StateFlow<List<SubAgentUiEntry>> = _subAgents.asStateFlow()
@@ -898,7 +912,8 @@ class SettingsViewModel @Inject constructor(
                         description = entry.skill.description,
                         scope = entry.scope,
                         disabled = skillRepository.isSkillDisabled(entry.skill.name),
-                        instructions = entry.skill.instructions
+                        instructions = entry.skill.instructions,
+                        requiredTools = entry.skill.requiredTools
                     )
                 }
             }
@@ -919,6 +934,28 @@ class SettingsViewModel @Inject constructor(
             skillRepository.deleteSkill(name, scope)
             refreshSkills()
         }
+    }
+
+    /**
+     * 保存技能。[originalName] 为编辑前的名称，新建时为 null；
+     * 结果转成 [skillSaveState]，编辑页据此退回列表或就地报错。
+     */
+    fun saveSkill(form: SkillForm, scope: SkillScope, originalName: String? = null) {
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                skillRepository.save(form, scope, originalName)
+            }
+            _skillSaveState.value = if (error == null) {
+                SkillSaveState.Saved
+            } else {
+                SkillSaveState.Failed(error)
+            }
+            if (error == null) refreshSkills()
+        }
+    }
+
+    fun clearSkillSaveState() {
+        _skillSaveState.value = SkillSaveState.Idle
     }
 
     /** 重新扫描子代理定义（进入设置页 / 删除后调用，反映盘上增删改）。 */
