@@ -1305,6 +1305,7 @@
     <string name="sync_batch_size_desc">Operations exceeding this limit are queued and processed in batches to avoid disconnects.</string>
     <string name="sync_max_batch_count">Max Count</string>
     <string name="sync_path_mapping">%1$s → %2$s</string>
+    <string name="status_reconnecting">Reconnecting</string>
     <string name="status_connected">Connected</string>
     <string name="status_disconnected">Disconnected</string>
     <string name="status_connection_failed">Connection Failed</string>    <string name="sync_disconnect">Disconnect</string>

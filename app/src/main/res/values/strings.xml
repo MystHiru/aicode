@@ -1304,7 +1304,8 @@
     <string name="sync_max_batch_size">单次同步队列上限</string>
     <string name="sync_batch_size_desc">超出此数量的操作将分批排队执行，防止突发大量修改导致断连。</string>
     <string name="sync_max_batch_count">最大数量</string>
-    <string name="sync_path_mapping">%1$s → %2$s</string>    <string name="status_connected">已连接</string>
+    <string name="sync_path_mapping">%1$s → %2$s</string>    <string name="status_reconnecting">重连中</string>
+    <string name="status_connected">已连接</string>
     <string name="status_disconnected">未连接</string>
     <string name="status_connection_failed">连接失败</string>    <string name="sync_disconnect">断开连接</string>
     <string name="sync_upload_all">上传全部</string>

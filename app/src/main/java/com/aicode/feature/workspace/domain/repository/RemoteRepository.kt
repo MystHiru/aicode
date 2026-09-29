@@ -16,6 +16,7 @@ import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import com.aicode.feature.workspace.domain.model.RemoteConnection
 import com.aicode.feature.workspace.domain.model.RemoteMount
 import com.aicode.feature.workspace.domain.model.RemoteProtocol
+import com.aicode.feature.workspace.domain.model.SyncConnectionState
 import com.aicode.feature.workspace.domain.remote.RemoteAuth
 import com.aicode.feature.workspace.domain.remote.SyncEngine
 import com.aicode.feature.workspace.domain.remote.ftp.FtpSyncClient
@@ -52,6 +53,10 @@ class RemoteRepository @Inject constructor(
 ) {
     private val activeEngines = ConcurrentHashMap<String, SyncEngine>()
     private val activeEngineIds = MutableStateFlow<Set<String>>(emptySet())
+
+    /** 各挂载的实时连接健康度，由 SyncEngine.connectionState 回写。 */
+    private val mountStates = MutableStateFlow<Map<String, SyncConnectionState>>(emptyMap())
+    private val stateJobs = ConcurrentHashMap<String, Job>()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     /** 每个挂载的自动连接重试协程，切换工作区/手动断开时取消。 */
@@ -117,12 +122,14 @@ class RemoteRepository @Inject constructor(
     
     fun getMounts(): Flow<List<RemoteMount>> = combine(
         dao.getAllMounts(),
-        activeEngineIds
-    ) { list, activeIds ->
+        activeEngineIds,
+        mountStates
+    ) { list, activeIds, states ->
         list.map { mountEntity ->
             val connEntity = dao.getConnectionById(mountEntity.connectionId)
             mountEntity.toDomainModel(connEntity?.toDomainModel()).copy(
-                isActive = activeIds.contains(mountEntity.id)
+                isActive = activeIds.contains(mountEntity.id),
+                connectionState = states[mountEntity.id]
             )
         }
     }
@@ -202,6 +209,7 @@ class RemoteRepository @Inject constructor(
             activeEngines[mountId]?.shutdown()
             activeEngines.remove(mountId)
             activeEngineIds.update { it - mountId }
+            stopStateWatch(mountId)
 
             val mountEntity = dao.getMountById(mountId) ?: return@withContext Result.failure(Exception("Mount not found"))
             val connEntity = dao.getConnectionById(mountEntity.connectionId) ?: return@withContext Result.failure(Exception("Connection not found"))
@@ -232,6 +240,7 @@ class RemoteRepository @Inject constructor(
             activeEngines[mountId] = engine
             activeEngineIds.update { it + mountId }
             startLocalWatching(mountId, mount, engine)
+            startStateWatch(mountId, engine)
             Result.success(Unit)
         } catch (e: Exception) {
             // 挂载连接不弹确认：提示用户先去连接配置页测试连通性完成确认
@@ -261,6 +270,7 @@ class RemoteRepository @Inject constructor(
                 ),
                 fallbackPoll = false
             ).collect { batch ->
+                FileLogger.d(TAG, "同步监听收到变更: mount=$mountId count=${batch.changes.size} truncated=${batch.truncated}")
                 for (change in batch.changes) engine.enqueueLocalChange(change.hostPath)
             }
         }
@@ -270,9 +280,26 @@ class RemoteRepository @Inject constructor(
         autoConnectJobs[mountId]?.cancel()
         autoConnectJobs.remove(mountId)
         watchJobs.remove(mountId)?.cancel()
+        stopStateWatch(mountId)
         activeEngines[mountId]?.shutdown()
         activeEngines.remove(mountId)
         activeEngineIds.update { it - mountId }
+    }
+
+    /** 订阅某挂载的实时连接健康度并回写到 [mountStates]。 */
+    private fun startStateWatch(mountId: String, engine: SyncEngine) {
+        mountStates.update { it + (mountId to engine.connectionState.value) }
+        stateJobs[mountId]?.cancel()
+        stateJobs[mountId] = scope.launch {
+            engine.connectionState.collect { state ->
+                mountStates.update { it + (mountId to state) }
+            }
+        }
+    }
+
+    private fun stopStateWatch(mountId: String) {
+        stateJobs.remove(mountId)?.cancel()
+        mountStates.update { it - mountId }
     }
 
     suspend fun forceUploadMount(mountId: String): Result<Unit> = withContext(Dispatchers.IO) {
