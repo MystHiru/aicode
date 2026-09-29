@@ -6,6 +6,7 @@ import com.aicode.core.watch.FileChangeHub
 import com.aicode.core.watch.WatchFilter
 import com.aicode.feature.agent.domain.container.SshHostKeyStore
 import com.aicode.feature.agent.domain.container.SshHostKeyVerifier
+import com.aicode.feature.agent.domain.container.SshLoginKeyStore
 import com.aicode.feature.agent.domain.container.SshPrivateKeyStore
 import com.aicode.feature.agent.domain.container.friendlySshError
 import com.aicode.feature.workspace.data.local.dao.RemoteConnectionDao
@@ -46,6 +47,7 @@ class RemoteRepository @Inject constructor(
     private val hostKeyStore: SshHostKeyStore,
     private val hostKeyVerifier: SshHostKeyVerifier,
     private val privateKeyStore: SshPrivateKeyStore,
+    private val loginKeyStore: SshLoginKeyStore,
     private val fileChangeHub: FileChangeHub
 ) {
     private val activeEngines = ConcurrentHashMap<String, SyncEngine>()
@@ -140,7 +142,10 @@ class RemoteRepository @Inject constructor(
             username = conn.username,
             authType = authType,
             authData = if (authType == "PASSWORD") KeystoreCipher.encryptString(authData) else authData,
-            passphrase = passphrase?.let { KeystoreCipher.encryptString(it) },
+            // 口令以密钥条目为准。这里只在密钥口令有值时镜像到连接；密钥未设置口令时保留连接上的
+            // 存量口令（升级前用户在连接里填的），避免编辑连接把它抹掉。
+            passphrase = passphrase?.let { KeystoreCipher.encryptString(it) }
+                ?: existing?.takeIf { authType == "PRIVATE_KEY" }?.passphrase,
             createdAt = existing?.createdAt ?: System.currentTimeMillis()
         )
         dao.insertConnection(entity)
@@ -209,11 +214,7 @@ class RemoteRepository @Inject constructor(
                 RemoteProtocol.FTP -> FtpSyncClient()
             }
 
-            val auth = if (connEntity.authType == "PASSWORD") {
-                RemoteAuth.Password(KeystoreCipher.decryptString(connEntity.authData))
-            } else {
-                RemoteAuth.PrivateKey(connEntity.authData, connEntity.passphrase?.let { KeystoreCipher.decryptString(it) })
-            }
+            val auth = resolveAuth(connEntity)
 
             client.connect(conn.host, conn.port, conn.username, auth)
             
@@ -335,11 +336,7 @@ class RemoteRepository @Inject constructor(
                 RemoteProtocol.SFTP -> SftpSyncClient(hostKeyVerifier, privateKeyStore)
                 RemoteProtocol.FTP -> FtpSyncClient()
             }
-            val auth = if (connEntity.authType == "PASSWORD") {
-                RemoteAuth.Password(KeystoreCipher.decryptString(connEntity.authData))
-            } else {
-                RemoteAuth.PrivateKey(connEntity.authData, connEntity.passphrase?.let { KeystoreCipher.decryptString(it) })
-            }
+            val auth = resolveAuth(connEntity)
             
             client.connect(conn.host, conn.port, conn.username, auth)
             val files = client.listFiles(path).filter { it.isDirectory }.map { it.name }
@@ -350,6 +347,16 @@ class RemoteRepository @Inject constructor(
         }
     }
 
+    /** 解析连接的认证方式：密钥口令优先取密钥条目上的设置，回退到连接自身的存量口令。 */
+    private fun resolveAuth(connEntity: RemoteConnectionEntity): RemoteAuth =
+        if (connEntity.authType == "PASSWORD") {
+            RemoteAuth.Password(KeystoreCipher.decryptString(connEntity.authData))
+        } else {
+            val passphrase = loginKeyStore.entries().firstOrNull { it.path == connEntity.authData }?.passphrase
+                ?: connEntity.passphrase?.let { KeystoreCipher.decryptString(it) }
+            RemoteAuth.PrivateKey(connEntity.authData, passphrase)
+        }
+
     private fun RemoteConnectionEntity.toDomainModel() = RemoteConnection(
         id = id,
         name = name,
@@ -359,8 +366,7 @@ class RemoteRepository @Inject constructor(
         username = username,
         password = if (authType == "PASSWORD") KeystoreCipher.decryptString(authData) else "",
         authType = if (authType == "PRIVATE_KEY") "key" else "password",
-        authData = authData,
-        passphrase = passphrase?.let { KeystoreCipher.decryptString(it) }
+        authData = authData
     )
 
     private fun RemoteMountEntity.toDomainModel(conn: RemoteConnection?) = RemoteMount(
