@@ -44,7 +44,7 @@ class LoadSkillTool @Inject constructor(
     override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
         val skillName = args["skill_name"]?.jsonPrimitive?.contentOrNull?.trim()
         if (skillName.isNullOrEmpty()) {
-            return ToolResult.Error("缺少必需参数: skill_name", "MISSING_SKILL_NAME")
+            return ToolResult.Error("缺少必需参数：skill_name", "MISSING_SKILL_NAME")
         }
 
         val instructions = skillRepository.loadInstructions(skillName)
@@ -52,7 +52,7 @@ class LoadSkillTool @Inject constructor(
             val available = skillRepository.listSkills().joinToString(", ") { it.name }
             FileLogger.w(TAG, "load_skill 未找到: $skillName，可用: $available")
             return ToolResult.Error(
-                "未找到技能「$skillName」。可用技能: ${available.ifEmpty { "（无）" }}",
+                "未找到技能「$skillName」。可用技能：${available.ifEmpty { "（无）" }}",
                 "SKILL_NOT_FOUND"
             )
         }

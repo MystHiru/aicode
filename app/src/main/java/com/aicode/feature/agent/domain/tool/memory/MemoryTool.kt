@@ -109,7 +109,7 @@ class MemoryTool @Inject constructor(
         context: AgentContext
     ): ToolResult {
         val action = args["action"]?.jsonPrimitive?.contentOrNull?.trim()
-            ?: return ToolResult.Error("缺少必需参数: action", "MISSING_ACTION")
+            ?: return ToolResult.Error("缺少必需参数：action", "MISSING_ACTION")
         
         val memoryName = args["name"]?.jsonPrimitive?.contentOrNull?.trim()
         val scopeStr = args["scope"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()
@@ -122,11 +122,11 @@ class MemoryTool @Inject constructor(
                 "save" -> handleSave(args, memoryName, scope, context.projectRoot)
                 "edit" -> handleEdit(args, memoryName, scope, context.projectRoot)
                 "delete" -> handleDelete(memoryName, scope, context.projectRoot)
-                else -> ToolResult.Error("不支持的操作: $action", "UNSUPPORTED_ACTION")
+                else -> ToolResult.Error("不支持的操作：$action", "UNSUPPORTED_ACTION")
             }
         } catch (e: Exception) {
             FileLogger.e(TAG, "Memory 工具执行失败: ${e.message}", e)
-            ToolResult.Error("记忆操作失败: ${e.message}")
+            ToolResult.Error("记忆操作失败：${e.message}")
         }
     }
 
@@ -139,44 +139,44 @@ class MemoryTool @Inject constructor(
     }
 
     private fun handleRead(name: String?, projectRoot: String?): ToolResult {
-        if (name.isNullOrEmpty()) return ToolResult.Error("read 操作需要 name 参数", "MISSING_NAME")
+        if (name.isNullOrEmpty()) return ToolResult.Error("read 操作缺少必需参数：name", "MISSING_NAME")
         val content = memoryRepository.loadContent(name, projectRoot)
             ?: return ToolResult.Error("未找到记忆「$name」", "MEMORY_NOT_FOUND")
         return ToolResult.Success(JsonPrimitive(content))
     }
 
     private fun handleSave(args: Map<String, JsonElement>, name: String?, scope: MemoryScope, projectRoot: String?): ToolResult {
-        if (name.isNullOrEmpty()) return ToolResult.Error("save 操作需要 name 参数", "MISSING_NAME")
+        if (name.isNullOrEmpty()) return ToolResult.Error("save 操作缺少必需参数：name", "MISSING_NAME")
         val description = args["description"]?.jsonPrimitive?.contentOrNull?.trim()
-            ?: return ToolResult.Error("save 操作需要 description 参数", "MISSING_DESCRIPTION")
+            ?: return ToolResult.Error("save 操作缺少必需参数：description", "MISSING_DESCRIPTION")
         val content = args["content"]?.jsonPrimitive?.contentOrNull?.trim()
-            ?: return ToolResult.Error("save 操作需要 content 参数", "MISSING_CONTENT")
+            ?: return ToolResult.Error("save 操作缺少必需参数：content", "MISSING_CONTENT")
 
         if (scope == MemoryScope.PROJECT && projectRoot.isNullOrBlank()) {
-            return ToolResult.Error("当前未选择工作区，无法保存项目级记忆。请改用 scope=global", "NO_WORKSPACE")
+            return ToolResult.Error("当前未选择工作区，无法保存项目级记忆，请改用 scope=global", "NO_WORKSPACE")
         }
 
         val success = memoryRepository.saveMemory(name, description, content, scope, projectRoot)
         return if (success) {
-            ToolResult.Success(JsonPrimitive("已成功保存记忆「$name」到 ${scope.name.lowercase()} 作用域。它将在下一次会话启动时自动注入摘要。当前会话若需立即使用，请通过 read 操作读取。"))
+            ToolResult.Success(JsonPrimitive("已保存记忆「$name」到 ${scope.name.lowercase()} 作用域，将在下一次会话启动时自动注入摘要。当前会话如需立即使用，请通过 read 操作读取。"))
         } else {
             ToolResult.Error("保存记忆失败，请查看日志。", "SAVE_FAILED")
         }
     }
 
     private fun handleEdit(args: Map<String, JsonElement>, name: String?, scope: MemoryScope, projectRoot: String?): ToolResult {
-        if (name.isNullOrEmpty()) return ToolResult.Error("edit 操作需要 name 参数", "MISSING_NAME")
+        if (name.isNullOrEmpty()) return ToolResult.Error("edit 操作缺少必需参数：name", "MISSING_NAME")
 
         val edits = parseEdits(args)
-            ?: return ToolResult.Error("edit 操作需要 edits 参数：请在 edits 数组里给出至少一个 {old_string,new_string} 编辑", "MISSING_EDITS")
+            ?: return ToolResult.Error("edit 操作缺少必需参数：edits", "MISSING_EDITS")
 
         if (scope == MemoryScope.PROJECT && projectRoot.isNullOrBlank()) {
-            return ToolResult.Error("当前未选择工作区，无法编辑项目级记忆。请改用 scope=global", "NO_WORKSPACE")
+            return ToolResult.Error("当前未选择工作区，无法编辑项目级记忆，请改用 scope=global", "NO_WORKSPACE")
         }
 
         return when (val result = memoryRepository.editMemory(name, edits, scope, projectRoot)) {
             is MemoryEditResult.Success ->
-                ToolResult.Success(JsonPrimitive("已成功编辑记忆「$name」的正文（${scope.name.lowercase()} 作用域）。"))
+                ToolResult.Success(JsonPrimitive("已编辑记忆「$name」的正文（${scope.name.lowercase()} 作用域）。"))
             is MemoryEditResult.NotFound ->
                 ToolResult.Error("未找到记忆「${result.name}」，请先通过 save 创建，或确认 name 与作用域是否正确。", "MEMORY_NOT_FOUND")
             is MemoryEditResult.Error ->
@@ -197,11 +197,11 @@ class MemoryTool @Inject constructor(
     }
 
     private fun handleDelete(name: String?, scope: MemoryScope, projectRoot: String?): ToolResult {
-        if (name.isNullOrEmpty()) return ToolResult.Error("delete 操作需要 name 参数", "MISSING_NAME")
+        if (name.isNullOrEmpty()) return ToolResult.Error("delete 操作缺少必需参数：name", "MISSING_NAME")
         
         val success = memoryRepository.deleteMemory(name, scope, projectRoot)
         return if (success) {
-            ToolResult.Success(JsonPrimitive("已成功删除 ${scope.name.lowercase()} 作用域的记忆「$name」。"))
+            ToolResult.Success(JsonPrimitive("已删除 ${scope.name.lowercase()} 作用域的记忆「$name」。"))
         } else {
             ToolResult.Error("删除失败，记忆「$name」可能不存在于该作用域。", "DELETE_FAILED")
         }
