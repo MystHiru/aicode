@@ -11,7 +11,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -91,21 +90,12 @@ class PromptsViewModel @Inject constructor(
         }
     }
 
-    /** 拖拽重排：按新顺序重新编号并落盘，改变注入顺序。乐观更新本地状态，避免重读导致列表跳动。 */
-    fun reorderFragments(reordered: List<PromptFragment>) {
-        val numbers = reordered.map { it.number }.sorted()
-        val renumbered = reordered.mapIndexed { index, fragment -> fragment.copy(number = numbers[index]) }
-        _state.update { it.copy(fragments = renumbered) }
+    /** 拖拽交换：只交换两个片段的编号并落盘，其余片段不动（避免整份列表被复制到可写层）。 */
+    fun swapFragments(a: PromptFragment, b: PromptFragment) {
         viewModelScope.launch {
             val projectRoot = workspaceRepository.currentPath()
-            val refreshed = withContext(Dispatchers.IO) {
-                if (catalog.reorder(renumbered, projectRoot)) catalog.list(projectRoot) else null
-            }
-            if (refreshed != null) {
-                _state.update { it.copy(fragments = refreshed) }
-            } else {
-                refresh()
-            }
+            withContext(Dispatchers.IO) { catalog.swapNumbers(a, b, projectRoot) }
+            refresh()
         }
     }
 

@@ -967,7 +967,6 @@
 
     <!-- Custom Prompts -->
     <string name="prompts_title">Prompts</string>
-    <string name="prompts_hint">Fragments are listed by number. Only the highest-priority copy of each number takes effect; the badge shows which layer it comes from: Project &gt; Global &gt; Local &gt; Built-in.</string>
     <string name="prompts_sort_long_press">Long-press to reorder</string>
     <string name="prompts_empty">No fragments available</string>
     <string name="prompts_source_project">Project</string>
@@ -985,9 +984,6 @@
     <string name="prompts_field_content_placeholder">What the model should follow</string>
     <string name="prompts_editor_new">New prompt</string>
     <string name="prompts_editor_edit">Edit prompt</string>
-    <string name="prompts_save_hint">Saved to the layer currently in effect for this number; takes effect immediately.</string>
-    <string name="prompts_action_add">Add</string>
-    <string name="prompts_action_save">Save</string>
     <string name="prompts_add_sheet_title">Prompts</string>
     <string name="prompts_add_prompt">Add fragment</string>
     <string name="prompts_add_prompt_hint">Insert a new fragment with a free number</string>

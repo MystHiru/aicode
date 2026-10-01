@@ -21,7 +21,7 @@ import javax.inject.Singleton
  * 多数 Source 维护内容缓存，避免重复读取与格式化；静态基线片段除外，每次读盘以保证编辑即时生效。
  *
  * 片段分两类：
- * - 静态基线：`prompts/` 顶层 `<NN>-<名称>.md`（见 [BASE_FRAGMENTS]），可被 `prompts.custom/` 按数字身份覆盖或新增；
+ * - 静态基线：`prompts/` 顶层 `<NN>-<名称>.md`，可被 `prompts.custom/` 按数字身份覆盖或新增；
  * - 按需叶子：`prompts/agent/` 下的无数字片段（模式提醒、子代理基线、压缩/标题提示词），按精确同名覆盖。
  *
  * `prompts.custom/` 存在 [PromptFragmentResolver.DISABLE_BUILTIN_FILE] 时，主代理提示词只由自定义数字片段组成，

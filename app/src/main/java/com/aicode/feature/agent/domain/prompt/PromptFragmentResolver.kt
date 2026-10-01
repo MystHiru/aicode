@@ -38,22 +38,4 @@ internal object PromptFragmentResolver {
 
     /** `.no-builtin` 是否存在。 */
     fun isBuiltinDisabled(dir: File): Boolean = File(dir, DISABLE_BUILTIN_FILE).isFile
-
-    /**
-     * 合并静态基线：以 [builtinNumbers] 顺序为骨架，[custom] 中命中这些数字的作为覆盖、
-     * 其余作为新增片段，整体按数字升序排列。
-     *
-     * @return 有序的 (数字, 覆盖文件或 null)；null 表示该数字没有自定义文件、用内置默认内容。
-     */
-    fun mergeStatic(
-        builtinNumbers: List<Int>,
-        custom: List<Pair<Int, File>>
-    ): List<Pair<Int, File?>> {
-        val customByNumber = custom.toMap()
-        val numbers = LinkedHashSet<Int>().apply {
-            addAll(builtinNumbers)
-            custom.forEach { if (it.first !in this) add(it.first) }
-        }
-        return numbers.sorted().map { it to customByNumber[it] }
-    }
 }

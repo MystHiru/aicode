@@ -79,7 +79,7 @@ internal fun PromptsSection(
     state: PromptsUiState,
     onOpenFragment: (PromptFragment) -> Unit,
     onDeleteFragment: (Int) -> Unit,
-    onReorder: (List<PromptFragment>) -> Unit,
+    onSwap: (PromptFragment, PromptFragment) -> Unit,
     onToggleBuiltinDisabled: (Boolean) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -110,29 +110,30 @@ internal fun PromptsSection(
                 fragments = state.fragments,
                 onOpenFragment = onOpenFragment,
                 onDeleteFragment = onDeleteFragment,
-                onReorder = onReorder
+                onSwap = onSwap
             )
         }
     }
 }
 
 /**
- * 片段列表。拖拽时只更新本地顺序（不落盘），松手才把最终顺序交给 [onReorder] 持久化，
- * 避免拖动过程中反复写盘 + 重读导致列表抽搐。
+ * 片段列表。拖拽时只记录悬停到的目标行，不即时改动列表；松手才把被拖行与目标行「交换编号」，
+ * 其余片段不受影响（只重写这两个，不会把整份列表复制到可写层）。
  */
 @Composable
 private fun PromptList(
     fragments: List<PromptFragment>,
     onOpenFragment: (PromptFragment) -> Unit,
     onDeleteFragment: (Int) -> Unit,
-    onReorder: (List<PromptFragment>) -> Unit
+    onSwap: (PromptFragment, PromptFragment) -> Unit
 ) {
     var localFragments by remember { mutableStateOf(fragments) }
     LaunchedEffect(fragments) { localFragments = fragments }
 
     val listState = rememberLazyListState()
-    val reorderableState = rememberReorderableLazyListState(listState) { from, to ->
-        localFragments = localFragments.toMutableList().apply { add(to.index, removeAt(from.index)) }
+    var dragTargetIndex by remember { mutableStateOf(-1) }
+    val reorderableState = rememberReorderableLazyListState(listState) { _, to ->
+        dragTargetIndex = to.index
     }
     val hapticFeedback = LocalHapticFeedback.current
 
@@ -182,17 +183,26 @@ private fun PromptList(
                         deleteEnabled = fragment.editable,
                         dragModifier = Modifier.longPressDraggableHandle(
                             onDragStarted = {
+                                dragTargetIndex = -1
                                 hapticFeedback.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
                             },
                             onDragStopped = {
                                 hapticFeedback.performHapticFeedback(HapticFeedbackType.GestureEnd)
-                                // 立即重编号（槽化），与落盘后的编号一致，避免 key 变化引起列表跳动
-                                val numbers = localFragments.map { it.number }.sorted()
-                                val renumbered = localFragments.mapIndexed { index, item ->
-                                    item.copy(number = numbers[index])
+                                // 松手才交换：被拖行与悬停到的目标行互换编号，其余片段保持原编号
+                                val from = localFragments.indexOfFirst { it.number == fragment.number }
+                                val to = dragTargetIndex
+                                dragTargetIndex = -1
+                                if (from >= 0 && to in localFragments.indices && to != from) {
+                                    val a = localFragments[from]
+                                    val b = localFragments[to]
+                                    val swappedA = a.copy(number = b.number)
+                                    val swappedB = b.copy(number = a.number)
+                                    localFragments = localFragments.toMutableList().also {
+                                        it[from] = swappedA
+                                        it[to] = swappedB
+                                    }.sortedBy { it.number }
+                                    onSwap(a, b)
                                 }
-                                localFragments = renumbered
-                                onReorder(renumbered)
                             }
                         )
                     )
