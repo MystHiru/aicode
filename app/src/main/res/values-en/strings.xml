@@ -1432,6 +1432,7 @@
     <string name="crash_report_log">Log files: %1$s</string>
     <string name="crash_report_screen">Screen: %1$s</string>
     <string name="crash_report_mode">Workspace Mode: %1$s</string>
+    <string name="crash_report_memory">Memory: %1$s</string>
     <string name="crash_mode_local">Local PRoot Container</string>
     <string name="crash_mode_remote">Remote SSH</string>
     <string name="crash_mode_unknown">Unknown</string>
@@ -1448,6 +1449,7 @@
     <string name="crash_field_version">App Version</string>
     <string name="crash_field_device">Device</string>
     <string name="crash_field_thread">Thread</string>
+    <string name="crash_field_memory">Memory Usage</string>
     <string name="crash_field_time">Time</string>
 
     <!-- Custom dashboard bar -->

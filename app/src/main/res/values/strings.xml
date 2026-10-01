@@ -1431,6 +1431,7 @@
     <string name="crash_report_log">日志文件：%1$s</string>
     <string name="crash_report_screen">页面：%1$s</string>
     <string name="crash_report_mode">工作区模式：%1$s</string>
+    <string name="crash_report_memory">内存：%1$s</string>
     <string name="crash_mode_local">本地 PRoot 容器</string>
     <string name="crash_mode_remote">远程 SSH</string>
     <string name="crash_mode_unknown">未知</string>
@@ -1447,6 +1448,7 @@
     <string name="crash_field_version">应用版本</string>
     <string name="crash_field_device">设备型号</string>
     <string name="crash_field_thread">异常线程</string>
+    <string name="crash_field_memory">内存用量</string>
     <string name="crash_field_time">发生时间</string>
 
     <!-- 自定义面板（ProviderDashboardBar） -->
