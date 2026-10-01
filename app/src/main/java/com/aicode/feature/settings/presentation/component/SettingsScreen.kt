@@ -915,7 +915,7 @@ fun SettingsScreen(
                             section = SettingsSection.PromptDetail
                         },
                         onDeleteFragment = promptsViewModel::deleteFragment,
-                        onSwap = promptsViewModel::swapFragments,
+                        onReorder = promptsViewModel::reorderFragments,
                         onToggleBuiltinDisabled = promptsViewModel::setBuiltinDisabled
                     )
                     if (showPromptsAddSheet) {

@@ -16,7 +16,7 @@ import java.io.File
 import java.nio.file.Files
 
 /**
- * 四级来源片段的解析/保存/删除/编号交换：编号身份、优先级、落盘层与交换只动两个片段。
+ * 四级来源片段的解析/保存/删除/重排：编号身份、优先级、落盘层。
  *
  * 注意：本地层（`prompts/`）只在**内置存在对应编号**时才会被解析（见 [PromptFragmentCatalog.resolve]），
  * 故这里让 assets 暴露一个内置文件名 `10-builtin.md`，本地同名文件才会生效。
@@ -113,22 +113,17 @@ class PromptFragmentCatalogTest {
     }
 
     @Test
-    fun swapNumbers_只重写两个片段_其余不动_只读层不被删() {
-        write(projectDir, "12-a.md", "A")
-        write(projectDir, "20-c.md", "C")
-        write(localDir, BUILTIN_NAME, "L")
+    fun reorder_按新顺序重新编号并写入可写层() {
+        write(globalDir, "10-a.md", "A")
+        write(globalDir, "30-b.md", "B")
 
-        val a = catalog.list(workspaceDir.path).first { it.number == 12 }
-        val b = catalog.list(workspaceDir.path).first { it.number == 10 }
-        assertEquals(PromptFragmentSource.LOCAL, b.source)
-        assertTrue(catalog.swapNumbers(a, b, workspaceDir.path))
-
-        assertTrue("只读的本地文件不应被删除", File(localDir, BUILTIN_NAME).isFile)
-        assertEquals("未参与的片段不应被改写", "C", File(projectDir, "20-c.md").readText())
+        val original = catalog.list(workspaceDir.path)
+        val reversed = original.reversed()
+        assertTrue(catalog.reorder(reversed, workspaceDir.path))
 
         val after = catalog.list(workspaceDir.path)
-        assertEquals("A", after.first { it.number == 10 }.content)
-        assertEquals("L", after.first { it.number == 12 }.content)
+        assertEquals("B", after.first { it.number == 10 }.content)
+        assertEquals("A", after.first { it.number == 30 }.content)
     }
 
     private companion object {

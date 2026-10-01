@@ -153,44 +153,31 @@ class PromptFragmentCatalog @Inject constructor(
     }
 
     /**
-     * 交换两个片段的编号：只重写这两个片段，列表里其余片段不受影响（不再把整份列表复制到可写层）。
-     *
-     * - 各自写到与来源一致的层（项目/全局各归各层）；只读来源（本地/内置）写到可写层。
-     * - 先删掉各自的旧覆盖，再清掉目标编号上的冲突，最后写入新编号文件。
-     * - 交换内置/本地片段必然产生一份可写副本（编号即身份，无法原地改名）；删掉该覆盖即可恢复。
+     * 按拖拽后的顺序重新编号并落盘：编号集合保持不变，只把各片段内容依次映射到这些编号，
+     * 从而改变注入顺序（数字越小越靠前）。写入可写层。
      */
-    fun swapNumbers(a: PromptFragment, b: PromptFragment, projectRoot: String?): Boolean {
+    fun reorder(reordered: List<PromptFragment>, projectRoot: String?): Boolean {
+        if (reordered.isEmpty()) return false
         val project = projectDir(projectRoot)
-        val writableDirs = listOfNotNull(globalDir, project)
-        val newA = a.copy(number = b.number)
-        val newB = b.copy(number = a.number)
+        val dir = writableDir(projectRoot)
+        val numbers = reordered.map { it.number }.sorted()
         return try {
-            listOf(a, b).forEach { f ->
-                val parent = f.file?.parentFile
-                if (parent != null && parent in writableDirs) f.file?.delete()
+            if (!dir.exists()) dir.mkdirs()
+            numbers.forEach { number ->
+                deleteOverridesFor(number, dir)
+                if (project != null && project != dir) deleteOverridesFor(number, project)
+                if (globalDir != dir) deleteOverridesFor(number, globalDir)
             }
-            val dirA = layerDir(newA, project)
-            val dirB = layerDir(newB, project)
-            deleteOverridesFor(newA.number, dirA)
-            deleteOverridesFor(newB.number, dirB)
-            if (!dirA.exists()) dirA.mkdirs()
-            if (!dirB.exists()) dirB.mkdirs()
-            File(dirA, fileName(newA.number, newA.title)).writeText(newA.content)
-            File(dirB, fileName(newB.number, newB.title)).writeText(newB.content)
+            reordered.forEachIndexed { index, fragment ->
+                File(dir, "%02d-%s.md".format(numbers[index], sanitizeTitle(fragment.title)))
+                    .writeText(fragment.content)
+            }
             true
         } catch (e: Exception) {
-            FileLogger.e(TAG, "交换提示词编号失败: ${a.number}<->${b.number}", e)
+            FileLogger.e(TAG, "重排提示词失败", e)
             false
         }
     }
-
-    /** 片段落盘的目标层：项目/全局各归各层；只读来源（本地/内置）写到可写层。 */
-    private fun layerDir(fragment: PromptFragment, project: File?): File = when (fragment.source) {
-        PromptFragmentSource.GLOBAL -> globalDir
-        else -> project ?: globalDir
-    }
-
-    private fun fileName(number: Int, title: String): String = "%02d-%s.md".format(number, sanitizeTitle(title))
 
     /** 删除某编号的覆盖（仅当生效层可写），删后自动回退到下一层。 */
     fun deleteOverride(number: Int, projectRoot: String?): Boolean {
