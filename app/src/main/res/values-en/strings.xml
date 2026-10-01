@@ -965,6 +965,33 @@
     <string name="mcp_tools_count">%1$d tools</string>
     <string name="mcp_details">Details</string>
 
+    <!-- Custom Prompts -->
+    <string name="prompts_title">Prompts</string>
+    <string name="prompts_sort_long_press">Long-press to reorder</string>
+    <string name="prompts_empty">No fragments available</string>
+    <string name="prompts_source_project">Project</string>
+    <string name="prompts_source_global">Global</string>
+    <string name="prompts_source_local">Local</string>
+    <string name="prompts_source_builtin">Built-in</string>
+    <string name="prompts_field_basic">Basic</string>
+    <string name="prompts_field_number">Number</string>
+    <string name="prompts_field_number_placeholder">Two digits, e.g. 35</string>
+    <string name="prompts_field_title">Name</string>
+    <string name="prompts_field_title_placeholder">e.g. My safety rules</string>
+    <string name="prompts_field_summary">Summary (optional)</string>
+    <string name="prompts_field_summary_placeholder">Brief description; not included in the prompt</string>
+    <string name="prompts_field_content">Fragment content</string>
+    <string name="prompts_field_content_placeholder">What the model should follow</string>
+    <string name="prompts_editor_new">New prompt</string>
+    <string name="prompts_editor_edit">Edit prompt</string>
+    <string name="prompts_add_sheet_title">Prompts</string>
+    <string name="prompts_add_prompt">Add fragment</string>
+    <string name="prompts_add_prompt_hint">Insert a new fragment with a free number</string>
+    <string name="prompts_help">Help</string>
+    <string name="prompts_help_hint">How it works and when it applies</string>
+    <string name="prompts_disable_builtin">Disable all built-in prompts</string>
+    <string name="prompts_disable_builtin_hint">Keep only your own fragments; you must supply every rule yourself</string>
+
     <!-- Skills Settings -->
     <string name="skills_empty">No skills installed</string>
     <string name="skills_empty_hint">Tap + in the top bar to create or import one.</string>
