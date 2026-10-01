@@ -303,6 +303,9 @@ class AIAgentViewModel @Inject constructor(
         reasoningExpansionOverrides[messageId] = expanded
     }
 
+    /** 思考过程耗时（毫秒）：key = 助手消息 id。记录流式思考的实际耗时，供落库后的卡片展示一位小数秒数。 */
+    val reasoningDurations = mutableStateMapOf<String, Long>()
+
     fun loadMoreMessages() {
         val sid = _currentSessionId.value ?: return
         val currentLimit = _messageLimit.value[sid] ?: defaultLimit
@@ -1529,6 +1532,7 @@ class AIAgentViewModel @Inject constructor(
                 else -> allTools.filterNot { it.name == AgentDefinition.PARENT_MESSAGE_TOOL }
             }
 
+            var currentReasoningStart: Long? = null
             agentWorkflow.executeEvents(
                 userRequest = modelRequest,
                 context = agentContext,
@@ -1543,6 +1547,9 @@ class AIAgentViewModel @Inject constructor(
                     is AgentEvent.ReasoningDelta -> {
                         setRetryState(sessionId, null)
                         setKeySwitchState(sessionId, null)
+                        if (currentReasoningStart == null) {
+                            currentReasoningStart = System.currentTimeMillis()
+                        }
                         setStreamingReasoning(sessionId, event.accumulated)
                     }
                     is AgentEvent.ToolCallPreparing -> {
@@ -1551,6 +1558,7 @@ class AIAgentViewModel @Inject constructor(
                         setPreparingTool(sessionId, event.toolName)
                     }
                     is AgentEvent.Retrying -> {
+                        currentReasoningStart = null
                         setRetryState(sessionId, RetryState(event.attempt, event.maxRetries, event.error))
                         // 重试会从头重新流式输出：清掉已展示的正文/思维链气泡，
                         // 否则重连后思维链重新生成而旧正文残留（workflow 已同步清空累积器）。
@@ -1559,6 +1567,7 @@ class AIAgentViewModel @Inject constructor(
                         setKeySwitchState(sessionId, null)
                     }
                     is AgentEvent.KeySwitched -> {
+                        currentReasoningStart = null
                         setKeySwitchState(sessionId, KeySwitchState(event.newIndex, event.total))
                         setStreamingText(sessionId, null)
                         setStreamingReasoning(sessionId, null)
@@ -1585,6 +1594,9 @@ class AIAgentViewModel @Inject constructor(
                         )
                     }
                     is AgentEvent.AssistantText -> {
+                        val reasoningDuration = currentReasoningStart?.let { System.currentTimeMillis() - it }
+                        currentReasoningStart = null
+
                         // 流式收尾：在落库并触发 UI messages 更新之前，先同步清空流式状态，
                         // 避免落库消息先行发射导致 UI 出现「落库消息与流式气泡同屏并存」的时差。
                         setStreamingReasoning(sessionId, null)
@@ -1595,10 +1607,15 @@ class AIAgentViewModel @Inject constructor(
 
                         val normalized = if (event.content.hasVisibleContent()) event.content else ""
                         val reasoning = event.reasoning.takeIf { it.hasVisibleContent() }
+                        val msgId = java.util.UUID.randomUUID().toString()
+                        if (reasoningDuration != null && reasoningDuration > 0) {
+                            reasoningDurations[msgId] = reasoningDuration
+                        }
                         messagePersistenceUseCase.persist(
                             sessionId,
                             MessageRole.ASSISTANT,
                             normalized,
+                            id = msgId,
                             toolCalls = event.toolCalls,
                             reasoning = reasoning,
                             signature = event.signature.ifEmpty { null },
