@@ -138,6 +138,7 @@ import com.aicode.feature.settings.presentation.SettingsViewModel
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import com.aicode.core.ui.ExpandableChevronIcon
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.AlertCircle
 import compose.icons.feathericons.ArrowLeft
@@ -2229,11 +2230,11 @@ private fun ProviderKeyCard(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
-            Icon(
-                imageVector = if (expanded) FeatherIcons.ChevronUp else FeatherIcons.ChevronDown,
+            ExpandableChevronIcon(
+                expanded = expanded,
                 contentDescription = null,
                 tint = MaterialTheme.semanticColors.subtleText,
-                modifier = Modifier.size(18.dp)
+                size = 18.dp
             )
         }
 
