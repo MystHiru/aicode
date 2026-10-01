@@ -69,6 +69,7 @@ import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
 import com.aicode.feature.agent.domain.session.SessionUseCase
 import com.aicode.feature.agent.presentation.AgentUIMessage
+import com.aicode.core.ui.ExpandableChevronIcon
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Check
 import compose.icons.feathericons.ChevronDown
@@ -278,11 +279,11 @@ internal fun ToolMessageBody(
                 Spacer(Modifier.width(Spacing.sm))
             }
             if (expandable) {
-                Icon(
-                    if (effectiveExpanded) FeatherIcons.ChevronUp else FeatherIcons.ChevronDown,
+                ExpandableChevronIcon(
+                    expanded = effectiveExpanded,
                     contentDescription = if (effectiveExpanded) stringResource(R.string.common_collapse_action) else stringResource(R.string.common_expand),
                     tint = Brand.IconGray,
-                    modifier = Modifier.size(18.dp)
+                    size = 18.dp
                 )
             }
         }
@@ -610,11 +611,11 @@ internal fun ToolCallGroupHeader(
                 highlight = if (running) Color.White else null
             )
         }
-        Icon(
-            imageVector = if (expanded) FeatherIcons.ChevronUp else FeatherIcons.ChevronDown,
+        ExpandableChevronIcon(
+            expanded = expanded,
             contentDescription = if (expanded) stringResource(R.string.common_collapse_action) else stringResource(R.string.common_expand),
             tint = Brand.IconGray,
-            modifier = Modifier.size(18.dp)
+            size = 18.dp
         )
     }
 }
@@ -636,7 +637,7 @@ internal fun ToolSection(label: String, content: String) {
         ChatMonoPanel(
             modifier = Modifier
                 .heightIn(max = ToolSectionMaxHeight)
-                .nestedScroll(InnerScrollConsumeRemainder)
+                .nestedScroll(rememberBoundNestedScrollConnection(scrollState))
                 .verticalScroll(scrollState)
         ) {
             SelectionContainer {
@@ -775,11 +776,11 @@ internal fun DiffExpandToggle(expanded: Boolean, hiddenCount: Int, onToggle: () 
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center
     ) {
-        Icon(
-            if (expanded) FeatherIcons.ChevronUp else FeatherIcons.ChevronDown,
+        ExpandableChevronIcon(
+            expanded = expanded,
             contentDescription = if (expanded) stringResource(R.string.common_collapse_action) else stringResource(R.string.common_expand),
             tint = Brand.IconGray,
-            modifier = Modifier.size(16.dp)
+            size = 16.dp
         )
         Spacer(Modifier.width(Spacing.xs))
         Text(
