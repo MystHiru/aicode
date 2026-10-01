@@ -280,6 +280,7 @@ class AIEditorApp : Application(), Configuration.Provider {
                 runCatching { workspaceRepository.initialize() }
                     .onFailure { FileLogger.w(TAG, "SSH 重连后重新加载工作区失败", it) }
                 syncDocsToRemote()
+                releaseBuiltinAssetsToRemote()
             }
         }
         // 当前激活 profile 的连接配置变化（编辑连接/编辑 profile/切 profile/切模式）即重连，改连接即时生效。
@@ -294,6 +295,7 @@ class AIEditorApp : Application(), Configuration.Provider {
                     remoteSshConnection.connect(config)
                     // 连接成功后同步内置文档到远程 ~/.aicode/docs/，供 AI 查阅。
                     syncDocsToRemote()
+                    releaseBuiltinAssetsToRemote()
                 }.onFailure { FileLogger.e(TAG, "SSH 连接失败，将在首次命令时重试", it) }
             }
         }
@@ -369,6 +371,25 @@ class AIEditorApp : Application(), Configuration.Provider {
             collectAssetDocs("docs", "", docs)
             remoteSshConnection.uploadDocs(docs)
         }.onFailure { FileLogger.w(TAG, "同步内置文档到远程失败", it) }
+    }
+
+    /**
+     * 释放内置子代理定义（Explore）与面板示例脚本到远程 `~/.aicode/agents`、`~/.aicode/scripts`。
+     * 远程模式下全局 agents/scripts 以远端为准，内置默认需在远端存在才能开箱即用；仅补齐缺失、不覆盖用户修改。
+     */
+    private suspend fun releaseBuiltinAssetsToRemote() {
+        remoteSshConnection.uploadBuiltinFiles("agents", collectAssetBytes("agents"))
+        remoteSshConnection.uploadBuiltinFiles("scripts", collectAssetBytes("aicode/scripts"), executable = true)
+    }
+
+    /** 收集 assets 目录下的扁平文件（name → 字节）。目录项会被跳过。 */
+    private fun collectAssetBytes(assetDir: String): Map<String, ByteArray> {
+        val out = linkedMapOf<String, ByteArray>()
+        assets.list(assetDir)?.forEach { entry ->
+            runCatching { assets.open("$assetDir/$entry").use { out[entry] = it.readBytes() } }
+                .onFailure { FileLogger.w(TAG, "读取内置资源失败: $assetDir/$entry", it) }
+        }
+        return out
     }
 
     /** 递归收集 assets 文档，key 为相对 docs/ 的路径（如 guide/terminal.md）。 */

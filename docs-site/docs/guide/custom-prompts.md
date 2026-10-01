@@ -8,7 +8,7 @@ AiCode 的系统提示词可以自行修改。默认提示词随 App 内置、�
 
 ## 目录结构
 
-提示词放在 AI 配置目录 `~/.aicode/` 下（容器内路径是 `/root/.aicode/`）：
+提示词放在 AI 配置目录 `~/.aicode/` 下（本地模式容器内为 `/root/.aicode/`；远程模式为服务器用户 home 下的 `.aicode/`，读写以远端为准）：
 
 ```
 ~/.aicode/

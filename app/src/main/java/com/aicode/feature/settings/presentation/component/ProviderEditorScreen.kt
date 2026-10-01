@@ -271,6 +271,7 @@ fun ProviderEditorScreen(
     val testing by viewModel.testing.collectAsStateWithLifecycle()
     val proxyTestState by viewModel.proxyTestState.collectAsStateWithLifecycle()
     val dashboardTestState by viewModel.dashboardTestState.collectAsStateWithLifecycle()
+    val dashboardScripts by viewModel.dashboardScripts.collectAsStateWithLifecycle()
     val modelMetadata by viewModel.modelMetadata.collectAsStateWithLifecycle()
     val modelIdSet by remember {
         derivedStateOf { models.toSet() }
@@ -667,7 +668,10 @@ fun ProviderEditorScreen(
                                         }
                                     }
                                     IconButton(
-                                        onClick = { showScriptPickerSheet = true },
+                                        onClick = {
+                                            showScriptPickerSheet = true
+                                            viewModel.loadDashboardScripts()
+                                        },
                                         modifier = Modifier.size(36.dp)
                                     ) {
                                         Icon(
@@ -1042,7 +1046,7 @@ fun ProviderEditorScreen(
 
     if (showScriptPickerSheet) {
         ScriptPickerBottomSheet(
-            scripts = viewModel.listAvailableDashboardScripts(),
+            scripts = dashboardScripts,
             onSelect = { selectedScript ->
                 dashboardScriptPath = selectedScript
                 showScriptPickerSheet = false

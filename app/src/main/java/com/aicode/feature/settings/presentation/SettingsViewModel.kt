@@ -563,6 +563,10 @@ class SettingsViewModel @Inject constructor(
     private val _dashboardTestState = MutableStateFlow<ProviderDashboardState>(ProviderDashboardState.Idle)
     val dashboardTestState: StateFlow<ProviderDashboardState> = _dashboardTestState.asStateFlow()
 
+    private val _dashboardScripts = MutableStateFlow<List<String>>(emptyList())
+    /** 可用面板脚本文件名（打开脚本选择器时经 [loadDashboardScripts] 异步加载）。 */
+    val dashboardScripts: StateFlow<List<String>> = _dashboardScripts.asStateFlow()
+
     private val _providerDashboards = MutableStateFlow<Map<String, ProviderDashboardState>>(emptyMap())
     val providerDashboards: StateFlow<Map<String, ProviderDashboardState>> = _providerDashboards.asStateFlow()
 
@@ -905,6 +909,24 @@ class SettingsViewModel @Inject constructor(
 
             launch {
                 refreshSkills()
+            }
+
+            // 全局技能/子代理在远程模式下以远端为源，本地目录监听（skills.changes）不会触发；
+            // 执行模式切换或远程连接就绪后需重扫，否则列表停留在旧环境的内容。
+            launch {
+                executionMode.collectLatest {
+                    refreshSkills()
+                    refreshSubAgents()
+                }
+            }
+
+            launch {
+                connectionState.collectLatest { state ->
+                    if (state == ConnectionState.CONNECTED) {
+                        refreshSkills()
+                        refreshSubAgents()
+                    }
+                }
             }
 
             launch {
@@ -2096,8 +2118,16 @@ class SettingsViewModel @Inject constructor(
         _testing.value = emptySet()
     }
 
-    fun listAvailableDashboardScripts(): List<String> {
-        return providerDashboardRunner.listAvailableScripts()
+    /**
+     * 加载可用面板脚本列表（打开脚本选择器时调用）。经引擎在 IO 线程枚举，
+     * 远程模式下即远端 `~/.aicode/scripts`，避免在主线程上做 SFTP 枚举。
+     */
+    fun loadDashboardScripts() {
+        viewModelScope.launch {
+            _dashboardScripts.value = withContext(Dispatchers.IO) {
+                providerDashboardRunner.listAvailableScripts()
+            }
+        }
     }
 
     fun testDashboardScript(provider: AIProviderConfig, scriptPath: String) {
