@@ -1414,7 +1414,10 @@ fun AIChatPanel(
                         }
                     }
                 } else if (messages.isEmpty()) {
-                    WelcomeState(modifier = Modifier.fillMaxSize())
+                    WelcomeState(
+                        bottomReserve = with(LocalDensity.current) { inputBarReservePx.toDp() },
+                        modifier = Modifier.fillMaxSize()
+                    )
                 } else {
                     LazyColumn(
                         state = listState,
