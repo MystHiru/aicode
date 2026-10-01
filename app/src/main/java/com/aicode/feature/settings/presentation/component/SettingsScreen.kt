@@ -72,6 +72,8 @@ import com.aicode.core.util.LogLevel
 import com.aicode.R
 import com.aicode.feature.agent.domain.mcp.McpServerEntry
 import com.aicode.feature.agent.domain.mcp.McpServerConfig
+import com.aicode.feature.agent.domain.prompt.PromptFragment
+import com.aicode.feature.agent.domain.prompt.PromptFragmentSource
 import com.aicode.feature.agent.domain.mcp.McpServerStatus
 import com.aicode.feature.agent.presentation.component.MarkdownContent
 import com.aicode.feature.agent.presentation.component.MarkdownRenderCache
@@ -103,6 +105,7 @@ import compose.icons.feathericons.Image
 import compose.icons.feathericons.Info
 import compose.icons.feathericons.Lock
 import compose.icons.feathericons.Moon
+import compose.icons.feathericons.MessageSquare
 import compose.icons.feathericons.Edit2
 import compose.icons.feathericons.PieChart
 import compose.icons.feathericons.Plus
@@ -144,6 +147,9 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     DefaultModels(R.string.settings_default_models),
     Mcp(R.string.settings_mcp),
     Skills(R.string.settings_skills),
+    Prompts(R.string.prompts_title),
+    PromptDetail(R.string.prompts_title),
+    PromptEditor(R.string.prompts_title),
     SkillDetail(R.string.settings_skills),
     SkillEditor(R.string.settings_skills),
     SubAgents(R.string.settings_subagents),
@@ -174,8 +180,10 @@ private fun SettingsSection.depth(): Int = when (this) {
     // 技能/子代理编辑页既可从列表(1) 进也可从详情页(2) 进，必须比详情页更深：
     // 同深度会让「编辑 → 详情」也被当成前进，返回时页面从右侧滑入，方向是反的。
     SettingsSection.SkillEditor,
-    SettingsSection.SubAgentEditor -> 3
+    SettingsSection.SubAgentEditor,
+    SettingsSection.PromptEditor -> 3
     SettingsSection.ProviderEditor,
+    SettingsSection.PromptDetail,
     SettingsSection.SkillDetail,
     SettingsSection.SubAgentDetail,
     SettingsSection.ContainerDownloads,
@@ -246,6 +254,8 @@ fun SettingsScreen(
     val updateCheckChannel by viewModel.updateCheckChannel.collectAsStateWithLifecycle()
     val containerAnnouncementText by viewModel.containerAnnouncementText.collectAsStateWithLifecycle()
     val containerAnnouncementOutdated by viewModel.containerAnnouncementOutdated.collectAsStateWithLifecycle()
+    val promptsAnnouncementText by viewModel.promptsAnnouncementText.collectAsStateWithLifecycle()
+    val promptsAnnouncementOutdated by viewModel.promptsAnnouncementOutdated.collectAsStateWithLifecycle()
     val imageCatalog by viewModel.imageCatalog.collectAsStateWithLifecycle()
     val imageDownload by viewModel.containerImageDownload.collectAsStateWithLifecycle()
     val containerReset by viewModel.containerReset.collectAsStateWithLifecycle()
@@ -323,6 +333,14 @@ fun SettingsScreen(
     }
     var selectedSkill by remember { mutableStateOf<SkillUiEntry?>(null) }
     var skillToDelete by remember { mutableStateOf<SkillUiEntry?>(null) }
+
+    // 自定义提示词：右上角「+」弹层可见性 + 编辑目标（新建/编辑/固定片段）
+    var showPromptsAddSheet by remember { mutableStateOf(false) }
+    var promptEditTarget by remember { mutableStateOf<PromptEditTarget?>(null) }
+    var selectedPrompt by remember { mutableStateOf<PromptFragment?>(null) }
+    var showPromptsAnnouncement by remember { mutableStateOf(false) }
+    // 编辑页返回目标：从详情进就回详情，从列表「+」进就回列表。
+    var promptEditorReturn by remember { mutableStateOf(SettingsSection.Prompts) }
     // 技能编辑目标：null 表示新建一个；编辑现有技能时指向被编辑的条目。
     var editingSkill by remember { mutableStateOf<SkillUiEntry?>(null) }
     // 编辑页的返回目标：从详情页进就回详情页，从列表顶栏「＋」进就回列表。
@@ -370,6 +388,8 @@ fun SettingsScreen(
         SettingsSection.ProviderEditor -> SettingsSection.Providers
         SettingsSection.Log -> logReturnSection.takeUnless { expanded && it == SettingsSection.Menu }
         SettingsSection.SkillDetail -> SettingsSection.Skills
+        SettingsSection.PromptEditor -> promptEditorReturn
+        SettingsSection.PromptDetail -> SettingsSection.Prompts
         SettingsSection.SkillEditor -> skillEditorReturn
         SettingsSection.SubAgentDetail -> SettingsSection.SubAgents
         SettingsSection.SubAgentEditor -> subAgentEditorReturn
@@ -410,6 +430,13 @@ fun SettingsScreen(
     LaunchedEffect(section, containerAnnouncementOutdated) {
         if (section == SettingsSection.Container && containerAnnouncementOutdated && containerAnnouncementText.isNotBlank()) {
             showContainerAnnouncement = true
+        }
+    }
+
+    // 首次（或公告内容更新后）进入「提示词」页自动弹出使用说明公告；哈希比对在 ViewModel 完成。
+    LaunchedEffect(section, promptsAnnouncementOutdated) {
+        if (section == SettingsSection.Prompts && promptsAnnouncementOutdated && promptsAnnouncementText.isNotBlank()) {
+            showPromptsAnnouncement = true
         }
     }
 
@@ -549,6 +576,28 @@ fun SettingsScreen(
                     section = subAgentEditorReturn
                 }
             )
+
+            current == SettingsSection.PromptEditor -> {
+                val promptsViewModel: com.aicode.feature.settings.presentation.PromptsViewModel =
+                    androidx.hilt.navigation.compose.hiltViewModel()
+                val promptsState by promptsViewModel.state.collectAsStateWithLifecycle()
+                val number = promptEditTarget?.number
+                val fragment = number?.let { value -> promptsState.fragments.firstOrNull { it.number == value } }
+                PromptEditorScreen(
+                    isNew = number == null,
+                    initialNumber = number ?: 0,
+                    initialTitle = fragment?.title.orEmpty(),
+                    initialDescription = fragment?.description.orEmpty(),
+                    initialContent = fragment?.body.orEmpty(),
+                    initialScope = fragment?.source ?: PromptFragmentSource.GLOBAL,
+                    hasWorkspace = promptsState.hasWorkspace,
+                    onSave = { savedNumber, title, scope, content ->
+                        promptsViewModel.saveFragment(savedNumber, title, scope, content, previousNumber = number)
+                        section = promptEditorReturn
+                    },
+                    onNavigateBack = { section = promptEditorReturn }
+                )
+            }
 
             current == SettingsSection.RemoteServers ->
                 com.aicode.feature.workspace.presentation.remote.RemoteServerScreen(
@@ -725,6 +774,38 @@ fun SettingsScreen(
                                 )
                             }
                         }
+                        SettingsSection.Prompts -> {
+                            IconButton(onClick = { showPromptsAnnouncement = true }) {
+                                Icon(
+                                    FeatherIcons.Info,
+                                    contentDescription = stringResource(R.string.prompts_help),
+                                    tint = MaterialTheme.colorScheme.onBackground,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            IconButton(onClick = { showPromptsAddSheet = true }) {
+                                Icon(
+                                    FeatherIcons.Plus,
+                                    contentDescription = stringResource(R.string.prompts_add_prompt),
+                                    tint = MaterialTheme.colorScheme.onBackground,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                        SettingsSection.PromptDetail -> selectedPrompt?.let { fragment ->
+                            IconButton(onClick = {
+                                promptEditTarget = PromptEditTarget(fragment.number)
+                                promptEditorReturn = SettingsSection.PromptDetail
+                                section = SettingsSection.PromptEditor
+                            }) {
+                                Icon(
+                                    FeatherIcons.Edit2,
+                                    contentDescription = stringResource(R.string.subagent_edit),
+                                    tint = MaterialTheme.colorScheme.onBackground,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
                         SettingsSection.Storage -> {
                             IconButton(onClick = { storageViewModel?.refresh() }) {
                                 Icon(
@@ -822,6 +903,48 @@ fun SettingsScreen(
                         section = SettingsSection.SkillDetail
                     }
                 )
+                SettingsSection.Prompts -> {
+                    val promptsViewModel: com.aicode.feature.settings.presentation.PromptsViewModel =
+                        androidx.hilt.navigation.compose.hiltViewModel()
+                    val promptsState by promptsViewModel.state.collectAsStateWithLifecycle()
+                    LaunchedEffect(Unit) { promptsViewModel.refresh() }
+                    PromptsSection(
+                        state = promptsState,
+                        onOpenFragment = { fragment ->
+                            selectedPrompt = fragment
+                            section = SettingsSection.PromptDetail
+                        },
+                        onDeleteFragment = promptsViewModel::deleteFragment,
+                        onReorder = promptsViewModel::reorderFragments,
+                        onToggleBuiltinDisabled = promptsViewModel::setBuiltinDisabled
+                    )
+                    if (showPromptsAddSheet) {
+                        PromptsAddSheet(
+                            onDismiss = { showPromptsAddSheet = false },
+                            onAddFragment = {
+                                showPromptsAddSheet = false
+                                promptEditTarget = PromptEditTarget(null)
+                                promptEditorReturn = SettingsSection.Prompts
+                                section = SettingsSection.PromptEditor
+                            },
+                            onHelp = {
+                                showPromptsAddSheet = false
+                                showPromptsAnnouncement = true
+                            }
+                        )
+                    }
+                }
+                SettingsSection.PromptDetail -> {
+                    val promptsViewModel: com.aicode.feature.settings.presentation.PromptsViewModel =
+                        androidx.hilt.navigation.compose.hiltViewModel()
+                    val promptsState by promptsViewModel.state.collectAsStateWithLifecycle()
+                    selectedPrompt?.let { sel ->
+                        promptsState.fragments.firstOrNull { it.number == sel.number }?.let { fragment ->
+                            PromptDetailSection(fragment = fragment)
+                        }
+                    }
+                }
+                SettingsSection.PromptEditor -> Unit
                 SettingsSection.SkillDetail -> selectedSkill?.let { entry ->
                     SkillDetailSection(
                         entry = entry,
@@ -1202,6 +1325,71 @@ fun SettingsScreen(
             }
         }
     }
+
+    // 提示词使用说明公告：首次进入（或内容更新后）自动弹出，右上角 Info 按钮可随时重看。
+    if (showPromptsAnnouncement) {
+        val dismiss = {
+            showPromptsAnnouncement = false
+            viewModel.markPromptsAnnouncementShown()
+        }
+        Dialog(onDismissRequest = dismiss) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = LocalConfiguration.current.screenHeightDp.dp * 0.72f)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .padding(20.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.prompts_help),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (promptsAnnouncementText.isNotBlank()) {
+                        // mikepenz Markdown 内部是 Column（非 LazyColumn），本身不可滚动，
+                        // 必须由外层提供滚动容器，否则超出弹窗高度的内容被直接裁剪。
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .verticalScroll(rememberScrollState())
+                                .padding(top = 8.dp, bottom = Spacing.lg)
+                        ) {
+                            MarkdownContent(
+                                text = promptsAnnouncementText,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.fillMaxWidth(),
+                                loading = {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 24.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        CircularProgressIndicator()
+                                    }
+                                }
+                            )
+                        }
+                    }
+                    Button(
+                        onClick = dismiss,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .padding(top = 4.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(stringResource(R.string.common_got_it))
+                    }
+                }
+            }
+        }
+    }
     } // BoxWithConstraints 结束
 }
 
@@ -1347,6 +1535,12 @@ internal fun SettingsMenu(
                 icon = FeatherIcons.Users,
                 title = stringResource(SettingsSection.SubAgents.titleRes),
                 onClick = { onOpen(SettingsSection.SubAgents) }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon = FeatherIcons.MessageSquare,
+                title = stringResource(SettingsSection.Prompts.titleRes),
+                onClick = { onOpen(SettingsSection.Prompts) }
             )
         }
 

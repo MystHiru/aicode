@@ -78,20 +78,4 @@ class PromptFragmentResolverTest {
         File(dir, ".no-builtin").writeText("")
         assertTrue(PromptFragmentResolver.isBuiltinDisabled(dir))
     }
-
-    @Test
-    fun mergeStatic_覆盖与新增片段按数字合并() {
-        val custom5 = File(dir, "05-新增.md")
-        val custom50 = File(dir, "50-自定义安全.md")
-        val custom80 = File(dir, "80-结尾.md")
-        val custom = listOf(5 to custom5, 50 to custom50, 80 to custom80)
-
-        val merged = PromptFragmentResolver.mergeStatic(listOf(0, 10, 50), custom)
-
-        assertEquals(listOf(0, 5, 10, 50, 80), merged.map { it.first })
-        assertNull("内置数字无自定义文件时用默认内容", merged[0].second)
-        assertEquals(custom5, merged[1].second)
-        assertEquals(custom50, merged[3].second)
-        assertEquals(custom80, merged[4].second)
-    }
 }

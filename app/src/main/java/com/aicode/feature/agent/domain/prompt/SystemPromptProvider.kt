@@ -18,10 +18,10 @@ import javax.inject.Singleton
 
 /**
  * 按模块组装系统提示词：稳定基线放最前（享受 KV Cache），仅日期为低频变化。
- * 每个 Source 维护内容缓存，避免重复读取与格式化。
+ * 多数 Source 维护内容缓存，避免重复读取与格式化；静态基线片段除外，每次读盘以保证编辑即时生效。
  *
  * 片段分两类：
- * - 静态基线：`prompts/` 顶层 `<NN>-<名称>.md`（见 [BASE_FRAGMENTS]），可被 `prompts.custom/` 按数字身份覆盖或新增；
+ * - 静态基线：`prompts/` 顶层 `<NN>-<名称>.md`，可被 `prompts.custom/` 按数字身份覆盖或新增；
  * - 按需叶子：`prompts/agent/` 下的无数字片段（模式提醒、子代理基线、压缩/标题提示词），按精确同名覆盖。
  *
  * `prompts.custom/` 存在 [PromptFragmentResolver.DISABLE_BUILTIN_FILE] 时，主代理提示词只由自定义数字片段组成，
@@ -32,6 +32,7 @@ class SystemPromptProvider @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val skillRepository: SkillRepository,
     private val memoryRepository: MemoryRepository,
+    private val promptFragmentCatalog: PromptFragmentCatalog,
     private val containerInstaller: ContainerInstaller,
     private val agentDefinitionRepository: AgentDefinitionRepository
 ) {
@@ -41,23 +42,8 @@ class SystemPromptProvider @Inject constructor(
     }
 
     private inner class StaticRuleSource : PromptSource {
-        @Volatile private var cached: String? = null
-
-        override fun build(ctx: AgentContext): String {
-            return cached ?: run {
-                val merged = PromptFragmentResolver.mergeStatic(
-                    BASE_FRAGMENTS.keys.toList(),
-                    PromptFragmentResolver.numberedFragments(customDir)
-                )
-                val pieces = merged.mapNotNull { (number, override) ->
-                    // 内置数字走 resolvePrompt（内部按数字身份查覆盖）；新增片段直接读自定义文件。
-                    val raw = BASE_FRAGMENTS[number]?.let { resolvePrompt(it) }
-                        ?: readFileOrNull(override)
-                    raw?.replace(LEADING_COMMENT, "")?.trim()?.takeIf { it.isNotEmpty() }
-                }
-                pieces.joinToString("\n\n").also { cached = it }
-            }
-        }
+        // 每次都重新读盘：未编辑时字符串一致，KV Cache 照常命中；编辑后立即生效，无需重启。
+        override fun build(ctx: AgentContext): String = promptFragmentCatalog.renderStatic(ctx.projectRoot)
     }
 
     private inner class ActiveSkillsSource : PromptSource {
@@ -229,6 +215,7 @@ class SystemPromptProvider @Inject constructor(
     private val subAgentBaseSource = SubAgentBaseSource()
     private val subAgentListSource = SubAgentListSource()
     private val memoryListSource = MemoryListSource()
+
     private val activeSkillsSource = ActiveSkillsSource()
     private val projectRuleSource = ProjectRuleSource()
     private val workspaceSource = WorkspaceSource()
@@ -288,6 +275,7 @@ class SystemPromptProvider @Inject constructor(
                 append("\n\n")
                 append(timeContent)
             }
+
         }
     }
 
@@ -296,17 +284,14 @@ class SystemPromptProvider @Inject constructor(
      * 不注入任何内置来源；动态内容仅通过 `{{AICODE_*}}` 变量按需取回。
      */
     private fun buildCustomOnly(ctx: AgentContext): String {
-        val fragments = PromptFragmentResolver.numberedFragments(customDir)
-        if (fragments.isEmpty()) {
+        val content = promptFragmentCatalog.renderCustomOnly(ctx.projectRoot)
+        if (content.isEmpty()) {
             FileLogger.w(
                 TAG,
                 "已启用 ${PromptFragmentResolver.DISABLE_BUILTIN_FILE}，但 $customDir 下没有 <两位数字>-<名称>.md 片段，系统提示词为空"
             )
             return ""
         }
-        val content = fragments
-            .mapNotNull { readFileOrNull(it.second)?.replace(LEADING_COMMENT, "")?.trim()?.takeIf { it.isNotEmpty() } }
-            .joinToString("\n\n")
         return renderVariables(
             content,
             activeSkillsSource.build(ctx),
@@ -434,18 +419,6 @@ class SystemPromptProvider @Inject constructor(
         val LEADING_COMMENT = Regex("(?s)^\\s*<!--.*?-->\\s*")
 
         /** 内置静态基线：数字身份 → 规范文件名，决定默认拼接顺序。 */
-        val BASE_FRAGMENTS = linkedMapOf(
-            0 to "00-identity.md",
-            10 to "10-communication.md",
-            15 to "15-project-rules.md",
-            20 to "20-coding-discipline.md",
-            30 to "30-comments.md",
-            40 to "40-approach.md",
-            50 to "50-safety.md",
-            60 to "60-tools-and-paths.md",
-            70 to "70-skills-and-mcp.md"
-        )
-
         // 片段里可用的运行期变量，渲染时替换为真实内容
         const val SKILLS_VAR = "{{AICODE_SKILLS}}"
         const val MEMORY_VAR = "{{AICODE_MEMORY}}"
