@@ -202,16 +202,6 @@ class PromptFragmentCatalog @Inject constructor(
         }
     }
 
-    /** 「已读使用说明」标记（与 prompts.custom 同目录，随配置一起备份迁移）。 */
-    fun isHelpRead(): Boolean = File(globalDir, HELP_READ_MARKER).isFile
-
-    fun markHelpRead() {
-        runCatching {
-            if (!globalDir.exists()) globalDir.mkdirs()
-            File(globalDir, HELP_READ_MARKER).writeText("")
-        }.onFailure { FileLogger.w(TAG, "写已读标记失败", it) }
-    }
-
     private fun resolve(
         number: Int,
         builtin: Map<Int, String>,
@@ -295,7 +285,6 @@ class PromptFragmentCatalog @Inject constructor(
         const val ASSET_DIR = "prompts"
         const val CUSTOM_DIR = "prompts.custom"
         const val LOCAL_DIR = "prompts"
-        const val HELP_READ_MARKER = ".help-read"
         val LEADING_COMMENT = Regex("(?s)^\\s*<!--.*?-->\\s*")
         val DESCRIPTION = Regex("^\\s*<!--\\s*(.*?)\\s*-->", RegexOption.DOT_MATCHES_ALL)
     }

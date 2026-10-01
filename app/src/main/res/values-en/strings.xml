@@ -985,7 +985,7 @@
     <string name="prompts_field_content_placeholder">What the model should follow</string>
     <string name="prompts_editor_new">New prompt</string>
     <string name="prompts_editor_edit">Edit prompt</string>
-    <string name="prompts_save_hint">Saved to the layer currently in effect for this number; applies after an app restart or workspace switch.</string>
+    <string name="prompts_save_hint">Saved to the layer currently in effect for this number; takes effect immediately.</string>
     <string name="prompts_action_add">Add</string>
     <string name="prompts_action_save">Save</string>
     <string name="prompts_add_sheet_title">Prompts</string>
@@ -995,9 +995,6 @@
     <string name="prompts_help_hint">How it works and when it applies</string>
     <string name="prompts_disable_builtin">Disable all built-in prompts</string>
     <string name="prompts_disable_builtin_hint">Keep only your own fragments; you must supply every rule yourself</string>
-    <string name="prompts_help_body">1. Each row is one prompt fragment: the leading number sets its order in the system prompt, and the badge on the right shows which layer this copy comes from.\n\n2. Only one copy per number takes effect, with priority Project &gt; Global &gt; Local &gt; Built-in.\n\n3. Tap a row to edit its content; swipe left to delete the override in the writable layer, which falls back to the next layer.\n\n4. Tap the + button in the top bar to add a fragment with a free number, or open Advanced.\n\n5. Changes apply after an app restart or workspace switch.</string>
-    <string name="prompts_help_gate_title">Please read before using</string>
-    <string name="prompts_help_gate_confirm">I have read it — start using</string>
 
     <!-- Skills Settings -->
     <string name="skills_empty">No skills installed</string>

@@ -18,7 +18,7 @@ import javax.inject.Singleton
 
 /**
  * 按模块组装系统提示词：稳定基线放最前（享受 KV Cache），仅日期为低频变化。
- * 每个 Source 维护内容缓存，避免重复读取与格式化。
+ * 多数 Source 维护内容缓存，避免重复读取与格式化；静态基线片段除外，每次读盘以保证编辑即时生效。
  *
  * 片段分两类：
  * - 静态基线：`prompts/` 顶层 `<NN>-<名称>.md`（见 [BASE_FRAGMENTS]），可被 `prompts.custom/` 按数字身份覆盖或新增；
@@ -42,11 +42,8 @@ class SystemPromptProvider @Inject constructor(
     }
 
     private inner class StaticRuleSource : PromptSource {
-        // 四级来源里项目层随工作区变化，按 projectRoot 缓存而非进程级单份。
-        private val cachedByProject = ConcurrentHashMap<String, String>()
-
-        override fun build(ctx: AgentContext): String =
-            cachedByProject.getOrPut(ctx.projectRoot) { promptFragmentCatalog.renderStatic(ctx.projectRoot) }
+        // 每次都重新读盘：未编辑时字符串一致，KV Cache 照常命中；编辑后立即生效，无需重启。
+        override fun build(ctx: AgentContext): String = promptFragmentCatalog.renderStatic(ctx.projectRoot)
     }
 
     private inner class ActiveSkillsSource : PromptSource {

@@ -254,6 +254,8 @@ fun SettingsScreen(
     val updateCheckChannel by viewModel.updateCheckChannel.collectAsStateWithLifecycle()
     val containerAnnouncementText by viewModel.containerAnnouncementText.collectAsStateWithLifecycle()
     val containerAnnouncementOutdated by viewModel.containerAnnouncementOutdated.collectAsStateWithLifecycle()
+    val promptsAnnouncementText by viewModel.promptsAnnouncementText.collectAsStateWithLifecycle()
+    val promptsAnnouncementOutdated by viewModel.promptsAnnouncementOutdated.collectAsStateWithLifecycle()
     val imageCatalog by viewModel.imageCatalog.collectAsStateWithLifecycle()
     val imageDownload by viewModel.containerImageDownload.collectAsStateWithLifecycle()
     val containerReset by viewModel.containerReset.collectAsStateWithLifecycle()
@@ -336,7 +338,7 @@ fun SettingsScreen(
     var showPromptsAddSheet by remember { mutableStateOf(false) }
     var promptEditTarget by remember { mutableStateOf<PromptEditTarget?>(null) }
     var selectedPrompt by remember { mutableStateOf<PromptFragment?>(null) }
-    var showPromptsHelp by remember { mutableStateOf(false) }
+    var showPromptsAnnouncement by remember { mutableStateOf(false) }
     // 编辑页返回目标：从详情进就回详情，从列表「+」进就回列表。
     var promptEditorReturn by remember { mutableStateOf(SettingsSection.Prompts) }
     // 技能编辑目标：null 表示新建一个；编辑现有技能时指向被编辑的条目。
@@ -428,6 +430,13 @@ fun SettingsScreen(
     LaunchedEffect(section, containerAnnouncementOutdated) {
         if (section == SettingsSection.Container && containerAnnouncementOutdated && containerAnnouncementText.isNotBlank()) {
             showContainerAnnouncement = true
+        }
+    }
+
+    // 首次（或公告内容更新后）进入「提示词」页自动弹出使用说明公告；哈希比对在 ViewModel 完成。
+    LaunchedEffect(section, promptsAnnouncementOutdated) {
+        if (section == SettingsSection.Prompts && promptsAnnouncementOutdated && promptsAnnouncementText.isNotBlank()) {
+            showPromptsAnnouncement = true
         }
     }
 
@@ -766,7 +775,7 @@ fun SettingsScreen(
                             }
                         }
                         SettingsSection.Prompts -> {
-                            IconButton(onClick = { showPromptsHelp = true }) {
+                            IconButton(onClick = { showPromptsAnnouncement = true }) {
                                 Icon(
                                     FeatherIcons.Info,
                                     contentDescription = stringResource(R.string.prompts_help),
@@ -901,7 +910,6 @@ fun SettingsScreen(
                     LaunchedEffect(Unit) { promptsViewModel.refresh() }
                     PromptsSection(
                         state = promptsState,
-                        onMarkHelpRead = promptsViewModel::markHelpRead,
                         onOpenFragment = { fragment ->
                             selectedPrompt = fragment
                             section = SettingsSection.PromptDetail
@@ -921,7 +929,7 @@ fun SettingsScreen(
                             },
                             onHelp = {
                                 showPromptsAddSheet = false
-                                showPromptsHelp = true
+                                showPromptsAnnouncement = true
                             }
                         )
                     }
@@ -1318,9 +1326,13 @@ fun SettingsScreen(
         }
     }
 
-    // 提示词使用说明：列表顶部或「+」弹层里点「帮助」打开。
-    if (showPromptsHelp) {
-        Dialog(onDismissRequest = { showPromptsHelp = false }) {
+    // 提示词使用说明公告：首次进入（或内容更新后）自动弹出，右上角 Info 按钮可随时重看。
+    if (showPromptsAnnouncement) {
+        val dismiss = {
+            showPromptsAnnouncement = false
+            viewModel.markPromptsAnnouncementShown()
+        }
+        Dialog(onDismissRequest = dismiss) {
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surface,
@@ -1338,20 +1350,34 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.titleLarge,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState())
-                            .padding(top = 8.dp, bottom = Spacing.lg)
-                    ) {
-                        Text(
-                            text = stringResource(R.string.prompts_help_body),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                    if (promptsAnnouncementText.isNotBlank()) {
+                        // mikepenz Markdown 内部是 Column（非 LazyColumn），本身不可滚动，
+                        // 必须由外层提供滚动容器，否则超出弹窗高度的内容被直接裁剪。
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .verticalScroll(rememberScrollState())
+                                .padding(top = 8.dp, bottom = Spacing.lg)
+                        ) {
+                            MarkdownContent(
+                                text = promptsAnnouncementText,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.fillMaxWidth(),
+                                loading = {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 24.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        CircularProgressIndicator()
+                                    }
+                                }
+                            )
+                        }
                     }
                     Button(
-                        onClick = { showPromptsHelp = false },
+                        onClick = dismiss,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(44.dp)

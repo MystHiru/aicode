@@ -19,9 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -79,18 +77,11 @@ internal data class PromptEditTarget(val number: Int? = null)
 @Composable
 internal fun PromptsSection(
     state: PromptsUiState,
-    onMarkHelpRead: () -> Unit,
     onOpenFragment: (PromptFragment) -> Unit,
     onDeleteFragment: (Int) -> Unit,
     onReorder: (List<PromptFragment>) -> Unit,
     onToggleBuiltinDisabled: (Boolean) -> Unit
 ) {
-    // 首次进入先读使用说明：读完（点确认）才放行，与「容器与镜像」页的说明门槛一致
-    if (!state.helpRead) {
-        PromptsHelpGate(onConfirm = onMarkHelpRead)
-        return
-    }
-
     Column(modifier = Modifier.fillMaxSize()) {
         SettingsGroup(
             modifier = Modifier
@@ -244,36 +235,6 @@ internal fun PromptsAddSheet(
                     onClick = onHelp
                 )
             }
-        }
-    }
-}
-
-/** 首次进入的使用说明门槛：正文可滚动，读到底后点确认才放行。 */
-@Composable
-private fun PromptsHelpGate(onConfirm: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = Spacing.lg)
-            .padding(bottom = Spacing.xl),
-        verticalArrangement = Arrangement.spacedBy(Spacing.sm)
-    ) {
-        SettingsGroupHeader(text = stringResource(R.string.prompts_help_gate_title))
-        SettingsGroup {
-            Text(
-                text = stringResource(R.string.prompts_help_body),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(Spacing.lg)
-            )
-        }
-        SettingsGroup {
-            SettingsRow(
-                icon = null,
-                title = stringResource(R.string.prompts_help_gate_confirm),
-                onClick = onConfirm
-            )
         }
     }
 }

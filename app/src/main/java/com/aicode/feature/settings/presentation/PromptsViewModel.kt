@@ -16,18 +16,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
-/** 提示词页状态：按编号列出最终生效的片段（含来源），以及内置开关与首次使用门槛。 */
+/** 提示词页状态：按编号列出最终生效的片段（含来源），以及内置开关。 */
 data class PromptsUiState(
     val fragments: List<PromptFragment> = emptyList(),
     val builtinDisabled: Boolean = false,
-    val helpRead: Boolean = false,
     /** 没有选中工作区时项目层不可写，编辑/新建回落到全局层。 */
     val hasWorkspace: Boolean = false,
     val loading: Boolean = true
 )
 
 /**
- * 提示词页状态：四级来源（项目 > 全局 > 本地 > 内置）的生效片段列表 + 内置开关 + 首次使用门槛。
+ * 提示词页状态：四级来源（项目 > 全局 > 本地 > 内置）的生效片段列表 + 内置开关。
  *
  * 读写都是磁盘 IO，统一放 IO 线程。
  */
@@ -51,7 +50,6 @@ class PromptsViewModel @Inject constructor(
                 PromptsUiState(
                     fragments = catalog.list(projectRoot),
                     builtinDisabled = catalog.isBuiltinDisabled(),
-                    helpRead = catalog.isHelpRead(),
                     hasWorkspace = projectRoot.isNotBlank(),
                     loading = false
                 )
@@ -114,13 +112,6 @@ class PromptsViewModel @Inject constructor(
     fun setBuiltinDisabled(disabled: Boolean) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { catalog.setBuiltinDisabled(disabled) }
-            refresh()
-        }
-    }
-
-    fun markHelpRead() {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) { catalog.markHelpRead() }
             refresh()
         }
     }
