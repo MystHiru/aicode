@@ -2,47 +2,38 @@ package com.aicode.feature.settings.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.aicode.feature.agent.domain.prompt.PromptFragmentRepository
-import com.aicode.feature.agent.domain.prompt.UserPrompt
-import com.aicode.feature.agent.domain.prompt.UserPromptPosition
-import com.aicode.feature.agent.domain.prompt.UserPromptScope
-import com.aicode.feature.agent.domain.prompt.UserPromptStore
+import com.aicode.feature.agent.domain.prompt.PromptFragment
+import com.aicode.feature.agent.domain.prompt.PromptFragmentCatalog
+import com.aicode.feature.agent.domain.prompt.PromptFragmentSource
 import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
-/** 自定义提示词页的可变状态。 */
+/** 提示词页状态：按编号列出最终生效的片段（含来源），以及内置开关与首次使用门槛。 */
 data class PromptsUiState(
-    /** 用户可改的固定内置片段（00 身份/总纲）的生效正文；读不到时为 null。 */
-    val defaultFragmentContent: String? = null,
-    val defaultFragmentOverridden: Boolean = false,
-    val globalPrompts: List<UserPrompt> = emptyList(),
-    val projectPrompts: List<UserPrompt> = emptyList(),
+    val fragments: List<PromptFragment> = emptyList(),
     val builtinDisabled: Boolean = false,
-    /** 是否已读过使用说明：未读时提示词页先展示帮助，读完才放行。 */
     val helpRead: Boolean = false,
-    /** 内置静态片段清单（含覆盖状态），供「高级设置」只读展示。 */
-    val fragments: List<PromptFragmentRepository.Fragment> = emptyList(),
-    /** 没有选中工作区时项目组不可用。 */
+    /** 没有选中工作区时项目层不可写，编辑/新建回落到全局层。 */
     val hasWorkspace: Boolean = false,
     val loading: Boolean = true
 )
 
 /**
- * 自定义提示词页状态：用户提示词的增删改 + 固定内置片段（00）的覆盖 + 内置开关。
+ * 提示词页状态：四级来源（项目 > 全局 > 本地 > 内置）的生效片段列表 + 内置开关 + 首次使用门槛。
  *
  * 读写都是磁盘 IO，统一放 IO 线程。
  */
 @HiltViewModel
 class PromptsViewModel @Inject constructor(
-    private val userPromptStore: UserPromptStore,
-    private val fragmentRepository: PromptFragmentRepository,
+    private val catalog: PromptFragmentCatalog,
     private val workspaceRepository: WorkspaceRepository
 ) : ViewModel() {
 
@@ -57,15 +48,10 @@ class PromptsViewModel @Inject constructor(
         viewModelScope.launch {
             val projectRoot = workspaceRepository.currentPath()
             val loaded = withContext(Dispatchers.IO) {
-                val default = fragmentRepository.fragment(DEFAULT_FRAGMENT_NUMBER)
                 PromptsUiState(
-                    defaultFragmentContent = default?.content,
-                    defaultFragmentOverridden = default?.isOverridden == true,
-                    globalPrompts = userPromptStore.list(UserPromptScope.GLOBAL, projectRoot),
-                    projectPrompts = userPromptStore.list(UserPromptScope.PROJECT, projectRoot),
-                    builtinDisabled = fragmentRepository.isBuiltinDisabled(),
-                    helpRead = fragmentRepository.isHelpRead(),
-                    fragments = fragmentRepository.listFragments(),
+                    fragments = catalog.list(projectRoot),
+                    builtinDisabled = catalog.isBuiltinDisabled(),
+                    helpRead = catalog.isHelpRead(),
                     hasWorkspace = projectRoot.isNotBlank(),
                     loading = false
                 )
@@ -74,72 +60,68 @@ class PromptsViewModel @Inject constructor(
         }
     }
 
-    /** 保存固定内置片段（00）的覆盖；内容为空视为删除覆盖（恢复内置默认）。 */
-    fun saveDefaultFragment(content: String) {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                if (content.isBlank()) {
-                    fragmentRepository.deleteOverride(DEFAULT_FRAGMENT_NUMBER)
-                } else {
-                    fragmentRepository.saveOverride(DEFAULT_FRAGMENT_NUMBER, DEFAULT_FRAGMENT_TITLE, content)
-                }
-            }
-            refresh()
-        }
-    }
-
-    /** 恢复固定内置片段的默认内容（删掉覆盖）。 */
-    fun resetDefaultFragment() {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) { fragmentRepository.deleteOverride(DEFAULT_FRAGMENT_NUMBER) }
-            refresh()
-        }
-    }
-
-    fun savePrompt(
-        existing: UserPrompt?,
-        name: String,
-        scope: UserPromptScope,
-        position: UserPromptPosition,
-        content: String
+    /** 保存某编号的覆盖（新建与编辑同一入口）：写到所选作用域层；编辑改编号时清掉旧编号。 */
+    fun saveFragment(
+        number: Int,
+        title: String,
+        scope: PromptFragmentSource,
+        content: String,
+        previousNumber: Int? = null
     ) {
         viewModelScope.launch {
             val projectRoot = workspaceRepository.currentPath()
             withContext(Dispatchers.IO) {
-                val prompt = existing?.copy(name = name, position = position, content = content)
-                    ?: userPromptStore.newPrompt(name, position, content)
-                userPromptStore.save(scope, projectRoot, prompt)
+                catalog.saveOverride(
+                    number,
+                    title,
+                    content,
+                    projectRoot,
+                    target = scope,
+                    previousNumber = previousNumber
+                )
             }
             refresh()
         }
     }
 
-    fun deletePrompt(prompt: UserPrompt, scope: UserPromptScope) {
+    /** 删除某编号的覆盖，自动回退到下一层。 */
+    fun deleteFragment(number: Int) {
         viewModelScope.launch {
             val projectRoot = workspaceRepository.currentPath()
-            withContext(Dispatchers.IO) { userPromptStore.delete(scope, projectRoot, prompt.id) }
+            withContext(Dispatchers.IO) { catalog.deleteOverride(number, projectRoot) }
             refresh()
+        }
+    }
+
+    /** 拖拽重排：按新顺序重新编号并落盘，改变注入顺序。乐观更新本地状态，避免重读导致列表跳动。 */
+    fun reorderFragments(reordered: List<PromptFragment>) {
+        val numbers = reordered.map { it.number }.sorted()
+        val renumbered = reordered.mapIndexed { index, fragment -> fragment.copy(number = numbers[index]) }
+        _state.update { it.copy(fragments = renumbered) }
+        viewModelScope.launch {
+            val projectRoot = workspaceRepository.currentPath()
+            val refreshed = withContext(Dispatchers.IO) {
+                if (catalog.reorder(renumbered, projectRoot)) catalog.list(projectRoot) else null
+            }
+            if (refreshed != null) {
+                _state.update { it.copy(fragments = refreshed) }
+            } else {
+                refresh()
+            }
         }
     }
 
     fun setBuiltinDisabled(disabled: Boolean) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { fragmentRepository.setBuiltinDisabled(disabled) }
+            withContext(Dispatchers.IO) { catalog.setBuiltinDisabled(disabled) }
             refresh()
         }
     }
 
-    /** 读完使用说明，放行进入提示词页。 */
     fun markHelpRead() {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { fragmentRepository.markHelpRead() }
+            withContext(Dispatchers.IO) { catalog.markHelpRead() }
             refresh()
         }
-    }
-
-    companion object {
-        /** 用户可改的固定片段：00 身份/总纲。其余内置片段在「高级设置」里只读展示。 */
-        const val DEFAULT_FRAGMENT_NUMBER = 0
-        private const val DEFAULT_FRAGMENT_TITLE = "identity"
     }
 }

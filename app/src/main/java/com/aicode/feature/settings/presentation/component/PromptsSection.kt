@@ -1,72 +1,89 @@
 package com.aicode.feature.settings.presentation.component
 
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.aicode.R
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.AdaptiveModalBottomSheet
 import com.aicode.core.ui.AppSwitch
 import com.aicode.core.ui.SwipeToDeleteRow
-import com.aicode.feature.agent.domain.prompt.PromptFragmentRepository
-import com.aicode.feature.agent.domain.prompt.UserPrompt
-import com.aicode.feature.agent.domain.prompt.UserPromptPosition
-import com.aicode.feature.agent.domain.prompt.UserPromptScope
+import com.aicode.feature.agent.domain.prompt.PromptFragment
+import com.aicode.feature.agent.domain.prompt.PromptFragmentSource
 import com.aicode.feature.settings.presentation.PromptsUiState
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.ChevronRight
+import compose.icons.feathericons.FileText
 import compose.icons.feathericons.Info
 import compose.icons.feathericons.Plus
-import compose.icons.feathericons.Sliders
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 
 /**
- * 编辑目标：区分三种入口。
+ * 编辑目标：区分「新建」与「编辑既有编号」。
  *
- * - [isDefaultFragment] = true：编辑固定的内置片段（00），只有正文可改
- * - [prompt] = null：新建用户提示词
- * - 其余：编辑已有用户提示词
+ * - [number] = null：新建一条编号片段
+ * - 非 null：编辑该编号最终生效的片段
  */
-internal data class PromptEditTarget(
-    val prompt: UserPrompt? = null,
-    val scope: UserPromptScope = UserPromptScope.GLOBAL,
-    val isDefaultFragment: Boolean = false
-)
+internal data class PromptEditTarget(val number: Int? = null)
 
 /**
- * 自定义提示词页：顶部一句说明 + 固定内置片段（00）+ 全局/项目两组用户提示词。
+ * 提示词页：顶部是「完全禁用内置提示词」开关与帮助入口，下面是按编号列出的生效片段。
  *
- * 用户提示词按「创建顺序」注入，分「最前 / 最后 / 关闭」三种位置，见 [UserPromptPosition]。
+ * 每行一张卡片（图标 + 编号·名称 + 摘要 + 来源徽章），长按行内容可拖拽调整顺序，
+ * 点击进入详情预览（右上角再进编辑），来源可写时左滑删除。
  */
 @Composable
 internal fun PromptsSection(
     state: PromptsUiState,
     onMarkHelpRead: () -> Unit,
-    onOpenDefaultFragment: () -> Unit,
-    onOpenPrompt: (UserPrompt, UserPromptScope) -> Unit,
-    onDeletePrompt: (UserPrompt, UserPromptScope) -> Unit
+    onOpenFragment: (PromptFragment) -> Unit,
+    onDeleteFragment: (Int) -> Unit,
+    onReorder: (List<PromptFragment>) -> Unit,
+    onToggleBuiltinDisabled: (Boolean) -> Unit
 ) {
     // 首次进入先读使用说明：读完（点确认）才放行，与「容器与镜像」页的说明门槛一致
     if (!state.helpRead) {
@@ -74,67 +91,119 @@ internal fun PromptsSection(
         return
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = Spacing.lg)
-            .padding(bottom = Spacing.xl),
-        verticalArrangement = Arrangement.spacedBy(Spacing.sm)
-    ) {
-        Text(
-            text = stringResource(R.string.prompts_hint),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = Spacing.sm, bottom = Spacing.xs)
-        )
-
-        SettingsGroupHeader(text = stringResource(R.string.prompts_group_default))
-        SettingsGroup {
-            PromptRow(
-                title = stringResource(R.string.prompts_default_title),
-                subtitle = stringResource(
-                    if (state.defaultFragmentOverridden) R.string.prompts_state_overridden
-                    else R.string.prompts_state_builtin
-                ),
-                onClick = onOpenDefaultFragment
+    Column(modifier = Modifier.fillMaxSize()) {
+        SettingsGroup(
+            modifier = Modifier
+                .padding(horizontal = Spacing.lg)
+                .padding(top = Spacing.sm)
+        ) {
+            SettingsRow(
+                icon = null,
+                title = stringResource(R.string.prompts_disable_builtin),
+                subtitle = stringResource(R.string.prompts_disable_builtin_hint),
+                trailing = {
+                    AppSwitch(checked = state.builtinDisabled, onCheckedChange = onToggleBuiltinDisabled)
+                }
             )
         }
 
-        SettingsGroupHeader(text = stringResource(R.string.perm_global))
-        SettingsGroup {
-            if (state.globalPrompts.isEmpty()) {
-                PromptEmptyHint(stringResource(R.string.prompts_empty))
-            } else {
-                state.globalPrompts.forEachIndexed { index, prompt ->
-                    if (index > 0) SettingsDivider()
-                    PromptRow(
-                        title = prompt.name,
-                        subtitle = positionLabel(prompt.position),
-                        onClick = { onOpenPrompt(prompt, UserPromptScope.GLOBAL) },
-                        onDelete = { onDeletePrompt(prompt, UserPromptScope.GLOBAL) }
-                    )
-                }
-            }
+        if (state.fragments.isEmpty()) {
+            Text(
+                text = stringResource(R.string.prompts_empty),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = Spacing.lg, vertical = 12.dp)
+            )
+        } else {
+            PromptList(
+                fragments = state.fragments,
+                onOpenFragment = onOpenFragment,
+                onDeleteFragment = onDeleteFragment,
+                onReorder = onReorder
+            )
         }
+    }
+}
 
-        SettingsGroupHeader(text = stringResource(R.string.skills_scope_project))
-        SettingsGroup {
-            if (state.projectPrompts.isEmpty()) {
-                PromptEmptyHint(
-                    stringResource(
-                        if (state.hasWorkspace) R.string.prompts_empty
-                        else R.string.prompts_no_workspace
-                    )
+/**
+ * 片段列表。拖拽时只更新本地顺序（不落盘），松手才把最终顺序交给 [onReorder] 持久化，
+ * 避免拖动过程中反复写盘 + 重读导致列表抽搐。
+ */
+@Composable
+private fun PromptList(
+    fragments: List<PromptFragment>,
+    onOpenFragment: (PromptFragment) -> Unit,
+    onDeleteFragment: (Int) -> Unit,
+    onReorder: (List<PromptFragment>) -> Unit
+) {
+    var localFragments by remember { mutableStateOf(fragments) }
+    LaunchedEffect(fragments) { localFragments = fragments }
+
+    val listState = rememberLazyListState()
+    val reorderableState = rememberReorderableLazyListState(listState) { from, to ->
+        localFragments = localFragments.toMutableList().apply { add(to.index, removeAt(from.index)) }
+    }
+    val hapticFeedback = LocalHapticFeedback.current
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = Spacing.lg)
+            .padding(bottom = Spacing.xl),
+        contentPadding = PaddingValues(top = Spacing.xs),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        itemsIndexed(
+            items = localFragments,
+            key = { index, fragment ->
+                "${fragment.stableReorderKey}:${localFragments.take(index).count { it.stableReorderKey == fragment.stableReorderKey }}"
+            }
+        ) { index, fragment ->
+            val rowKey = "${fragment.stableReorderKey}:${localFragments.take(index).count { it.stableReorderKey == fragment.stableReorderKey }}"
+            ReorderableItem(state = reorderableState, key = rowKey) { isDragging ->
+                val dragScale by animateFloatAsState(
+                    targetValue = if (isDragging) 0.97f else 1f,
+                    animationSpec = tween(durationMillis = if (isDragging) 120 else 220),
+                    label = "promptDragScale"
                 )
-            } else {
-                state.projectPrompts.forEachIndexed { index, prompt ->
-                    if (index > 0) SettingsDivider()
+                val dragElevation by animateDpAsState(
+                    targetValue = if (isDragging) 8.dp else 0.dp,
+                    animationSpec = tween(durationMillis = if (isDragging) 120 else 220),
+                    label = "promptDragElevation"
+                )
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.semanticColors.cardSurface,
+                    shadowElevation = dragElevation,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .zIndex(if (isDragging) 1f else 0f)
+                        .graphicsLayer {
+                            scaleX = dragScale
+                            scaleY = dragScale
+                        }
+                ) {
                     PromptRow(
-                        title = prompt.name,
-                        subtitle = positionLabel(prompt.position),
-                        onClick = { onOpenPrompt(prompt, UserPromptScope.PROJECT) },
-                        onDelete = { onDeletePrompt(prompt, UserPromptScope.PROJECT) }
+                        fragment = fragment,
+                        onClick = { onOpenFragment(fragment) },
+                        onDelete = { onDeleteFragment(fragment.number) },
+                        deleteEnabled = fragment.editable,
+                        dragModifier = Modifier.longPressDraggableHandle(
+                            onDragStarted = {
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                            },
+                            onDragStopped = {
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                                // 立即重编号（槽化），与落盘后的编号一致，避免 key 变化引起列表跳动
+                                val numbers = localFragments.map { it.number }.sorted()
+                                val renumbered = localFragments.mapIndexed { index, item ->
+                                    item.copy(number = numbers[index])
+                                }
+                                localFragments = renumbered
+                                onReorder(renumbered)
+                            }
+                        )
                     )
                 }
             }
@@ -143,14 +212,13 @@ internal fun PromptsSection(
 }
 
 /**
- * 右上角「+」弹层：三项入口（添加提示词 / 高级设置 / 帮助）。
+ * 右上角「+」弹层：两项入口（添加片段 / 帮助）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun PromptsAddSheet(
     onDismiss: () -> Unit,
-    onAddPrompt: () -> Unit,
-    onAdvanced: () -> Unit,
+    onAddFragment: () -> Unit,
     onHelp: () -> Unit
 ) {
     AdaptiveModalBottomSheet(onDismissRequest = onDismiss) {
@@ -166,14 +234,7 @@ internal fun PromptsAddSheet(
                     icon = FeatherIcons.Plus,
                     title = stringResource(R.string.prompts_add_prompt),
                     subtitle = stringResource(R.string.prompts_add_prompt_hint),
-                    onClick = onAddPrompt
-                )
-                SettingsDivider()
-                SettingsRow(
-                    icon = FeatherIcons.Sliders,
-                    title = stringResource(R.string.prompts_advanced),
-                    subtitle = stringResource(R.string.prompts_advanced_hint),
-                    onClick = onAdvanced
+                    onClick = onAddFragment
                 )
                 SettingsDivider()
                 SettingsRow(
@@ -183,88 +244,6 @@ internal fun PromptsAddSheet(
                     onClick = onHelp
                 )
             }
-        }
-    }
-}
-
-/**
- * 高级设置：官方文档要点摘要 + 「完全禁用内置提示词」开关。
- *
- * 摘要是内置文本（不联网），官方文档更新后需随 App 发版更新。
- */
-@Composable
-internal fun PromptsAdvancedSection(
-    builtinDisabled: Boolean,
-    fragments: List<PromptFragmentRepository.Fragment>,
-    onToggleBuiltinDisabled: (Boolean) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = Spacing.lg)
-            .padding(bottom = Spacing.xl),
-        verticalArrangement = Arrangement.spacedBy(Spacing.sm)
-    ) {
-        SettingsGroupHeader(text = stringResource(R.string.prompts_advanced_doc_title))
-        SettingsGroup {
-            Text(
-                text = stringResource(R.string.prompts_advanced_doc_body),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(Spacing.lg)
-            )
-        }
-
-        SettingsGroupHeader(text = stringResource(R.string.prompts_advanced_switch_title))
-        SettingsGroup {
-            SettingsRow(
-                icon = null,
-                title = stringResource(R.string.prompts_disable_builtin),
-                subtitle = stringResource(R.string.prompts_disable_builtin_hint),
-                trailing = {
-                    AppSwitch(checked = builtinDisabled, onCheckedChange = onToggleBuiltinDisabled)
-                }
-            )
-        }
-
-        // 内置片段清单：只读展示。用户可改的只有固定的 00（在上一页），其余放这里供查阅。
-        SettingsGroupHeader(text = stringResource(R.string.prompts_builtin_list_title))
-        SettingsGroup {
-            fragments.forEachIndexed { index, fragment ->
-                if (index > 0) SettingsDivider()
-                SettingsRow(
-                    icon = null,
-                    title = "%02d · %s".format(fragment.number, fragment.title),
-                    subtitle = stringResource(
-                        if (fragment.isOverridden) R.string.prompts_state_overridden
-                        else R.string.prompts_state_builtin
-                    )
-                )
-            }
-        }
-    }
-}
-
-/** 帮助：内置的简短说明（不联网）。 */
-@Composable
-internal fun PromptsHelpSection() {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = Spacing.lg)
-            .padding(bottom = Spacing.xl),
-        verticalArrangement = Arrangement.spacedBy(Spacing.sm)
-    ) {
-        SettingsGroupHeader(text = stringResource(R.string.prompts_help))
-        SettingsGroup {
-            Text(
-                text = stringResource(R.string.prompts_help_body),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(Spacing.lg)
-            )
         }
     }
 }
@@ -299,39 +278,67 @@ private fun PromptsHelpGate(onConfirm: () -> Unit) {
     }
 }
 
-/** 单条用户提示词行：名称 + 注入位置，点击编辑，左滑删除。 */
+/** 单条片段行：图标 + 编号·名称 + 摘要 + 来源徽章 + 箭头；长按内容区拖拽排序，左滑删除。 */
 @Composable
 private fun PromptRow(
-    title: String,
-    subtitle: String,
+    fragment: PromptFragment,
     onClick: () -> Unit,
-    onDelete: (() -> Unit)? = null
+    onDelete: () -> Unit,
+    deleteEnabled: Boolean,
+    dragModifier: Modifier
 ) {
+    val sortDescription = stringResource(R.string.prompts_sort_long_press)
     val row: @Composable () -> Unit = {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(MaterialTheme.semanticColors.cardSurface)
-                .padding(start = Spacing.lg, end = Spacing.lg, top = 11.dp, bottom = 11.dp),
+                .padding(start = Spacing.lg, end = Spacing.xs, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .then(dragModifier)
+                    .semantics { contentDescription = sortDescription },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = FeatherIcons.FileText,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(Spacing.md))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "%02d · %s".format(fragment.number, fragment.title),
+                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (fragment.description.isNotBlank()) {
+                        Text(
+                            text = fragment.description,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
+
             Spacer(modifier = Modifier.width(Spacing.sm))
+            SourceBadge(fragment.source)
+            Spacer(modifier = Modifier.width(Spacing.xs))
             Icon(
                 imageVector = FeatherIcons.ChevronRight,
                 contentDescription = null,
@@ -341,28 +348,31 @@ private fun PromptRow(
         }
     }
 
-    if (onDelete == null) {
-        // 固定内置片段不可删：只做普通可点行（clickable 是 Modifier 扩展，不能当组件用）
-        Box(modifier = Modifier.clickable(onClick = onClick)) { row() }
-    } else {
-        SwipeToDeleteRow(onDelete = onDelete, onClick = onClick) { row() }
+    SwipeToDeleteRow(onDelete = onDelete, onClick = onClick, deleteEnabled = deleteEnabled) { row() }
+}
+
+/** 来源徽章：一眼看出该编号的内容来自哪一层。 */
+@Composable
+private fun SourceBadge(source: PromptFragmentSource) {
+    val color = when (source) {
+        PromptFragmentSource.PROJECT -> MaterialTheme.colorScheme.primary
+        PromptFragmentSource.GLOBAL -> MaterialTheme.colorScheme.tertiary
+        PromptFragmentSource.LOCAL -> MaterialTheme.colorScheme.secondary
+        PromptFragmentSource.BUILTIN -> MaterialTheme.semanticColors.subtleText
     }
-}
-
-/** 空态提示（名字带 Prompt 前缀：同包已有 EmptyHint）。 */
-@Composable
-private fun PromptEmptyHint(text: String) {
     Text(
-        text = text,
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = Spacing.lg, vertical = 12.dp)
+        text = stringResource(
+            when (source) {
+                PromptFragmentSource.PROJECT -> R.string.prompts_source_project
+                PromptFragmentSource.GLOBAL -> R.string.prompts_source_global
+                PromptFragmentSource.LOCAL -> R.string.prompts_source_local
+                PromptFragmentSource.BUILTIN -> R.string.prompts_source_builtin
+            }
+        ),
+        style = MaterialTheme.typography.labelSmall,
+        color = color,
+        modifier = Modifier
+            .background(color.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
     )
-}
-
-@Composable
-private fun positionLabel(position: UserPromptPosition): String = when (position) {
-    UserPromptPosition.BEFORE_ALL -> stringResource(R.string.prompts_position_before_all)
-    UserPromptPosition.AFTER_SYSTEM -> stringResource(R.string.prompts_position_after_system)
-    UserPromptPosition.OFF -> stringResource(R.string.prompts_position_off)
 }

@@ -32,7 +32,7 @@ class SystemPromptProvider @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val skillRepository: SkillRepository,
     private val memoryRepository: MemoryRepository,
-    private val userPromptStore: UserPromptStore,
+    private val promptFragmentCatalog: PromptFragmentCatalog,
     private val containerInstaller: ContainerInstaller,
     private val agentDefinitionRepository: AgentDefinitionRepository
 ) {
@@ -42,23 +42,11 @@ class SystemPromptProvider @Inject constructor(
     }
 
     private inner class StaticRuleSource : PromptSource {
-        @Volatile private var cached: String? = null
+        // 四级来源里项目层随工作区变化，按 projectRoot 缓存而非进程级单份。
+        private val cachedByProject = ConcurrentHashMap<String, String>()
 
-        override fun build(ctx: AgentContext): String {
-            return cached ?: run {
-                val merged = PromptFragmentResolver.mergeStatic(
-                    BASE_FRAGMENTS.keys.toList(),
-                    PromptFragmentResolver.numberedFragments(customDir)
-                )
-                val pieces = merged.mapNotNull { (number, override) ->
-                    // 内置数字走 resolvePrompt（内部按数字身份查覆盖）；新增片段直接读自定义文件。
-                    val raw = BASE_FRAGMENTS[number]?.let { resolvePrompt(it) }
-                        ?: readFileOrNull(override)
-                    raw?.replace(LEADING_COMMENT, "")?.trim()?.takeIf { it.isNotEmpty() }
-                }
-                pieces.joinToString("\n\n").also { cached = it }
-            }
-        }
+        override fun build(ctx: AgentContext): String =
+            cachedByProject.getOrPut(ctx.projectRoot) { promptFragmentCatalog.renderStatic(ctx.projectRoot) }
     }
 
     private inner class ActiveSkillsSource : PromptSource {
@@ -231,28 +219,6 @@ class SystemPromptProvider @Inject constructor(
     private val subAgentListSource = SubAgentListSource()
     private val memoryListSource = MemoryListSource()
 
-    /**
-     * 用户自定义提示词：不参与内置片段的编号排序，只按注入位置拼在两端。
-     *
-     * - [UserPromptPosition.BEFORE_ALL]：拼在所有内置提示词之前
-     * - [UserPromptPosition.AFTER_SYSTEM]：拼在整个系统提示词之后
-     * - [UserPromptPosition.OFF]：不注入
-     *
-     * 只在主代理的 build() 里用（子代理与「仅自定义片段」模式不注入）。
-     */
-    private inner class UserPromptSource {
-        fun buildAt(position: UserPromptPosition, ctx: AgentContext): String? {
-            val prompts = runCatching {
-                userPromptStore.list(UserPromptScope.GLOBAL, ctx.projectRoot) +
-                    userPromptStore.list(UserPromptScope.PROJECT, ctx.projectRoot)
-            }.getOrDefault(emptyList())
-                .filter { it.position == position && it.content.isNotBlank() }
-            if (prompts.isEmpty()) return null
-            return prompts.joinToString("\n\n") { it.content.trim() }
-        }
-    }
-
-    private val userPromptSource = UserPromptSource()
     private val activeSkillsSource = ActiveSkillsSource()
     private val projectRuleSource = ProjectRuleSource()
     private val workspaceSource = WorkspaceSource()
@@ -297,11 +263,6 @@ class SystemPromptProvider @Inject constructor(
 
         // 4. 组装最终提示词：把稳定不变的重头基线放最前面（享受 KV Cache），变化部分放末尾
         return buildString {
-            // 用户提示词（最前）：拼在基线之前
-            userPromptSource.buildAt(UserPromptPosition.BEFORE_ALL, agentContext)?.let {
-                append(it)
-                append("\n\n")
-            }
             append(staticContent)
 
             if (SKILLS_VAR !in rawStatic) skillsContent?.let { append("\n\n"); append(it) }
@@ -318,11 +279,6 @@ class SystemPromptProvider @Inject constructor(
                 append(timeContent)
             }
 
-            // 用户提示词（最后）：拼在整个系统提示词之后
-            userPromptSource.buildAt(UserPromptPosition.AFTER_SYSTEM, agentContext)?.let {
-                append("\n\n")
-                append(it)
-            }
         }
     }
 
@@ -331,17 +287,14 @@ class SystemPromptProvider @Inject constructor(
      * 不注入任何内置来源；动态内容仅通过 `{{AICODE_*}}` 变量按需取回。
      */
     private fun buildCustomOnly(ctx: AgentContext): String {
-        val fragments = PromptFragmentResolver.numberedFragments(customDir)
-        if (fragments.isEmpty()) {
+        val content = promptFragmentCatalog.renderCustomOnly(ctx.projectRoot)
+        if (content.isEmpty()) {
             FileLogger.w(
                 TAG,
                 "已启用 ${PromptFragmentResolver.DISABLE_BUILTIN_FILE}，但 $customDir 下没有 <两位数字>-<名称>.md 片段，系统提示词为空"
             )
             return ""
         }
-        val content = fragments
-            .mapNotNull { readFileOrNull(it.second)?.replace(LEADING_COMMENT, "")?.trim()?.takeIf { it.isNotEmpty() } }
-            .joinToString("\n\n")
         return renderVariables(
             content,
             activeSkillsSource.build(ctx),
@@ -469,18 +422,6 @@ class SystemPromptProvider @Inject constructor(
         val LEADING_COMMENT = Regex("(?s)^\\s*<!--.*?-->\\s*")
 
         /** 内置静态基线：数字身份 → 规范文件名，决定默认拼接顺序。 */
-        val BASE_FRAGMENTS = linkedMapOf(
-            0 to "00-identity.md",
-            10 to "10-communication.md",
-            15 to "15-project-rules.md",
-            20 to "20-coding-discipline.md",
-            30 to "30-comments.md",
-            40 to "40-approach.md",
-            50 to "50-safety.md",
-            60 to "60-tools-and-paths.md",
-            70 to "70-skills-and-mcp.md"
-        )
-
         // 片段里可用的运行期变量，渲染时替换为真实内容
         const val SKILLS_VAR = "{{AICODE_SKILLS}}"
         const val MEMORY_VAR = "{{AICODE_MEMORY}}"
