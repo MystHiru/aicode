@@ -1149,6 +1149,8 @@
     <string name="provider_test_success">Connected · %1$dms</string>
     <string name="common_error">Error</string>
     <string name="common_select">Select</string>
+    <string name="provider_model_context_total">Total Context Window (tokens)</string>
+    <string name="provider_model_window_invalid">Enter a valid positive integer, or leave blank to use the automatically detected value</string>
     <string name="provider_model_context_input">Input Window (tokens)</string>
     <string name="provider_model_context_output">Output Window (tokens)</string>
     <string name="provider_new">New Vendor</string>

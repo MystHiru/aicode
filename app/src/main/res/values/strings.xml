@@ -1149,6 +1149,8 @@
     <string name="provider_test_success">连接正常 · %1$dms</string>
     <string name="common_error">错误</string>
     <string name="common_select">选择</string>
+    <string name="provider_model_context_total">总上下文窗口 (Token)</string>
+    <string name="provider_model_window_invalid">请输入有效的正整数，或留空使用自动识别值</string>
     <string name="provider_model_context_input">输入窗口 (Token)</string>
     <string name="provider_model_context_output">输出窗口 (Token)</string>
     <string name="provider_new">新供应商</string>
