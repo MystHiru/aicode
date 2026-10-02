@@ -1443,6 +1443,17 @@ class SettingsViewModel @Inject constructor(
         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
     }.getOrDefault("unknown")
 
+    /**
+     * 判断日志行是否属于某个 MCP server：只认 MCP 组件写下的日志（tag 以 `Mcp` 开头，
+     * 如 McpManager/McpClient/McpStdioTransport/McpTool），且消息里引用了该 server——
+     * 要么是消息前缀 `[名字]`，要么是命名空间工具名 `mcp__名字__`。
+     * 不能只按 server 名做子串匹配：那会把任何恰好提到该名字的无关日志一并捞进来。
+     */
+    private fun isMcpServerLogLine(line: String, serverName: String): Boolean {
+        if (!line.contains("[Mcp")) return false
+        return line.contains("[$serverName]") || line.contains("mcp__${serverName}__")
+    }
+
     fun refreshLogs(filterServerName: String? = _logViewerState.value.filterServerName, silent: Boolean = false) {
         loadLogs(
             filterServerName = filterServerName?.takeIf { it.isNotBlank() },
@@ -1487,10 +1498,7 @@ class SettingsViewModel @Inject constructor(
                     val filteredLines = if (filterServerName.isNullOrBlank()) {
                         rawLines
                     } else {
-                        rawLines.filter { line ->
-                            line.contains("[$filterServerName]") ||
-                                line.contains(filterServerName, ignoreCase = true)
-                        }
+                        rawLines.filter { line -> isMcpServerLogLine(line, filterServerName) }
                     }
                     val visibleLines = filteredLines.takeLast(MAX_LOG_LINES)
 
