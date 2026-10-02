@@ -561,6 +561,7 @@ fun AIChatPanel(
     val sessionInputTokens = currentSession?.totalInputTokens ?: 0
     val sessionOutputTokens = currentSession?.totalOutputTokens ?: 0
     val sessionLastInputTokens = currentSession?.lastInputTokens ?: 0
+    val contextUsages by viewModel.contextUsages.collectAsStateWithLifecycle()
     val messagesReady = messagesState.loaded && messagesState.sessionId == currentSessionId
     val runningTool by viewModel.runningTool.collectAsStateWithLifecycle()
     val isCompacting by viewModel.isCompacting.collectAsStateWithLifecycle()
@@ -1662,10 +1663,14 @@ fun AIChatPanel(
                         settingsViewModel?.refreshProviderDashboard(it, context = context, force = true)
                     }
                 },
+                tokenEstimated = contextUsages[currentSessionId]?.estimated == true,
                 tokenProgress = run {
-                    val contextLimit = activeModelMetadata?.contextTokens ?: 0
+                    val contextLimit = activeModelMetadata?.let {
+                        com.aicode.feature.settings.domain.model.ModelContextPolicy.effectiveInputBudget(it)
+                    } ?: 0
+                    val usage = contextUsages[currentSessionId]?.takeIf { sessionLastInputTokens > 0 || isBusy }
                     if (contextLimit > 0) {
-                        sessionLastInputTokens.toFloat() / contextLimit
+                        (usage?.inputTokens ?: sessionLastInputTokens).toFloat() / contextLimit
                     } else 0f
                 },
                 isScrolling = listState.isScrollInProgress,

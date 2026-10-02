@@ -213,6 +213,7 @@ class AIAgentViewModel @Inject constructor(
             "refusal", "SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII" ->
                 context.getString(R.string.agent_stop_refusal)
             "model_context_window_exceeded" -> context.getString(R.string.agent_stop_context_exceeded)
+            "input_budget_exceeded" -> context.getString(R.string.agent_input_budget_exceeded)
             else -> null
         } ?: return event.error
         return if (event.error.isBlank()) localized else "$localized\n${event.error}"
@@ -825,6 +826,8 @@ class AIAgentViewModel @Inject constructor(
     }
 
     private val _compactingSessions = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    private val _contextUsages = MutableStateFlow<Map<String, AgentEvent.ContextUsage>>(emptyMap())
+    val contextUsages: StateFlow<Map<String, AgentEvent.ContextUsage>> = _contextUsages.asStateFlow()
 
     private val _llmCallEvents = MutableSharedFlow<LlmCallEvent>(extraBufferCapacity = 16)
     /** 每次单次 LLM 请求返回事件（携带单次 Token 统计）。 */
@@ -1493,8 +1496,8 @@ class AIAgentViewModel @Inject constructor(
             val history = messagePersistenceUseCase.buildHistory(sessionId, SessionUseCase.PENDING_TOOL_MARKER)
             val isFirst = history.isEmpty()
 
+            val userMsgId = UUID.randomUUID().toString()
             if (!isAutoTrigger) {
-                val userMsgId = UUID.randomUUID().toString()
                 messagePersistenceUseCase.persist(sessionId, MessageRole.USER, request, id = userMsgId, attachments = inputAttachments)
                 checkpointManager.createCheckpoint(sessionId, userMsgId, request)
                 if (isFirst && !skipTitleUpdate) {
@@ -1504,7 +1507,11 @@ class AIAgentViewModel @Inject constructor(
                         agentWorkflow.generateTitle(sessionId, request)?.let { sessionUseCase.updateTitle(sessionId, it) }
                     }
                 }
+            } else {
+                messagePersistenceUseCase.persist(sessionId, MessageRole.USER, modelRequest, id = userMsgId,
+                    attachments = inputAttachments)
             }
+            messagePersistenceUseCase.invalidateHistory(sessionId)
             sessionUseCase.touch(sessionId, messagePersistenceUseCase.nextTimestamp())
 
             val sessionEntity = sessionUseCase.getSessionById(sessionId)
@@ -1523,6 +1530,8 @@ class AIAgentViewModel @Inject constructor(
                 history = history,
                 inputImages = inputImages,
                 sessionId = sessionId,
+                inputMessageId = userMsgId,
+                lastInputTokens = sessionEntity?.lastInputTokens ?: 0,
                 mode = mode,
                 modeBeforePlan = sessionDomain?.modeBeforePlan,
                 reasoningEffort = sessionDomain?.reasoningEffort?.apiValue,
@@ -1607,6 +1616,10 @@ class AIAgentViewModel @Inject constructor(
                     }
                     AgentEvent.CompactionFinished -> {
                         setCompacting(sessionId, false)
+                        _contextUsages.value = _contextUsages.value - sessionId
+                    }
+                    is AgentEvent.ContextUsage -> {
+                        _contextUsages.value = _contextUsages.value + (sessionId to event)
                     }
                     is AgentEvent.CompactionFailed -> {
                         setCompacting(sessionId, false)
@@ -1637,7 +1650,7 @@ class AIAgentViewModel @Inject constructor(
 
                         val normalized = if (event.content.hasVisibleContent()) event.content else ""
                         val reasoning = event.reasoning.takeIf { it.hasVisibleContent() }
-                        val msgId = java.util.UUID.randomUUID().toString()
+                        val msgId = event.messageId
                         if (reasoningDuration != null && reasoningDuration > 0) {
                             reasoningDurations[msgId] = reasoningDuration
                         }
@@ -1666,6 +1679,7 @@ class AIAgentViewModel @Inject constructor(
                                 }
                             }
                         }
+                        event.persisted?.complete(Unit)
                     }
                     is AgentEvent.ToolCallStarted -> {
                         val msgId = "tool_${event.id}"
@@ -1708,6 +1722,7 @@ class AIAgentViewModel @Inject constructor(
                         )
                         toolArgsByMsgId.remove(msgId)
                         removeRunningTool(sessionId, msgId)
+                        event.persisted?.complete(Unit)
                     }
                     is AgentEvent.Failed -> {
                         failed = true
@@ -2025,6 +2040,7 @@ class AIAgentViewModel @Inject constructor(
         val sid = _currentSessionId.value ?: return
         viewModelScope.launch {
             sessionUseCase.updateProviderModel(sid, providerId, model)
+            _contextUsages.value = _contextUsages.value - sid
             // 空会话中的选择视为「新会话默认模型」，供下次新建会话沿用
             if (sessionUseCase.isSessionEmpty(sid)) {
                 defaultModelSettingsRepository.setDefaultModel(providerId, model)
@@ -2086,7 +2102,7 @@ class AIAgentViewModel @Inject constructor(
                 appendLine("| 预估费用 | ${formatCostUsd(today.costUsd)} | ${formatCostUsd(allTime.costUsd)} |")
             }
             sessionUseCase.touch(sid, messagePersistenceUseCase.nextTimestamp())
-            messagePersistenceUseCase.persist(sid, MessageRole.ASSISTANT, table.trimEnd(), isCompacted = true)
+            messagePersistenceUseCase.persist(sid, MessageRole.ASSISTANT, table.trimEnd(), isContextExcluded = true)
         }
     }
 
@@ -2129,7 +2145,10 @@ class AIAgentViewModel @Inject constructor(
                 val changed = agentWorkflow.compactSession(sid) { event ->
                     when (event) {
                         is AgentEvent.CompactionStarted -> setCompacting(sid, true)
-                        AgentEvent.CompactionFinished -> setCompacting(sid, false)
+                        AgentEvent.CompactionFinished -> {
+                            setCompacting(sid, false)
+                            _contextUsages.value = _contextUsages.value - sid
+                        }
                         is AgentEvent.CompactionFailed -> {
                             failed = true
                             setCompacting(sid, false)
@@ -2314,6 +2333,7 @@ class AIAgentViewModel @Inject constructor(
         setStreamingText(sessionId, null)
         setStreamingReasoning(sessionId, null)
         setCompacting(sessionId, false)
+        _contextUsages.value = _contextUsages.value - sessionId
         setRetryState(sessionId, null)
         checkpointManager.setActiveCheckpointId(sessionId, null)
 
@@ -2326,11 +2346,11 @@ class AIAgentViewModel @Inject constructor(
                 if (checkpoint != null) {
                     checkpointManager.restoreCodeToCheckpoint(sessionId, checkpoint.id)
                 }
-                agentMessageDao.deleteMessagesFromTimestamp(sessionId, targetMsgEntity.timestamp)
+                messagePersistenceUseCase.rewindConversation(sessionId, targetMsgEntity.timestamp)
                 withContext(Dispatchers.Main) { onFillPrompt(targetMsgEntity.content, attachments) }
             }
             RewindOption.RESTORE_CONVERSATION -> {
-                agentMessageDao.deleteMessagesFromTimestamp(sessionId, targetMsgEntity.timestamp)
+                messagePersistenceUseCase.rewindConversation(sessionId, targetMsgEntity.timestamp)
                 withContext(Dispatchers.Main) { onFillPrompt(targetMsgEntity.content, attachments) }
             }
             RewindOption.RESTORE_CODE -> {

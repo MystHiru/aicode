@@ -55,6 +55,8 @@ import com.aicode.feature.agent.domain.provider.KeySwitchOutcome
 import com.aicode.feature.agent.domain.provider.isKeySwitchFailure
 import com.aicode.feature.agent.domain.provider.OpenAIAdapter
 import com.aicode.feature.settings.domain.model.ProviderType
+import com.aicode.feature.settings.domain.model.ModelContextPolicy
+import com.aicode.feature.agent.domain.provider.StreamApiException
 import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import kotlinx.coroutines.CancellationException
@@ -152,8 +154,8 @@ class StatefulAgentWorkflow @Inject constructor(
     /** 改变状态的动作 (Action) */
     sealed interface AgentAction {
         data class InitRequest(val initialMessages: List<AgentMessage>) : AgentAction
-        data class LlmResponse(val response: AIResponse) : AgentAction
-        data class LlmError(val error: String) : AgentAction
+        data class LlmResponse(val response: AIResponse, val messageId: String) : AgentAction
+        data class LlmError(val error: String, val reasonCode: String? = null) : AgentAction
         data class PermissionEvaluated(
             val toolCall: ToolCall,
             val approved: Boolean,
@@ -194,6 +196,7 @@ class StatefulAgentWorkflow @Inject constructor(
     /** 需要在外部环境中执行的副作用 (SideEffect) */
     sealed interface AgentSideEffect {
         object CallLlm : AgentSideEffect
+        data class PersistUser(val message: AgentMessage.UserMessage) : AgentSideEffect
         data class RequestPermission(val toolCall: ToolCall) : AgentSideEffect
         /** 批量并行执行已批准的工具；传入空列表表示本批无工具可执行，直接进入收尾。 */
         data class ExecuteToolBatch(val toolCalls: List<ToolCall>) : AgentSideEffect
@@ -327,12 +330,14 @@ class StatefulAgentWorkflow @Inject constructor(
             }
             is AgentAction.LlmResponse -> {
                 val assistantMsg = AgentMessage.AssistantMessage(
+                    id = action.messageId,
                     content = action.response.content,
                     toolCalls = action.response.toolCalls,
                     reasoning = action.response.reasoning ?: "",
                     signature = action.response.signature ?: "",
                     thinkingBlocksJson = action.response.thinkingBlocksJson ?: "",
-                    images = action.response.images
+                    images = action.response.images,
+                    inputTokens = action.response.inputTokens
                 )
                 newState = state.copy(
                     messages = state.messages + assistantMsg,
@@ -348,9 +353,9 @@ class StatefulAgentWorkflow @Inject constructor(
                             errorCode = action.response.stopReason
                         )
                     } else if (action.response.isTruncated) {
-                        newState = newState.copy(
-                            messages = newState.messages + AgentMessage.UserMessage(content = "你的回复因长度限制被截断了，请从截断处继续。")
-                        )
+                        val continuation = AgentMessage.UserMessage(content = "Your response was truncated. Continue from where it stopped.")
+                        newState = newState.copy(messages = newState.messages + continuation)
+                        effects.add(AgentSideEffect.PersistUser(continuation))
                         effects.add(AgentSideEffect.CallLlm)
                     } else {
                         newState = newState.copy(isFinished = true)
@@ -369,7 +374,7 @@ class StatefulAgentWorkflow @Inject constructor(
                 }
             }
             is AgentAction.LlmError -> {
-                newState = state.copy(isFinished = true, error = action.error)
+                newState = state.copy(isFinished = true, error = action.error, errorCode = action.reasonCode)
             }
             is AgentAction.PermissionEvaluated -> {
                 if (action.approved) {
@@ -481,6 +486,7 @@ class StatefulAgentWorkflow @Inject constructor(
         actionQueue.addLast(
             AgentAction.InitRequest(
                 currentContext.history + AgentMessage.UserMessage(
+                    id = currentContext.inputMessageId,
                     content = if (modeReminder == null) userRequest else "$userRequest\n\n$modeReminder",
                     images = currentContext.inputImages
                 )
@@ -491,6 +497,22 @@ class StatefulAgentWorkflow @Inject constructor(
         val aiProvider = getEffectiveProvider(currentContext.sessionId)
         // 压缩失败后本轮（本次用户请求内）不再重复尝试压缩，避免每次 LLM 调用都白试一次。
         var compactionAttemptFailed = false
+        val metadata = modelMetadataService.resolve(aiProvider.providerId, when (aiProvider) {
+            is AnthropicAdapter -> ProviderType.ANTHROPIC
+            is GeminiAdapter -> ProviderType.GEMINI
+            else -> ProviderType.OPENAI
+        }, aiProvider.model)
+        val inputBudget = ModelContextPolicy.effectiveInputBudget(metadata)
+        if (aiProvider is AnthropicAdapter) {
+            aiProvider.maxOutputTokens = ModelContextPolicy.outputReserveTokens(metadata)
+        }
+        val lastAssistantIndex = currentContext.history.indexOfLast { it is AgentMessage.AssistantMessage && it.inputTokens > 0 }
+        var baselineEstimate = ContextTokenEstimator.estimate(systemPrompt,
+            currentContext.history.take(lastAssistantIndex.coerceAtLeast(0)), currentTools)
+        var baselineUsage = if (currentContext.lastInputTokens > 0 && lastAssistantIndex >= 0) {
+            (currentContext.history[lastAssistantIndex] as AgentMessage.AssistantMessage).inputTokens
+        } else 0
+        var overflowRecoveryAttempted = false
 
         while (!state.isFinished && actionQueue.isNotEmpty()) {
             val action = actionQueue.removeFirst()
@@ -499,21 +521,40 @@ class StatefulAgentWorkflow @Inject constructor(
 
             for (effect in effects) {
                 when (effect) {
+                    is AgentSideEffect.PersistUser -> {
+                        currentContext.sessionId?.let { sessionId ->
+                            messagePersistenceUseCase.persist(sessionId, com.aicode.feature.agent.presentation.MessageRole.USER,
+                                effect.message.content, id = effect.message.id)
+                            messagePersistenceUseCase.invalidateHistory(sessionId)
+                        }
+                    }
                     is AgentSideEffect.CallLlm -> {
                         val providerInUse = aiProvider
                         // 压缩轮：若配置了压缩专用模型，使用独立压缩模型压缩
                         val compactionProvider = resolveCompactionFallbackProvider(currentContext.sessionId) ?: providerInUse
                         var compactedMessages = state.messages
                         if (!compactionAttemptFailed) {
-                            val sessionLastInputTokens = currentContext.sessionId?.let { sessionUseCase.getSessionById(it)?.lastInputTokens } ?: 0
-                            val compaction = contextCompactor.compactIfNeeded(state.messages, compactionProvider, context.sessionId, lastInputTokens = sessionLastInputTokens, windowProvider = aiProvider) { event ->
+                            val estimate = ContextTokenEstimator.estimate(systemPrompt, state.messages, currentTools)
+                            val predictedInput = ContextTokenEstimator.calibrated(estimate, baselineEstimate, baselineUsage)
+                            val compaction = contextCompactor.compactIfNeeded(state.messages, compactionProvider, context.sessionId,
+                                windowProvider = aiProvider, systemPrompt = systemPrompt, tools = currentTools,
+                                currentInputTokens = predictedInput) { event ->
                                 if (event is AgentEvent.CompactionFailed) compactionAttemptFailed = true
                                 send(event)
                             }
                             compactedMessages = compaction.messages
                             if (compaction.compacted) {
                                 state = state.copy(messages = compaction.messages)
+                                baselineUsage = 0
+                                baselineEstimate = 0
                             }
+                        }
+                        val requestEstimate = ContextTokenEstimator.estimate(systemPrompt, compactedMessages, currentTools)
+                        val predictedInput = ContextTokenEstimator.calibrated(requestEstimate, baselineEstimate, baselineUsage)
+                        send(AgentEvent.ContextUsage(predictedInput, inputBudget, true))
+                        if (predictedInput >= inputBudget) {
+                            actionQueue.addLast(AgentAction.LlmError("", "input_budget_exceeded"))
+                            continue
                         }
 
                         val acc = StringBuilder()
@@ -619,11 +660,31 @@ class StatefulAgentWorkflow @Inject constructor(
                                 if (aiResponse.images.isNotEmpty()) persistModelImages(aiResponse.images) else emptyList<AgentImage>() to emptyList()
                             callCompleted = true
                             // 将本轮 reasoning 附加到 AIResponse，以便 reduce 时存入 AssistantMessage 并在下一轮回传
+                            if (aiResponse.stopReason == "model_context_window_exceeded" && !overflowRecoveryAttempted) {
+                                overflowRecoveryAttempted = true
+                                val recovery = contextCompactor.compactIfNeeded(state.messages, compactionProvider,
+                                    currentContext.sessionId, force = true, windowProvider = aiProvider,
+                                    systemPrompt = systemPrompt, tools = currentTools, currentInputTokens = predictedInput) { send(it) }
+                                if (recovery.compacted) {
+                                    state = state.copy(messages = recovery.messages)
+                                    baselineUsage = 0
+                                    baselineEstimate = 0
+                                    actionQueue.addLast(AgentAction.InitRequest(recovery.messages))
+                                    continue
+                                }
+                            }
+                            baselineEstimate = requestEstimate
+                            baselineUsage = aiResponse.inputTokens
+                            send(AgentEvent.ContextUsage(
+                                if (baselineUsage > 0) baselineUsage else requestEstimate, inputBudget, baselineUsage <= 0
+                            ))
+                            val responseMessageId = UUID.randomUUID().toString()
                             val responseWithReasoning = if (reasoningAcc.isNotEmpty()) {
                                 aiResponse.copy(reasoning = reasoningAcc.toString())
                             } else aiResponse
 
                             if (aiResponse.content.isNotBlank() || aiResponse.toolCalls.isNotEmpty() || attachments.isNotEmpty()) {
+                                val persisted = kotlinx.coroutines.CompletableDeferred<Unit>()
                                 send(
                                     AgentEvent.AssistantText(
                                         aiResponse.content,
@@ -634,19 +695,37 @@ class StatefulAgentWorkflow @Inject constructor(
                                         aiResponse.outputTokens,
                                         aiResponse.cachedInputTokens,
                                         aiResponse.thinkingBlocksJson ?: "",
-                                        attachments = attachments
+                                        attachments = attachments,
+                                        messageId = responseMessageId,
+                                        persisted = persisted
                                     )
                                 )
+                                persisted.await()
                             }
                             actionQueue.addLast(
                                 AgentAction.LlmResponse(
                                     if (persistedImages.isNotEmpty()) responseWithReasoning.copy(images = persistedImages)
-                                    else responseWithReasoning
+                                    else responseWithReasoning,
+                                    messageId = responseMessageId
                                 )
                             )
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
+                            if (!overflowRecoveryAttempted && acc.isEmpty() && reasoningAcc.isEmpty() && isContextOverflow(e)) {
+                                overflowRecoveryAttempted = true
+                                val recovery = contextCompactor.compactIfNeeded(state.messages, compactionProvider,
+                                    currentContext.sessionId, force = true, windowProvider = aiProvider,
+                                    systemPrompt = systemPrompt, tools = currentTools, currentInputTokens = predictedInput) { send(it) }
+                                if (recovery.compacted) {
+                                    state = state.copy(messages = recovery.messages)
+                                    baselineUsage = 0
+                                    baselineEstimate = 0
+                                    actionQueue.addLast(AgentAction.InitRequest(recovery.messages))
+                                    callError = e.message
+                                    continue
+                                }
+                            }
                             val partial = acc.toString()
                             val reasoning = reasoningAcc.toString()
                             // 流式被中断时也要落库已收到的思考：否则下方 finally 会清空流式思考气泡，
@@ -827,7 +906,10 @@ class StatefulAgentWorkflow @Inject constructor(
 
                         // 逐个推送完成事件（保持与 batchToolCalls 一致顺序），并进入收尾。
                         batchResults.forEach { br ->
-                            send(AgentEvent.ToolCallFinished(br.id, br.toolName, br.result, br.isError, attachments = br.attachments))
+                            val persisted = kotlinx.coroutines.CompletableDeferred<Unit>()
+                            send(AgentEvent.ToolCallFinished(br.id, br.toolName, br.result, br.isError,
+                                attachments = br.attachments, persisted = persisted))
+                            persisted.await()
                         }
                         if (notifySessionId != null && notifications.isNotEmpty()) {
                             agentNotificationCenter.ack(notifySessionId, notifications.map { it.seq })
@@ -840,6 +922,13 @@ class StatefulAgentWorkflow @Inject constructor(
         
         state.error?.let { send(AgentEvent.Failed(it, state.errorCode)) }
         send(AgentEvent.Completed)
+    }
+
+    private fun isContextOverflow(error: Throwable): Boolean {
+        if (error is StreamApiException && error.code == "context_window_exceeded") return true
+        val text = error.message.orEmpty().lowercase()
+        return listOf("context_length_exceeded", "context_window_exceeded", "maximum context length",
+            "prompt is too long", "input token limit").any { it in text }
     }
 
     private suspend fun runToolSync(tool: AgentTool?, toolCall: ToolCall, context: AgentContext): ToolRunResult {
