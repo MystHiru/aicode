@@ -519,6 +519,26 @@ class OpenAIAdapterTest {
     }
 
     @Test
+    fun streamChat_budgetExceeded_abortsWithoutFinal() = runTest {
+        val api = api()
+        val content = "x".repeat(MAX_STREAM_CHARS / 2 + 1)
+        every { api.streamChatCompletion(any(), any(), any(), any()) } returns sseCall(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"$content\"}}]}",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"$content\"}}]}",
+            "data: [DONE]"
+        )
+        val chunks = mutableListOf<AIStreamChunk>()
+        try {
+            adapter(api).apply { maxNetworkRetries = 0 }
+                .completeStream("", emptyList()).toList(chunks)
+            org.junit.Assert.fail("Expected response_too_large")
+        } catch (e: StreamApiException) {
+            assertEquals("response_too_large", e.code)
+            assertTrue(chunks.none { it is AIStreamChunk.Final })
+        }
+    }
+
+    @Test
     fun streamChat_midStreamError_doesNotAbortWholeStream() = runTest {
         val api = api()
         every { api.streamChatCompletion(any(), any(), any(), any()) } returns sseCall(

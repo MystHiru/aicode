@@ -450,6 +450,8 @@ class OpenAIAdapter @Inject constructor(
                             }
                         } catch (e: CancellationException) {
                             throw e
+                        } catch (e: StreamApiException) {
+                            throw e
                         } catch (e: Exception) {
                             coroutineContext.ensureActive()
                             // 该行 SSE 解析失败，跳过；不影响已累积文本与后续行。
