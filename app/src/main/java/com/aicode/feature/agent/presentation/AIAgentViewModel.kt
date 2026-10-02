@@ -684,6 +684,9 @@ class AIAgentViewModel @Inject constructor(
         val name = clip.sourceName
         if (!isValidFileEntryName(name)) return@launch onResult(false)
         val target = "$targetDir/$name"
+        if (target == clip.sourcePath || target.startsWith("${clip.sourcePath.trimEnd('/')}/")) {
+            return@launch onResult(false)
+        }
         if (withContext(Dispatchers.IO) { fileAccess.exists(target) }) {
             _pasteConflict.value = clip.sourcePath to target
             return@launch
