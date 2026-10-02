@@ -3,11 +3,15 @@ package com.aicode.feature.agent.domain.provider
 import com.aicode.core.util.FileLogger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.InternalCoroutinesApi
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
+import retrofit2.await
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.ConnectException
@@ -30,30 +34,88 @@ private const val TAG = "RetryPolicy"
 const val MAX_NETWORK_RETRIES = 6
 
 /**
- * 流式请求首字节等待超时：超过此时间未收到首个内容块即关闭流，触发可重试的 IOException。
+ * 每次流式尝试从发起请求到首个有效内容的等待上限，包含等待响应头。
  *
- * OkHttp 的 readTimeout 已设为无限制，首字节之前若卡死只能靠此应用层 watchdog 兜底，
+ * OkHttp 的 readTimeout 已设为无限制，首个内容之前由应用层取消请求兜底，
  * 故放宽到 5 分钟以容纳慢启动与长思考模型。
  */
 const val FIRST_BYTE_TIMEOUT_MS = 300_000L
 
-/**
- * 启动首字节超时 watchdog（作为当前协程的子协程）：在 [timeoutMs] 后
- * 若 [isFirstByteReceived] 仍为 false，则调用 [close]（通常是关闭 ResponseBody），
- * 强制读取抛出 IOException 以被重试机制捕获。
- *
- * [timeoutMs] <= 0 表示不限制，此时不启动计时。
- * 调用方应在收到首个内容块后取消返回的 [Job]。
- */
-suspend fun launchFirstByteWatchdog(
+class FirstContentGuard {
+    @Volatile private var close: (() -> Unit)? = null
+    @Volatile private var cancelCall: (() -> Unit)? = null
+    private var received = false
+    private var expired = false
+    @Volatile private var closed = false
+    internal var timer: Job? = null
+
+    fun attach(close: () -> Unit) {
+        this.close = close
+        if (closed) closeBody()
+    }
+
+    suspend fun awaitBody(call: retrofit2.Call<okhttp3.ResponseBody>): okhttp3.ResponseBody {
+        cancelCall = { call.cancel() }
+        if (closed) call.cancel()
+        return call.await()
+    }
+
+    fun receivedContent() {
+        synchronized(this) {
+            received = true
+            timer?.cancel()
+        }
+    }
+
+    internal fun expire(): Boolean = synchronized(this) {
+        if (received || expired) false else {
+            expired = true
+            true
+        }
+    }
+
+    fun closeBody() {
+        closed = true
+        runCatching { cancelCall?.invoke() }
+        runCatching { close?.invoke() }
+    }
+}
+
+@OptIn(InternalCoroutinesApi::class)
+suspend fun withFirstContentTimeout(
     timeoutMs: Long,
-    close: () -> Unit,
-    isFirstByteReceived: () -> Boolean
-): Job = CoroutineScope(coroutineContext[Job]!!).launch {
-    if (timeoutMs <= 0) return@launch
-    delay(timeoutMs)
-    if (!isFirstByteReceived()) {
-        runCatching { close() }
+    block: suspend (FirstContentGuard) -> Unit
+) {
+    val guard = FirstContentGuard()
+    val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
+    try {
+        coroutineScope {
+            val attemptJob = coroutineContext[Job]!!
+            // 阻塞 readLine 无法靠协程取消唤醒，必须在进入 cancelling 时取消底层 Call。
+            val handle = attemptJob.invokeOnCompletion(onCancelling = true, invokeImmediately = true) {
+                if (it != null) guard.closeBody()
+            }
+            val timer = launch(start = CoroutineStart.LAZY) {
+                if (timeoutMs <= 0) return@launch
+                delay(timeoutMs)
+                if (guard.expire()) {
+                    timedOut.set(true)
+                    attemptJob.cancel(CancellationException("First content timeout"))
+                }
+            }
+            guard.timer = timer
+            timer.start()
+            try {
+                block(guard)
+            } finally {
+                timer.cancel()
+                handle.dispose()
+            }
+        }
+    } catch (e: Throwable) {
+        coroutineContext.ensureActive()
+        if (timedOut.get()) throw SocketTimeoutException("First content timeout after ${timeoutMs}ms")
+        throw e
     }
 }
 
