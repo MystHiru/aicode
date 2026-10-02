@@ -142,7 +142,7 @@ class OpenAIAdapter @Inject constructor(
             ?: message?.reasoning?.takeIf { it.isNotEmpty() }
         val usage = response.usage
 
-        return AIResponse(content = content, toolCalls = toolCalls, stopReason = finishReason, reasoning = reasoning, inputTokens = usage?.prompt_tokens ?: 0, outputTokens = usage?.completion_tokens ?: 0, cachedInputTokens = usage?.prompt_tokens_details?.cached_tokens ?: 0, images = images)
+        return AIResponse(content = content, toolCalls = toolCalls, stopReason = finishReason, reasoning = reasoning, inputTokens = usage?.prompt_tokens ?: 0, outputTokens = usage?.completion_tokens ?: 0, cachedInputTokens = usage?.prompt_tokens_details?.cached_tokens ?: 0, cacheCreationTokens = usage?.prompt_tokens_details?.cache_write_tokens ?: 0, images = images)
     }
 
     /**
@@ -332,6 +332,7 @@ class OpenAIAdapter @Inject constructor(
             var streamInputTokens = 0
             var streamOutputTokens = 0
             var streamCachedInputTokens = 0
+            var streamCacheCreationTokens = 0
 
             val body = api.streamChatCompletion(
                 url = url,
@@ -380,6 +381,7 @@ class OpenAIAdapter @Inject constructor(
                                 streamInputTokens = u.get("prompt_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: streamInputTokens
                                 streamOutputTokens = u.get("completion_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: streamOutputTokens
                                 streamCachedInputTokens = u.getAsJsonObject("prompt_tokens_details")?.get("cached_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: streamCachedInputTokens
+                                streamCacheCreationTokens = u.getAsJsonObject("prompt_tokens_details")?.get("cache_write_tokens")?.takeIf { !it.isJsonNull }?.asInt ?: streamCacheCreationTokens
                             }
                             val choice = obj.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject ?: continue
                             val delta = choice.getAsJsonObject("delta") ?: continue
@@ -460,7 +462,7 @@ class OpenAIAdapter @Inject constructor(
             val toolCalls = toolAccs.values
                 .filter { it.id.isNotEmpty() || it.name.isNotEmpty() }
                 .map { acc -> ToolCall(id = acc.id, name = acc.name, arguments = parseToolArguments(acc.args.toString())) }
-            emit(AIStreamChunk.Final(AIResponse(content = textBuilder.toString(), toolCalls = toolCalls, stopReason = finishReason, inputTokens = streamInputTokens, outputTokens = streamOutputTokens, cachedInputTokens = streamCachedInputTokens, images = streamedImages)))
+            emit(AIStreamChunk.Final(AIResponse(content = textBuilder.toString(), toolCalls = toolCalls, stopReason = finishReason, inputTokens = streamInputTokens, outputTokens = streamOutputTokens, cachedInputTokens = streamCachedInputTokens, cacheCreationTokens = streamCacheCreationTokens, images = streamedImages)))
             },
             onRetry = { attempt, max, error -> emit(AIStreamChunk.Retrying(attempt, max, error)) }
             )

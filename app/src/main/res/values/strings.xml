@@ -80,7 +80,7 @@
     <string name="settings_token_stats_requests">请求次数</string>
     <string name="settings_token_stats_cost">费用</string>
     <string name="settings_token_stats_cache_hit_rate">缓存命中率</string>
-    <string name="settings_token_stats_cached">缓存 %1$s</string>
+    <string name="settings_token_stats_cache_read_write">读取 %1$s / 写入 %2$s</string>
     <string name="settings_token_stats_trend">消耗趋势</string>
     <string name="settings_token_stats_legend_input">输入</string>
     <string name="settings_token_stats_legend_output">输出</string>
@@ -98,7 +98,8 @@
     <string name="settings_token_stats_col_provider">供应商</string>
     <string name="settings_token_stats_col_input">输入</string>
     <string name="settings_token_stats_col_output">输出</string>
-    <string name="settings_token_stats_col_cached">缓存</string>
+    <string name="settings_token_stats_col_cached_read">缓存读取</string>
+    <string name="settings_token_stats_col_cached_write">缓存写入</string>
     <string name="settings_token_stats_col_cache_hit_rate">命中率</string>
     <string name="settings_token_stats_col_ttfb">首字节</string>
     <string name="settings_token_stats_col_duration">耗时</string>
@@ -1187,7 +1188,8 @@
     <string name="provider_model_section_price">价格</string>
     <string name="provider_model_price_input">输入价格 (USD/1M tokens)</string>
     <string name="provider_model_price_output">输出价格 (USD/1M tokens)</string>
-    <string name="provider_model_price_cache_read">缓存命中价格 (USD/1M tokens)</string>
+    <string name="provider_model_price_cache_read">缓存读取价格 (USD/1M tokens)</string>
+    <string name="provider_model_price_cache_write">缓存写入价格 (USD/1M tokens)</string>
     <string name="provider_model_cap_vision">图片输入</string>
     <string name="provider_model_cap_image_output">图片输出</string>
     <string name="provider_model_capabilities">能力</string>

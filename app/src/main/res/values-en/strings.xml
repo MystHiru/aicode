@@ -80,7 +80,7 @@
     <string name="settings_token_stats_requests">Requests</string>
     <string name="settings_token_stats_cost">Cost</string>
     <string name="settings_token_stats_cache_hit_rate">Cache hit rate</string>
-    <string name="settings_token_stats_cached">Cached %1$s</string>
+    <string name="settings_token_stats_cache_read_write">Read %1$s / Write %2$s</string>
     <string name="settings_token_stats_trend">Usage trend</string>
     <string name="settings_token_stats_legend_input">Input</string>
     <string name="settings_token_stats_legend_output">Output</string>
@@ -98,7 +98,8 @@
     <string name="settings_token_stats_col_provider">Vendor</string>
     <string name="settings_token_stats_col_input">Input</string>
     <string name="settings_token_stats_col_output">Output</string>
-    <string name="settings_token_stats_col_cached">Cached</string>
+    <string name="settings_token_stats_col_cached_read">Cache read</string>
+    <string name="settings_token_stats_col_cached_write">Cache write</string>
     <string name="settings_token_stats_col_cache_hit_rate">Hit rate</string>
     <string name="settings_token_stats_col_ttfb">TTFB</string>
     <string name="settings_token_stats_col_duration">Duration</string>
@@ -1188,6 +1189,7 @@
     <string name="provider_model_price_input">Input Price (USD/1M tokens)</string>
     <string name="provider_model_price_output">Output Price (USD/1M tokens)</string>
     <string name="provider_model_price_cache_read">Cache Read Price (USD/1M tokens)</string>
+    <string name="provider_model_price_cache_write">Cache Write Price (USD/1M tokens)</string>
     <string name="provider_model_cap_vision">Image Input</string>
     <string name="provider_model_cap_image_output">Image Output</string>
     <string name="provider_model_capabilities">Capabilities</string>

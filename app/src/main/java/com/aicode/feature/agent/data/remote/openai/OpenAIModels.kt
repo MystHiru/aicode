@@ -86,9 +86,13 @@ data class Usage(
     val prompt_tokens_details: PromptTokensDetails? = null
 )
 
-/** Chat Completions 的输入 token 明细：cached_tokens 为命中缓存的部分。 */
+/**
+ * Chat Completions 的输入 token 明细：cached_tokens 为命中缓存的部分，
+ * cache_write_tokens 为写入缓存的部分（GPT-5.6 起才有、按高于输入价计费）。
+ */
 data class PromptTokensDetails(
-    val cached_tokens: Int? = null
+    val cached_tokens: Int? = null,
+    val cache_write_tokens: Int? = null
 )
 
 /**

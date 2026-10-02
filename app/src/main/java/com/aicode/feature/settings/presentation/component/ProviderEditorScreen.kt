@@ -1202,6 +1202,7 @@ private fun AddModelSheet(
     var inputPrice by remember { mutableStateOf(initial?.inputCostUsdPerM?.toString() ?: "") }
     var outputPrice by remember { mutableStateOf(initial?.outputCostUsdPerM?.toString() ?: "") }
     var cacheReadPrice by remember { mutableStateOf(initial?.cacheReadCostUsdPerM?.toString() ?: "") }
+    var cacheWritePrice by remember { mutableStateOf(initial?.cacheWriteCostUsdPerM?.toString() ?: "") }
     val trimmedModel = modelName.trim()
     val duplicate = existingModels.any { it == trimmedModel && it != initial?.id }
     val canSave = trimmedModel.isNotEmpty() && !duplicate
@@ -1293,6 +1294,12 @@ private fun AddModelSheet(
                     onValueChange = { cacheReadPrice = it },
                     keyboardType = KeyboardType.Decimal
                 )
+                ModelSheetTextField(
+                    label = stringResource(R.string.provider_model_price_cache_write),
+                    value = cacheWritePrice,
+                    onValueChange = { cacheWritePrice = it },
+                    keyboardType = KeyboardType.Decimal
+                )
 
                 SectionLabel(stringResource(R.string.provider_model_capabilities))
                 Card(
@@ -1355,6 +1362,7 @@ private fun AddModelSheet(
                             inputCostUsdPerM = inputPrice.trim().toDoubleOrNull(),
                             outputCostUsdPerM = outputPrice.trim().toDoubleOrNull(),
                             cacheReadCostUsdPerM = cacheReadPrice.trim().toDoubleOrNull(),
+                            cacheWriteCostUsdPerM = cacheWritePrice.trim().toDoubleOrNull(),
                             supportsVision = supportsVision,
                             supportsImageOutput = supportsImageOutput,
                             supportsTools = supportsTools,
