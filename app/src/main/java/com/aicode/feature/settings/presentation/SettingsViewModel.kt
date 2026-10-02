@@ -1177,7 +1177,7 @@ class SettingsViewModel @Inject constructor(
     /** 切换技能的启用/禁用状态（写入对应作用域的 skills.json）。 */
     fun setSkillEnabled(name: String, enabled: Boolean, scope: SkillScope) {
         viewModelScope.launch {
-            skillRepository.setSkillDisabled(name, !enabled, scope)
+            withContext(Dispatchers.IO) { skillRepository.setSkillDisabled(name, !enabled, scope) }
             refreshSkills()
         }
     }
