@@ -165,6 +165,46 @@ class RetryPolicyTest {
         assertEquals(true, cancellation)
     }
 
+    @Test
+    fun partialContentDisconnects_respectRetryLimit() = runTest {
+        var requests = 0
+        val retries = mutableListOf<Int>()
+        try {
+            streamWithStaircaseRetry(
+                maxRetries = 2,
+                attemptOnce = { onContent ->
+                    requests++
+                    onContent()
+                    if (requests > 3) org.junit.Assert.fail("Retry limit exceeded")
+                    throw IOException("Connection reset")
+                },
+                onRetry = { attempt, _, _ -> retries.add(attempt) }
+            )
+            org.junit.Assert.fail("Expected IOException")
+        } catch (_: IOException) {
+            assertEquals(3, requests)
+            assertEquals(listOf(1, 2), retries)
+        }
+    }
+
+    @Test
+    fun partialContentDisconnect_withRetriesDisabled_doesNotRetry() = runTest {
+        var requests = 0
+        try {
+            streamWithStaircaseRetry(
+                maxRetries = 0,
+                attemptOnce = { onContent ->
+                    requests++
+                    onContent()
+                    throw IOException("Connection reset")
+                }
+            )
+            org.junit.Assert.fail("Expected IOException")
+        } catch (_: IOException) {
+            assertEquals(1, requests)
+        }
+    }
+
     private fun httpError(code: Int): HttpException =
         HttpException(Response.error<Any>(code, "{}".toResponseBody(null)))
 
