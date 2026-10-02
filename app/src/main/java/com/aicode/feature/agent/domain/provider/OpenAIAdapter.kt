@@ -29,6 +29,7 @@ import kotlinx.serialization.json.jsonObject
 import com.aicode.feature.agent.data.remote.openai.OpenAIToolCall
 import com.aicode.feature.agent.data.remote.openai.OpenAIToolDefinition
 import com.aicode.feature.agent.data.remote.openai.OpenAIFunctionDefinition
+import com.aicode.feature.agent.data.remote.openai.OpenAIImagePart
 import com.aicode.feature.agent.data.remote.openai.StreamOptions
 
 class OpenAIAdapter @Inject constructor(
@@ -135,12 +136,13 @@ class OpenAIAdapter @Inject constructor(
         val message = response.choices.firstOrNull()?.message
         val finishReason = response.choices.firstOrNull()?.finish_reason
         val content = message?.content.asTextContent()
+        val images = message?.images?.mapNotNull { it.toAgentImage() } ?: emptyList()
         val toolCalls = message?.tool_calls?.map { convertToToolCall(it) } ?: emptyList()
         val reasoning = message?.reasoning_content?.takeIf { it.isNotEmpty() }
             ?: message?.reasoning?.takeIf { it.isNotEmpty() }
         val usage = response.usage
 
-        return AIResponse(content = content, toolCalls = toolCalls, stopReason = finishReason, reasoning = reasoning, inputTokens = usage?.prompt_tokens ?: 0, outputTokens = usage?.completion_tokens ?: 0, cachedInputTokens = usage?.prompt_tokens_details?.cached_tokens ?: 0)
+        return AIResponse(content = content, toolCalls = toolCalls, stopReason = finishReason, reasoning = reasoning, inputTokens = usage?.prompt_tokens ?: 0, outputTokens = usage?.completion_tokens ?: 0, cachedInputTokens = usage?.prompt_tokens_details?.cached_tokens ?: 0, images = images)
     }
 
     /**
@@ -258,7 +260,8 @@ class OpenAIAdapter @Inject constructor(
             thinkingBlocksJson = parsed.thinkingBlocksJson,
             inputTokens = usage.inputTokens,
             outputTokens = usage.outputTokens,
-            cachedInputTokens = usage.cachedInputTokens
+            cachedInputTokens = usage.cachedInputTokens,
+            images = parsed.images
         )
     }
 
@@ -323,6 +326,8 @@ class OpenAIAdapter @Inject constructor(
             val budget = StreamBudget()
             // tool_call index -> 累积中的工具调用（保序）。
             val toolAccs = LinkedHashMap<Int, OpenAIToolAcc>()
+            // 生图扩展：部分兼容服务在 delta.images 里整块返回图片（image_url 的 data URL）。
+            val streamedImages = mutableListOf<AgentImage>()
             var finishReason: String? = null
             var streamInputTokens = 0
             var streamOutputTokens = 0
@@ -429,6 +434,15 @@ class OpenAIAdapter @Inject constructor(
                                     fn.get("arguments")?.takeIf { !it.isJsonNull }?.asString?.let { budget.add(it); acc.args.append(it) }
                                 }
                             }
+                            // 生图扩展：图片整块到达、无增量，累积待 Final 交工作流落盘。
+                            delta.getAsJsonArray("images")?.forEach { el ->
+                                val img = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
+                                img.toOpenAIAgentImage()?.let { image ->
+                                    streamedImages.add(image)
+                                    if (firstByteReceived.compareAndSet(false, true)) watchdog.cancel()
+                                    onContent()
+                                }
+                            }
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
@@ -446,7 +460,7 @@ class OpenAIAdapter @Inject constructor(
             val toolCalls = toolAccs.values
                 .filter { it.id.isNotEmpty() || it.name.isNotEmpty() }
                 .map { acc -> ToolCall(id = acc.id, name = acc.name, arguments = parseToolArguments(acc.args.toString())) }
-            emit(AIStreamChunk.Final(AIResponse(content = textBuilder.toString(), toolCalls = toolCalls, stopReason = finishReason, inputTokens = streamInputTokens, outputTokens = streamOutputTokens, cachedInputTokens = streamCachedInputTokens)))
+            emit(AIStreamChunk.Final(AIResponse(content = textBuilder.toString(), toolCalls = toolCalls, stopReason = finishReason, inputTokens = streamInputTokens, outputTokens = streamOutputTokens, cachedInputTokens = streamCachedInputTokens, images = streamedImages)))
             },
             onRetry = { attempt, max, error -> emit(AIStreamChunk.Retrying(attempt, max, error)) }
             )
@@ -702,6 +716,35 @@ class OpenAIAdapter @Inject constructor(
             "detail" to "auto"
         )
     )
+
+    /** `data:` URL（base64 内嵌）→ AgentImage；远程 URL / 非 base64 / 非法一律返回 null。 */
+    private fun dataUrlToAgentImage(url: String): AgentImage? {
+        if (!url.startsWith("data:", ignoreCase = true)) return null
+        val comma = url.indexOf(',')
+        if (comma < 0) return null
+        val header = url.substring(5, comma)
+        if (!header.contains(";base64", ignoreCase = true)) return null
+        val mime = header.substringBefore(';').ifBlank { "image/png" }
+        val data = url.substring(comma + 1)
+        if (data.isBlank()) return null
+        return AgentImage(mimeType = mime, base64Data = data)
+    }
+
+    /** 流式 delta.images 里的单个元素 → AgentImage。 */
+    private fun com.google.gson.JsonObject.toOpenAIAgentImage(): AgentImage? {
+        val url = when (val img = get("image_url")) {
+            is com.google.gson.JsonPrimitive -> img.asString
+            is com.google.gson.JsonObject -> img.get("url")?.takeIf { it.isJsonPrimitive }?.asString
+            else -> null
+        } ?: return null
+        return dataUrlToAgentImage(url)
+    }
+
+    /** 非流式 message.images 的单个图片项 → AgentImage。 */
+    private fun OpenAIImagePart.toAgentImage(): AgentImage? {
+        val url = image_url?.url ?: return null
+        return dataUrlToAgentImage(url)
+    }
 
     /**
      * OpenAI chat completion 返回的 content 可能是字符串或数组（多模态/生图模型）。
