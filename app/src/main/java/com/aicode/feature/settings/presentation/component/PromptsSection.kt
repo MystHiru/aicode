@@ -86,6 +86,7 @@ internal fun PromptsSection(
     onDeleteFragment: (Int) -> Unit,
     onReorder: (List<PromptFragment>) -> Unit,
     onToggleBuiltinDisabled: (Boolean) -> Unit,
+    onToggleFragment: (Int, Boolean) -> Unit = { _, _ -> },
     onBatchDeleteFragments: (List<Int>) -> Unit
 ) {
     var showBatchDeleteConfirm by remember { mutableStateOf(false) }
@@ -148,6 +149,8 @@ internal fun PromptsSection(
         } else {
             PromptList(
                 fragments = state.fragments,
+                disabledNumbers = state.disabledNumbers,
+                onToggleFragment = onToggleFragment,
                 selection = selection,
                 onOpenFragment = onOpenFragment,
                 onDeleteFragment = onDeleteFragment,
@@ -179,6 +182,8 @@ internal fun PromptsSection(
 @Composable
 private fun PromptList(
     fragments: List<PromptFragment>,
+    disabledNumbers: Set<Int> = emptySet(),
+    onToggleFragment: (Int, Boolean) -> Unit = { _, _ -> },
     selection: ListSelectionState,
     onOpenFragment: (PromptFragment) -> Unit,
     onDeleteFragment: (Int) -> Unit,
@@ -241,6 +246,8 @@ private fun PromptList(
                         selectionMode = selection.isActive,
                         selected = selection.isSelected(fragment.number.toString()),
                         onToggleSelect = { selection.toggle(fragment.number.toString()) },
+                        enabled = fragment.number !in disabledNumbers,
+                        onToggleEnabled = { onToggleFragment(fragment.number, it) },
                         dragModifier = if (selection.isActive) {
                             Modifier
                         } else {
@@ -277,7 +284,9 @@ private fun PromptRow(
     dragModifier: Modifier,
     selectionMode: Boolean = false,
     selected: Boolean = false,
-    onToggleSelect: () -> Unit = {}
+    onToggleSelect: () -> Unit = {},
+    enabled: Boolean = true,
+    onToggleEnabled: (Boolean) -> Unit = {}
 ) {
     val sortDescription = stringResource(R.string.prompts_sort_long_press)
     val row: @Composable () -> Unit = {
@@ -328,6 +337,8 @@ private fun PromptRow(
                 }
             }
 
+            Spacer(modifier = Modifier.width(Spacing.sm))
+            AppSwitch(checked = enabled, onCheckedChange = onToggleEnabled)
             Spacer(modifier = Modifier.width(Spacing.sm))
             SourceBadge(fragment.source)
             Spacer(modifier = Modifier.width(Spacing.xs))

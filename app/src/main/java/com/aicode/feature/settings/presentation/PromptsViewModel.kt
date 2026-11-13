@@ -20,6 +20,8 @@ import javax.inject.Inject
 data class PromptsUiState(
     val fragments: List<PromptFragment> = emptyList(),
     val builtinDisabled: Boolean = false,
+    /** 被单独关闭的片段编号；关闭的片段不进入系统提示词。 */
+    val disabledNumbers: Set<Int> = emptySet(),
     /** 没有选中工作区时项目层不可写，编辑/新建回落到全局层。 */
     val hasWorkspace: Boolean = false,
     val loading: Boolean = true
@@ -33,7 +35,8 @@ data class PromptsUiState(
 @HiltViewModel
 class PromptsViewModel @Inject constructor(
     private val catalog: PromptFragmentCatalog,
-    private val workspaceRepository: WorkspaceRepository
+    private val workspaceRepository: WorkspaceRepository,
+    private val toggleRepository: com.aicode.feature.settings.data.repository.PromptFragmentToggleRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(PromptsUiState())
@@ -47,9 +50,11 @@ class PromptsViewModel @Inject constructor(
         viewModelScope.launch {
             val projectRoot = workspaceRepository.currentPath()
             val loaded = withContext(Dispatchers.IO) {
+                catalog.refreshDisabledCache()
                 PromptsUiState(
                     fragments = catalog.list(projectRoot),
                     builtinDisabled = catalog.isBuiltinDisabled(),
+                    disabledNumbers = toggleRepository.disabledNumbers(),
                     hasWorkspace = projectRoot.isNotBlank(),
                     loading = false
                 )
@@ -124,6 +129,14 @@ class PromptsViewModel @Inject constructor(
             } else {
                 refresh()
             }
+        }
+    }
+
+    /** 单独开关某个片段：关闭后渲染系统提示词时跳过它。 */
+    fun setFragmentEnabled(number: Int, enabled: Boolean) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { toggleRepository.setEnabled(number, enabled) }
+            refresh()
         }
     }
 

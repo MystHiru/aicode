@@ -89,6 +89,7 @@ import com.aicode.feature.settings.data.repository.BackgroundSettingsRepository
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.presentation.SettingsViewModel
+import com.aicode.feature.settings.presentation.MemoryViewModel
 import com.aicode.feature.settings.presentation.RolesViewModel
 import com.aicode.feature.settings.presentation.RootViewModel
 import com.aicode.feature.settings.presentation.ShizukuViewModel
@@ -116,6 +117,7 @@ import compose.icons.FeatherIcons
 import compose.icons.feathericons.ArrowLeft
 import compose.icons.feathericons.BarChart2
 import compose.icons.feathericons.Book
+import compose.icons.feathericons.Bookmark
 import compose.icons.feathericons.BookOpen
 import compose.icons.feathericons.Box
 import compose.icons.feathericons.Cloud
@@ -193,6 +195,7 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     Log(R.string.settings_log),
     Permissions(R.string.settings_permissions),
     Roles(R.string.settings_roles),
+    Memory(R.string.settings_memory),
     AppPermissions(R.string.settings_app_permissions),
     BackgroundRun(R.string.settings_category_background),
     RemoteServers(R.string.settings_remote_servers),
@@ -1209,6 +1212,7 @@ fun SettingsScreen(
                         onDeleteFragment = promptsViewModel::deleteFragment,
                         onReorder = promptsViewModel::reorderFragments,
                         onToggleBuiltinDisabled = promptsViewModel::setBuiltinDisabled,
+                        onToggleFragment = promptsViewModel::setFragmentEnabled,
                         onBatchDeleteFragments = promptsViewModel::deleteFragments
                     )
                     if (showResetPrompts) {
@@ -1355,6 +1359,11 @@ fun SettingsScreen(
                     onPromote = { viewModel.promoteRuleToGlobal(it) },
                     onDeleteGlobal = { viewModel.deleteGlobalRule(it) }
                 )
+                SettingsSection.Memory -> {
+                    val memoryViewModel: MemoryViewModel =
+                        androidx.hilt.navigation.compose.hiltViewModel()
+                    MemorySection(viewModel = memoryViewModel)
+                }
                 SettingsSection.Roles -> {
                     val rolesViewModel: RolesViewModel =
                         androidx.hilt.navigation.compose.hiltViewModel()
@@ -2028,6 +2037,12 @@ internal fun SettingsMenu(
                 icon = FeatherIcons.User,
                 title = stringResource(SettingsSection.Roles.titleRes),
                 onClick = { onOpen(SettingsSection.Roles) }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon = FeatherIcons.Bookmark,
+                title = stringResource(SettingsSection.Memory.titleRes),
+                onClick = { onOpen(SettingsSection.Memory) }
             )
             PluginSettingsRows(pluginPages, PluginSettingsAnchors.AI, pluginLanguageTag, onOpenPluginPage)
         }
