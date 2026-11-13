@@ -652,8 +652,14 @@ fun ProviderEditorScreen(
                         )
                     }
 
-                    // ── 自定义面板 (DIY) ──
-                    SettingsGroupHeader(text = stringResource(R.string.provider_section_dashboard))
+                    // ── 自定义面板 (DIY)：不常用，默认折叠，首屏只留基本信息与选项 ──
+                    var dashboardExpanded by rememberSaveable { mutableStateOf(false) }
+                    CollapsibleGroupHeader(
+                        text = stringResource(R.string.provider_section_dashboard),
+                        expanded = dashboardExpanded,
+                        onToggle = { dashboardExpanded = !dashboardExpanded }
+                    )
+                    AnimatedVisibility(visible = dashboardExpanded) {
                     SettingsGroup {
                         ProviderTextFieldRow(
                             label = stringResource(R.string.provider_dashboard_script),
@@ -766,6 +772,7 @@ fun ProviderEditorScreen(
                                 providerName = name.ifBlank { stringResource(R.string.provider_dashboard_preview_title) }
                             )
                         }
+                    }
                     }
                 }
             } else {

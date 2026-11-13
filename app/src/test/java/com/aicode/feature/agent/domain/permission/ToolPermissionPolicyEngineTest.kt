@@ -6,6 +6,7 @@ import com.aicode.feature.agent.domain.model.AgentMode
 import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ToolCapability
 import com.aicode.feature.settings.data.repository.ToolSafetySettingsRepository
+import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -45,7 +46,9 @@ class ToolPermissionPolicyEngineTest {
         coEvery { repo.loadEffectiveForCurrentProject() } returns rules.toList()
         val safety = mockk<ToolSafetySettingsRepository>(relaxed = true)
         coEvery { safety.isSafetyInterceptionDisabled() } returns safetyDisabled
-        return ToolPermissionPolicyEngine(repo, safety, appContext())
+        val workspace = mockk<WorkspaceRepository>(relaxed = true)
+        every { workspace.currentPath() } returns "/workspace"
+        return ToolPermissionPolicyEngine(repo, safety, workspace, appContext())
     }
 
     private fun tool(vararg caps: ToolCapability): AgentTool {
@@ -564,7 +567,7 @@ class ToolPermissionPolicyEngineTest {
     fun remember_dedupesAndAddsEach() = runTest {
         val repo = mockk<PermissionRulesRepository>(relaxed = true)
         coEvery { repo.add(any(), any()) } just runs
-        val e = ToolPermissionPolicyEngine(repo, mockk(relaxed = true), appContext())
+        val e = ToolPermissionPolicyEngine(repo, mockk(relaxed = true), mockk(relaxed = true), appContext())
 
         e.remember("Bash", listOf("git pull", "git pull", "ls"), PermissionScope.PROJECT)
 

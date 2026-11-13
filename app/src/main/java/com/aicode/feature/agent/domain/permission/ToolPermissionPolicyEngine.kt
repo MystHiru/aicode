@@ -6,8 +6,10 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ToolCapability
 import com.aicode.feature.settings.data.repository.ToolSafetySettingsRepository
+import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -24,21 +26,25 @@ import javax.inject.Singleton
  *      记 `git pull` 而非 `git`，使不同子命令各自独立授权）。
  * 非 shell 的 ASK 工具按整工具（pattern=`*`）匹配。
  *
- * [SHIZUKU_TOOL]（Shizuku）按高危处理：无论内置白名单或已记忆规则，一律 ASK 且不可记忆；
- * AUTO 模式也不自动放行（除非已开启「禁用安全拦截」）。
+ * [SHIZUKU_TOOL]（Shizuku）与 [ROOT_TOOL]（Root）按高危处理：无论内置白名单或已记忆规则，
+ * 一律 ASK 且不可记忆；AUTO 模式也不自动放行（除非已开启「禁用安全拦截」或「宿主命令自动放行」）。
  */
 @Singleton
 class ToolPermissionPolicyEngine @Inject constructor(
     private val rulesRepo: PermissionRulesRepository,
     private val toolSafetySettings: ToolSafetySettingsRepository,
+    private val workspaceRepository: WorkspaceRepository,
     @param:ApplicationContext private val appContext: Context
 ) {
     private companion object {
         /** 以 `command` 参数承载 shell 命令、按命令前缀做指令级匹配的工具。 */
-        val SHELL_TOOLS = setOf("Bash", SHIZUKU_TOOL)
+        val SHELL_TOOLS = setOf("Bash", SHIZUKU_TOOL, ROOT_TOOL)
 
         /** Shizuku 工具：以 adb shell 身份直接操作宿主 Android 系统，按高危处理（一律弹窗、不可记忆）。 */
         const val SHIZUKU_TOOL = "Shizuku"
+
+        /** Root 工具：以 su 身份操作宿主系统，与 Shizuku 同等按高危处理。 */
+        const val ROOT_TOOL = "Root"
 
         /**
          * 合并后的终端会话工具：其 `start` 动作承载 shell 命令，需走指令级前缀匹配；
@@ -65,6 +71,12 @@ class ToolPermissionPolicyEngine @Inject constructor(
          * getText/getHtml/getBackbone/screenshot/console/wait/listTabs 为只读（PLAN 放行）。
          */
         const val BROWSER_TOOL = "browser"
+
+        /** 直接操作宿主系统的工具，权限评估与「宿主命令自动放行」开关共用。 */
+        val HOST_TOOLS = setOf(SHIZUKU_TOOL, ROOT_TOOL)
+
+        /** 「工作区内写操作自动放行」作用的文件写入工具。 */
+        val WORKSPACE_WRITE_TOOLS = setOf("writeFile", "editFile")
         private val BROWSER_READ_ONLY_ACTIONS = setOf("getText", "getHtml", "getBackbone", "screenshot", "console", "wait", "listTabs")
 
         /**
@@ -147,8 +159,9 @@ class ToolPermissionPolicyEngine @Inject constructor(
                     }
                 }
             }
-            // Shizuku 直接操作宿主系统，AUTO 下也不自动放行，仍需逐次确认（除非已开启「禁用安全拦截」）。
-            if (toolName == SHIZUKU_TOOL && !safetyDisabled) {
+            // Shizuku 与 Root 直接操作宿主系统，AUTO 下默认也不自动放行，仍需逐次确认
+            //（除非已开启「禁用安全拦截」或「宿主命令自动放行」）。
+            if (toolName in HOST_TOOLS && !safetyDisabled && !toolSafetySettings.isHostCommandAutoAllowed()) {
                 return EvalResult(Verdict.ASK, emptyList(), rememberDisabledReason = appContext.getString(R.string.tool_shizuku_confirmation_reason))
             }
             return EvalResult(Verdict.ALLOW, emptyList())
@@ -184,10 +197,33 @@ class ToolPermissionPolicyEngine @Inject constructor(
         }
 
         val rules = rulesRepo.loadEffectiveForCurrentProject().filter { it.toolName == toolName }
+        if (workspaceWriteAutoAllowed(toolName, args) &&
+            rules.none { it.pattern == PermissionRule.WHOLE_TOOL && it.decision == PermissionDecision.DENY }
+        ) {
+            return EvalResult(Verdict.ALLOW, emptyList())
+        }
         return if (isShellTool(toolName, args)) {
-            evaluateShell(rules, args, forceAsk = toolName == SHIZUKU_TOOL)
+            evaluateShell(rules, args, forceAsk = toolName in HOST_TOOLS)
         } else {
             evaluateGeneric(rules, capabilities)
+        }
+    }
+
+    /**
+     * 「工作区内写操作自动放行」开启时，写入目标全部落在当前工作区目录内的文件工具直接放行。
+     * 显式 DENY 规则优先；工作区外的路径、以及不带路径参数的写操作仍走原有评估。
+     */
+    private suspend fun workspaceWriteAutoAllowed(toolName: String, args: Map<String, JsonElement>): Boolean {
+        if (toolName !in WORKSPACE_WRITE_TOOLS) return false
+        if (!toolSafetySettings.isWorkspaceWriteAutoAllowed()) return false
+        val workspace = workspaceRepository.currentPath().trimEnd('/')
+        if (workspace.isEmpty()) return false
+        val targets = args.values.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            .filter { it.startsWith("/") || it.startsWith("~") }
+        if (targets.isEmpty()) return false
+        return targets.all { target ->
+            val normalized = normalizePath(target).trimEnd('/')
+            normalized == workspace || normalized.startsWith("$workspace/")
         }
     }
 

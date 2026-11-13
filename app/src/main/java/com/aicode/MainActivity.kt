@@ -261,23 +261,11 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    // 全局自定义背景图：叠加在所有页面内容之上（水印效果），透明度可调。
-                    // 不拦截触摸事件；弹窗（Dialog 独立窗口）不受层级影响。
+                    // 全局自定义背景图：垫在所有页面内容之下（壁纸效果），透明度可调。
+                    // 页面表面色半透明时透出壁纸；弹窗（Dialog 独立窗口）不受层级影响。
                     val bgPath by backgroundSettings.imagePathFlow.collectAsStateWithLifecycle(initialValue = null)
                     val bgAlpha by backgroundSettings.alphaFlow.collectAsStateWithLifecycle(initialValue = BackgroundSettingsRepository.DEFAULT_ALPHA)
                     Box(modifier = Modifier.fillMaxSize()) {
-                        AgreementGate(repository = agreementRepository) { agreementAccepted ->
-                            AppNavigation(
-                                onboardingRepository = onboardingRepository,
-                                agreementAccepted = agreementAccepted
-                            )
-                            if (agreementAccepted) {
-                                // 全局凭据弹窗：覆盖所有页面，命令行 git 缺凭据在任意页面都能弹。
-                                com.aicode.feature.credentials.presentation.component.GlobalCredentialDialogHost(
-                                    bridge = credentialRequestBridge
-                                )
-                            }
-                        }
                         if (bgPath != null && bgAlpha > 0f) {
                             val screen = LocalView.current
                             val bitmap by produceState<ImageBitmap?>(initialValue = null, bgPath) {
@@ -297,6 +285,18 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier
                                         .fillMaxSize()
                                         .alpha(bgAlpha)
+                                )
+                            }
+                        }
+                        AgreementGate(repository = agreementRepository) { agreementAccepted ->
+                            AppNavigation(
+                                onboardingRepository = onboardingRepository,
+                                agreementAccepted = agreementAccepted
+                            )
+                            if (agreementAccepted) {
+                                // 全局凭据弹窗：覆盖所有页面，命令行 git 缺凭据在任意页面都能弹。
+                                com.aicode.feature.credentials.presentation.component.GlobalCredentialDialogHost(
+                                    bridge = credentialRequestBridge
                                 )
                             }
                         }
@@ -977,6 +977,10 @@ fun AppNavigation(
                         }
                         onboardingCoordinator.nextStep()
                     }
+                    OnboardingStep.WORKSPACE_INTRO,
+                    OnboardingStep.WORKSPACE_SWITCH -> {
+                        onboardingCoordinator.nextStep()
+                    }
                     OnboardingStep.SEND_MESSAGE -> {
                         onboardingCoordinator.complete()
                     }
@@ -1022,6 +1026,10 @@ fun AppNavigation(
                         if (current != null && current.models.isNotEmpty()) {
                             agentViewModel.setSessionProviderModel(current.id, current.effectiveModel.ifEmpty { current.models.first() })
                         }
+                        onboardingCoordinator.nextStep()
+                    }
+                    OnboardingStep.WORKSPACE_INTRO,
+                    OnboardingStep.WORKSPACE_SWITCH -> {
                         onboardingCoordinator.nextStep()
                     }
                     OnboardingStep.SEND_MESSAGE -> {

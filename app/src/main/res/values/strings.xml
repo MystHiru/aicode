@@ -143,6 +143,11 @@
     <string name="settings_shizuku_hint_not_running">点击打开 Shizuku 并启动服务</string>
     <string name="settings_shizuku_hint_denied">点击申请 Shizuku 授权</string>
     <string name="settings_shizuku_hint_ready">已获授权，AI 可通过 adb shell 执行命令</string>
+    <string name="settings_root">Root</string>
+    <string name="settings_root_status_unavailable">不可用</string>
+    <string name="settings_root_status_ready">可用</string>
+    <string name="settings_root_hint_unavailable">未检测到 su。点击重新检测；无 root 时可改用 Shizuku</string>
+    <string name="settings_root_hint_ready">已授权，AI 可通过 su 以 root 身份执行命令。点击重新检测</string>
     <string name="settings_backup">备份与还原</string>
     <string name="settings_about">关于</string>
     <string name="settings_language">语言</string>
@@ -707,6 +712,7 @@
     <!-- Subagent -->
     <string name="subagent_tab_sessions">会话</string>
     <string name="drawer_tab_files">文件</string>
+    <string name="drawer_tools_group">工具</string>
     <string name="drawer_expand_subagents">展开子代理</string>
     <string name="drawer_collapse_subagents">收起子代理</string>
     <string name="file_browser_up">上一级</string>
@@ -1462,7 +1468,11 @@
     <string name="perm_promote_to_global">提升为全局</string>
     <string name="perm_safety_group">安全防护</string>
     <string name="perm_disable_safety_interception">禁用安全拦截</string>
-    <string name="perm_disable_safety_interception_desc">开启后 AUTO 模式下不再拦截灾难性删除，Shizuku 也不再逐次确认</string>
+    <string name="perm_disable_safety_interception_desc">开启后 AUTO 模式下不再拦截灾难性删除，Shizuku 与 Root 也不再逐次确认</string>
+    <string name="perm_workspace_write_auto_allow">工作区内写入自动放行</string>
+    <string name="perm_workspace_write_auto_allow_desc">写入当前工作区目录内的文件不再弹窗确认，工作区外与命令执行不受影响</string>
+    <string name="perm_host_command_auto_allow">宿主命令自动放行</string>
+    <string name="perm_host_command_auto_allow_desc">AUTO 模式下 Shizuku 与 Root 命令不再逐次确认</string>
     <string name="perm_safety_confirm_title">确认禁用安全拦截？</string>
     <string name="perm_safety_confirm_message">禁用后，AUTO 模式下连灾难性删除也不再拦截，Shizuku 工具也不再逐次确认。请谨慎操作。</string>
     <string name="perm_safety_confirm_action">确认（%1$d）</string>
@@ -1958,6 +1968,10 @@
     <string name="onboarding_choose_model_in_sheet_desc">点击刚刚添加的模型，指定当前对话使用的 AI。</string>
     <string name="onboarding_send_message_title">开始对话</string>
     <string name="onboarding_send_message_desc">模型已就绪，在输入框输入你的编程需求或问题，开始与 AI 助手协同工作。</string>
+    <string name="onboarding_workspace_intro_title">认识工作区</string>
+    <string name="onboarding_workspace_intro_desc">工作区是文件、终端和 Git 的根目录。AI 读写的文件、执行的命令都落在当前工作区里，不同项目用不同工作区隔开。</string>
+    <string name="onboarding_workspace_switch_title">切换工作区</string>
+    <string name="onboarding_workspace_switch_desc">打开侧边栏即可切换或新建工作区。每个会话记住自己的工作区，回来时自动回到上次的位置。</string>
 
     <!-- Browser -->
     <string name="browser_title">浏览器</string>

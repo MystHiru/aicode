@@ -143,6 +143,11 @@
     <string name="settings_shizuku_hint_not_running">Tap to open Shizuku and start the service</string>
     <string name="settings_shizuku_hint_denied">Tap to request Shizuku permission</string>
     <string name="settings_shizuku_hint_ready">Authorized — AI can run commands via adb shell</string>
+    <string name="settings_root">Root</string>
+    <string name="settings_root_status_unavailable">Unavailable</string>
+    <string name="settings_root_status_ready">Available</string>
+    <string name="settings_root_hint_unavailable">No su found. Tap to recheck; use Shizuku instead when the device is not rooted</string>
+    <string name="settings_root_hint_ready">Authorized — AI can run commands as root via su. Tap to recheck</string>
     <string name="settings_backup">Backup &amp; Restore</string>
     <string name="settings_about">About</string>
     <string name="settings_language">Language</string>
@@ -712,6 +717,7 @@
     <!-- Subagent -->
     <string name="subagent_tab_sessions">Chats</string>
     <string name="drawer_tab_files">Files</string>
+    <string name="drawer_tools_group">Tools</string>
     <string name="drawer_expand_subagents">Expand subagents</string>
     <string name="drawer_collapse_subagents">Collapse subagents</string>
     <string name="file_browser_up">Up one level</string>
@@ -1462,7 +1468,11 @@
     <string name="perm_promote_to_global">Promote to global</string>
     <string name="perm_safety_group">Safety</string>
     <string name="perm_disable_safety_interception">Disable safety interception</string>
-    <string name="perm_disable_safety_interception_desc">When on, AUTO mode stops blocking catastrophic deletes and Shizuku prompts</string>
+    <string name="perm_disable_safety_interception_desc">When on, AUTO mode stops blocking catastrophic deletes and Shizuku or Root prompts</string>
+    <string name="perm_workspace_write_auto_allow">Auto-allow writes inside workspace</string>
+    <string name="perm_workspace_write_auto_allow_desc">File writes inside the current workspace skip confirmation; paths outside it and command execution are unaffected</string>
+    <string name="perm_host_command_auto_allow">Auto-allow host commands</string>
+    <string name="perm_host_command_auto_allow_desc">In AUTO mode, Shizuku and Root commands skip per-call confirmation</string>
     <string name="perm_safety_confirm_title">Disable safety interception?</string>
     <string name="perm_safety_confirm_message">Once disabled, AUTO mode no longer blocks catastrophic deletes and no longer prompts for the Shizuku tool. Proceed with caution.</string>
     <string name="perm_safety_confirm_action">Confirm (%1$d)</string>
@@ -1959,6 +1969,10 @@
     <string name="onboarding_choose_model_in_sheet_desc">Tap the model you just added to set it for your chat session.</string>
     <string name="onboarding_send_message_title">Start Chatting</string>
     <string name="onboarding_send_message_desc">Model ready. Type your coding tasks or questions here to start collaborating with the AI assistant.</string>
+    <string name="onboarding_workspace_intro_title">Meet the workspace</string>
+    <string name="onboarding_workspace_intro_desc">A workspace is the root for files, the terminal and Git. Everything the AI reads, writes and runs stays inside the current workspace, so separate projects stay separate.</string>
+    <string name="onboarding_workspace_switch_title">Switch workspaces</string>
+    <string name="onboarding_workspace_switch_desc">Open the sidebar to switch or create a workspace. Each session remembers its own workspace and returns to it next time.</string>
 
     <!-- Browser -->
     <string name="browser_title">Browser</string>

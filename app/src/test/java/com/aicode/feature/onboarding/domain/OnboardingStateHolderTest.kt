@@ -20,7 +20,7 @@ class OnboardingStateHolderTest {
     }
 
     @Test
-    fun `nextStep progresses through full ten-step flow`() {
+    fun `nextStep progresses through the full flow`() {
         val h = holder()
         h.start()
         assertEquals(OnboardingStep.OPEN_SIDEBAR, h.state.value.step)
@@ -48,6 +48,12 @@ class OnboardingStateHolderTest {
 
         h.nextStep()
         assertEquals(OnboardingStep.SIMULATE_CHOOSE_MODEL, h.state.value.step)
+
+        h.nextStep()
+        assertEquals(OnboardingStep.WORKSPACE_INTRO, h.state.value.step)
+
+        h.nextStep()
+        assertEquals(OnboardingStep.WORKSPACE_SWITCH, h.state.value.step)
 
         h.nextStep()
         assertEquals(OnboardingStep.SEND_MESSAGE, h.state.value.step)

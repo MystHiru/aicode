@@ -61,6 +61,10 @@ internal fun PermissionsSection(
     globalRules: List<PermissionRule>,
     disableSafetyInterception: Boolean,
     onToggleSafetyInterception: (Boolean) -> Unit,
+    workspaceWriteAutoAllow: Boolean,
+    onToggleWorkspaceWriteAutoAllow: (Boolean) -> Unit,
+    hostCommandAutoAllow: Boolean,
+    onToggleHostCommandAutoAllow: (Boolean) -> Unit,
     onDeleteProject: (PermissionRule) -> Unit,
     onPromote: (PermissionRule) -> Unit,
     onDeleteGlobal: (PermissionRule) -> Unit
@@ -91,6 +95,30 @@ internal fun PermissionsSection(
                             if (enabled) showSafetyConfirm = true
                             else onToggleSafetyInterception(false)
                         }
+                    )
+                }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon = FeatherIcons.CheckCircle,
+                title = stringResource(R.string.perm_workspace_write_auto_allow),
+                subtitle = stringResource(R.string.perm_workspace_write_auto_allow_desc),
+                trailing = {
+                    AppSwitch(
+                        checked = workspaceWriteAutoAllow,
+                        onCheckedChange = onToggleWorkspaceWriteAutoAllow
+                    )
+                }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon = FeatherIcons.Shield,
+                title = stringResource(R.string.perm_host_command_auto_allow),
+                subtitle = stringResource(R.string.perm_host_command_auto_allow_desc),
+                trailing = {
+                    AppSwitch(
+                        checked = hostCommandAutoAllow,
+                        onCheckedChange = onToggleHostCommandAutoAllow
                     )
                 }
             )

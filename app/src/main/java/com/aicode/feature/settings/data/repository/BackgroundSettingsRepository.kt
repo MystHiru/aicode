@@ -32,8 +32,8 @@ class BackgroundSettingsRepository @Inject constructor(
 ) {
     companion object {
         const val DEFAULT_ALPHA = 0.15f
-        /** 顶层水印模式下透明度上限：超过会盖住文字影响可读性。 */
-        const val MAX_ALPHA = 0.2f
+        /** 壁纸垫在内容层之下，透明度可调到接近原图；页面底色半透明，文字仍落在底色上可读。 */
+        const val MAX_ALPHA = 0.85f
         /** 最小透明度：0 表示完全透明（背景不可见）。 */
         const val MIN_ALPHA = 0f
         private val IMAGE_PATH_KEY = stringPreferencesKey("background_image_path")

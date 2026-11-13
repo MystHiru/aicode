@@ -702,6 +702,12 @@ class SettingsViewModel @Inject constructor(
     private val _disableSafetyInterception = MutableStateFlow(false)
     val disableSafetyInterception: StateFlow<Boolean> = _disableSafetyInterception.asStateFlow()
 
+    private val _workspaceWriteAutoAllow = MutableStateFlow(false)
+    val workspaceWriteAutoAllow: StateFlow<Boolean> = _workspaceWriteAutoAllow.asStateFlow()
+
+    private val _hostCommandAutoAllow = MutableStateFlow(false)
+    val hostCommandAutoAllow: StateFlow<Boolean> = _hostCommandAutoAllow.asStateFlow()
+
     private val _activeProfileId = MutableStateFlow(ContainerProfile.BUILTIN_ID)
     val activeProfileId: StateFlow<String> = _activeProfileId.asStateFlow()
 
@@ -1144,6 +1150,18 @@ class SettingsViewModel @Inject constructor(
             launch {
                 toolSafetySettingsRepository.disableSafetyInterceptionFlow.collectLatest {
                     _disableSafetyInterception.value = it
+                }
+            }
+
+            launch {
+                toolSafetySettingsRepository.workspaceWriteAutoAllowFlow.collectLatest {
+                    _workspaceWriteAutoAllow.value = it
+                }
+            }
+
+            launch {
+                toolSafetySettingsRepository.hostCommandAutoAllowFlow.collectLatest {
+                    _hostCommandAutoAllow.value = it
                 }
             }
 
@@ -2937,6 +2955,14 @@ class SettingsViewModel @Inject constructor(
 
     fun setDisableSafetyInterception(disabled: Boolean) {
         viewModelScope.launch { toolSafetySettingsRepository.setDisableSafetyInterception(disabled) }
+    }
+
+    fun setWorkspaceWriteAutoAllow(enabled: Boolean) {
+        viewModelScope.launch { toolSafetySettingsRepository.setWorkspaceWriteAutoAllow(enabled) }
+    }
+
+    fun setHostCommandAutoAllow(enabled: Boolean) {
+        viewModelScope.launch { toolSafetySettingsRepository.setHostCommandAutoAllow(enabled) }
     }
 }
 

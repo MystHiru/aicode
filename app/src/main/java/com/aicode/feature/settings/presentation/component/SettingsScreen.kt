@@ -87,6 +87,7 @@ import com.aicode.feature.settings.data.repository.BackgroundSettingsRepository
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.presentation.SettingsViewModel
+import com.aicode.feature.settings.presentation.RootViewModel
 import com.aicode.feature.settings.presentation.ShizukuViewModel
 import com.aicode.feature.settings.presentation.SkillImportState
 import com.aicode.feature.settings.presentation.SkillUiEntry
@@ -226,6 +227,8 @@ fun SettingsScreen(
     val projectRules by viewModel.projectRules.collectAsStateWithLifecycle()
     val currentProjectName by viewModel.currentProjectName.collectAsStateWithLifecycle()
     val disableSafetyInterception by viewModel.disableSafetyInterception.collectAsStateWithLifecycle()
+    val workspaceWriteAutoAllow by viewModel.workspaceWriteAutoAllow.collectAsStateWithLifecycle()
+    val hostCommandAutoAllow by viewModel.hostCommandAutoAllow.collectAsStateWithLifecycle()
     val keepaliveEnabled by viewModel.keepaliveEnabled.collectAsStateWithLifecycle()
     val screenOnEnabled by viewModel.screenOnEnabled.collectAsStateWithLifecycle()
     val agentSoundEnabled by viewModel.agentSoundEnabled.collectAsStateWithLifecycle()
@@ -1166,6 +1169,10 @@ fun SettingsScreen(
                     globalRules = globalRules,
                     disableSafetyInterception = disableSafetyInterception,
                     onToggleSafetyInterception = { viewModel.setDisableSafetyInterception(it) },
+                    workspaceWriteAutoAllow = workspaceWriteAutoAllow,
+                    onToggleWorkspaceWriteAutoAllow = { viewModel.setWorkspaceWriteAutoAllow(it) },
+                    hostCommandAutoAllow = hostCommandAutoAllow,
+                    onToggleHostCommandAutoAllow = { viewModel.setHostCommandAutoAllow(it) },
                     onDeleteProject = { viewModel.deleteProjectRule(it) },
                     onPromote = { viewModel.promoteRuleToGlobal(it) },
                     onDeleteGlobal = { viewModel.deleteGlobalRule(it) }
@@ -1174,11 +1181,16 @@ fun SettingsScreen(
                     val shizukuViewModel: ShizukuViewModel =
                         androidx.hilt.navigation.compose.hiltViewModel()
                     val shizukuState by shizukuViewModel.state.collectAsStateWithLifecycle()
+                    val rootViewModel: RootViewModel =
+                        androidx.hilt.navigation.compose.hiltViewModel()
+                    val rootState by rootViewModel.state.collectAsStateWithLifecycle()
                     AppPermissionsSection(
                         shizukuState = shizukuState,
                         onRequestShizukuPermission = { shizukuViewModel.requestPermission() },
                         onOpenShizuku = { shizukuViewModel.openShizukuApp() },
-                        onRefreshShizuku = { shizukuViewModel.refresh() }
+                        onRefreshShizuku = { shizukuViewModel.refresh() },
+                        rootState = rootState,
+                        onRefreshRoot = { rootViewModel.refresh() }
                     )
                 }
                 SettingsSection.BackgroundRun -> BackgroundRunSection(

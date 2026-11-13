@@ -15,7 +15,9 @@ import com.aicode.R
  * 7. [SIMULATE_FETCH_DIALOG]: 蒙版上模拟拉取模型弹窗，展示获取到的模型并引导添加。
  * 8. [OPEN_MODEL_PICKER]: 回到主页，聚焦模型选择按钮，提示打开面板。
  * 9. [SIMULATE_CHOOSE_MODEL]: 蒙版上模拟主页模型选择面板，演示选择模型。
- * 10. [SEND_MESSAGE]: 主页聚焦底部输入框，提示输入内容发送第一条消息开启对话。
+ * 10. [WORKSPACE_INTRO]: 介绍工作区是文件、终端与 Git 的根目录。
+ * 11. [WORKSPACE_SWITCH]: 演示从侧边栏切换或新建工作区。
+ * 12. [SEND_MESSAGE]: 主页聚焦底部输入框，提示输入内容发送第一条消息开启对话。
  */
 enum class OnboardingStep(
     val route: String,
@@ -66,6 +68,16 @@ enum class OnboardingStep(
         route = "chat",
         titleRes = R.string.onboarding_choose_model_in_sheet_title,
         descRes = R.string.onboarding_choose_model_in_sheet_desc
+    ),
+    WORKSPACE_INTRO(
+        route = "chat",
+        titleRes = R.string.onboarding_workspace_intro_title,
+        descRes = R.string.onboarding_workspace_intro_desc
+    ),
+    WORKSPACE_SWITCH(
+        route = "chat",
+        titleRes = R.string.onboarding_workspace_switch_title,
+        descRes = R.string.onboarding_workspace_switch_desc
     ),
     SEND_MESSAGE(
         route = "chat",

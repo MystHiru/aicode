@@ -9,6 +9,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.aicode.feature.settings.presentation.SettingsViewModel
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -92,6 +95,7 @@ import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.SegmentedTabs
 import com.aicode.core.ui.rememberImeBottomInset
 import com.aicode.feature.settings.presentation.component.ModelSearchField
+import com.aicode.feature.settings.presentation.component.CollapsibleGroupHeader
 import com.aicode.feature.settings.presentation.component.SettingsDivider
 import com.aicode.feature.settings.presentation.component.SettingsGroup
 import com.aicode.feature.settings.presentation.component.SettingsGroupHeader
@@ -212,10 +216,18 @@ fun ChatDrawerContent(
     }
 
     val imeInset = rememberImeBottomInset()
+    // 设了壁纸时侧边栏底色改半透明，让壁纸透出；没设壁纸保持原样。
+    val settingsViewModel: SettingsViewModel = hiltViewModel()
+    val wallpaperPath by settingsViewModel.backgroundImagePath.collectAsStateWithLifecycle()
+    val drawerBackground = if (wallpaperPath != null) {
+        settingsPageBackground().copy(alpha = 0.82f)
+    } else {
+        settingsPageBackground()
+    }
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(settingsPageBackground())
+            .background(drawerBackground)
             .windowInsetsPadding(
                 WindowInsets.systemBars.only(
                     WindowInsetsSides.Horizontal + WindowInsetsSides.Top
@@ -368,15 +380,25 @@ fun ChatDrawerContent(
             }
         }
 
-        SettingsGroup {
-            if (onNavigateToBrowser != null) {
-                SettingsRow(
-                    icon = FeatherIcons.Globe,
-                    title = stringResource(R.string.browser_title),
-                    onClick = onNavigateToBrowser
-                )
-                SettingsDivider()
+        if (onNavigateToBrowser != null) {
+            var toolsExpanded by rememberSaveable { mutableStateOf(false) }
+            CollapsibleGroupHeader(
+                text = stringResource(R.string.drawer_tools_group),
+                expanded = toolsExpanded,
+                onToggle = { toolsExpanded = !toolsExpanded }
+            )
+            AnimatedVisibility(visible = toolsExpanded) {
+                SettingsGroup {
+                    SettingsRow(
+                        icon = FeatherIcons.Globe,
+                        title = stringResource(R.string.browser_title),
+                        onClick = onNavigateToBrowser
+                    )
+                }
             }
+        }
+
+        SettingsGroup {
             SettingsRow(
                 icon = FeatherIcons.Settings,
                 title = stringResource(R.string.chat_settings),
