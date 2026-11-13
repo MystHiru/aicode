@@ -39,7 +39,8 @@ class SystemPromptProvider @Inject constructor(
     private val promptFragmentCatalog: PromptFragmentCatalog,
     private val containerInstaller: ContainerInstaller,
     private val agentDefinitionRepository: AgentDefinitionRepository,
-    private val executionModeHolder: ExecutionModeHolder
+    private val executionModeHolder: ExecutionModeHolder,
+    private val roleRepository: com.aicode.feature.agent.domain.role.RoleRepository
 ) {
     // 抽象独立的 Source
     interface PromptSource {
@@ -49,7 +50,12 @@ class SystemPromptProvider @Inject constructor(
     private inner class StaticRuleSource : PromptSource {
         // 每次都重新读盘：未编辑时字符串一致，KV Cache 照常命中；编辑后立即生效，无需重启。
         // 技能/记忆等运行期内容由末尾的 99-runtime-context.md 片段用 {{AICODE_*}} 变量承载。
-        override fun build(ctx: AgentContext): String = promptFragmentCatalog.renderStatic(ctx.projectRoot)
+        override fun build(ctx: AgentContext): String {
+            val rules = promptFragmentCatalog.renderStatic(ctx.projectRoot)
+            // 当前角色的身份放在规则最前：身份由用户在设置里管理，不再固定取 00-identity。
+            val identity = runCatching { roleRepository.current().identity }.getOrDefault("").trim()
+            return if (identity.isEmpty()) rules else "$identity\n\n$rules"
+        }
     }
 
     private inner class ActiveSkillsSource : PromptSource {

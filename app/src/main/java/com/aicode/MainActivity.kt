@@ -13,8 +13,10 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -42,10 +44,19 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalView
@@ -63,6 +74,7 @@ import androidx.navigation.navArgument
 import com.aicode.core.theme.AIEditorTheme
 import com.aicode.core.theme.AppThemePreset
 import com.aicode.core.ui.BetaWatermark
+import com.aicode.core.ui.EndModalDrawer
 import com.aicode.core.ui.ImageSource
 import com.aicode.core.ui.ImageViewerHost
 import com.aicode.core.ui.ImageViewerRequest
@@ -73,6 +85,7 @@ import com.aicode.core.ui.drawerWidth
 import com.aicode.core.ui.isExpandedWidth
 import com.aicode.core.ui.pageEnter
 import com.aicode.core.ui.pageExit
+import com.aicode.core.ui.rememberEndDrawerState
 import com.aicode.core.ui.rememberImageViewerState
 import com.aicode.core.ui.rememberViewerDecodeSpec
 import com.aicode.core.util.ApkInstaller
@@ -88,6 +101,15 @@ import com.aicode.feature.editor.presentation.EditorLeaveGuard
 import com.aicode.feature.browser.presentation.BrowserScreen
 import com.aicode.feature.git.presentation.GitViewModel
 import com.aicode.feature.credentials.presentation.component.CredentialScreen
+import com.aicode.feature.plugin.presentation.PluginWebViewCache
+import com.aicode.feature.plugin.presentation.PluginOverlayController
+import com.aicode.feature.plugin.presentation.PluginsViewModel
+import com.aicode.feature.plugin.presentation.currentLanguageTag
+import com.aicode.feature.plugin.presentation.drawer.AllToolsScreen
+import com.aicode.feature.plugin.presentation.drawer.ProjectToolsDrawer
+import com.aicode.feature.plugin.presentation.drawer.ProjectToolsViewModel
+import com.aicode.feature.plugin.presentation.drawer.ToolDetailScreen
+import com.aicode.feature.plugin.presentation.drawer.ToolUnavailableScreen
 import com.aicode.feature.git.presentation.component.GitScreen
 import com.aicode.feature.onboarding.data.OnboardingStatus
 import com.aicode.feature.onboarding.domain.OnboardingCoordinator
@@ -327,6 +349,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         browserManager.detachHiddenHost()
+        PluginWebViewCache.clear()
         super.onDestroy()
     }
 
@@ -373,6 +396,9 @@ fun AppNavigation(
     val agentViewModel: AIAgentViewModel = hiltViewModel()
     val settingsViewModel: SettingsViewModel = hiltViewModel()
     val workspaceViewModel: WorkspaceViewModel = hiltViewModel()
+    val projectToolsViewModel: ProjectToolsViewModel = hiltViewModel()
+    val pluginsViewModel: PluginsViewModel = hiltViewModel()
+    val rightDrawerState = rememberEndDrawerState()
 
     // ── 首次启动引导 ──
     val onboardingStateHolder = remember { OnboardingStateHolder() }
@@ -403,6 +429,9 @@ fun AppNavigation(
     // 侧边栏打开时，系统返回键先收起侧边栏。
     BackHandler(enabled = drawerState.isOpen) {
         scope.launch { drawerState.close() }
+    }
+    BackHandler(enabled = rightDrawerState.isOpen) {
+        scope.launch { rightDrawerState.close() }
     }
 
     // 侧边栏需要的数据。
@@ -645,6 +674,17 @@ fun AppNavigation(
         )
     }
 
+    var reopenRightDrawerOnDetailBack by remember { mutableStateOf(false) }
+
+    // 从右侧工具抽屉进入详情时，返回后恢复抽屉与列表位置；从全部工具页进入则不恢复。
+    val returnFromToolDetail: () -> Unit = {
+        if (reopenRightDrawerOnDetailBack) {
+            reopenRightDrawerOnDetailBack = false
+            scope.launch { rightDrawerState.open() }
+        }
+        navController.popBackStack()
+    }
+
     // 页面主体（NavHost）：大屏放进 Row 的右侧，窄窗放进 modal 抽屉容器里。
     val navBody: @Composable () -> Unit = {
         NavHost(
@@ -839,6 +879,88 @@ fun AppNavigation(
                     }
                 )
             }
+            composable("plugin_all_tools") {
+                val allTools by projectToolsViewModel.allPluginTools.collectAsStateWithLifecycle()
+                val tools by projectToolsViewModel.projectTools.collectAsStateWithLifecycle()
+                val enabledKeys = remember(tools) { tools.map { it.toolKey }.toSet() }
+
+                AllToolsScreen(
+                    availableTools = allTools,
+                    enabledToolKeys = enabledKeys,
+                    onBack = { navController.popBackStack() },
+                    onAddTool = { tool -> projectToolsViewModel.addToolToProject(tool) },
+                    onViewDetail = { tool ->
+                        projectToolsViewModel.selectTool(tool)
+                        navController.navigate("plugin_tool_detail/${tool.key}")
+                    }
+                )
+            }
+            composable("plugin_tool_detail/{toolKey}") { backStackEntry ->
+                val toolKey = backStackEntry.arguments?.getString("toolKey").orEmpty()
+                androidx.compose.runtime.LaunchedEffect(toolKey) {
+                    projectToolsViewModel.selectToolByKey(toolKey)
+                }
+                val tool by projectToolsViewModel.selectedTool.collectAsStateWithLifecycle()
+
+                BackHandler { returnFromToolDetail() }
+                if (tool != null) {
+                    val languageTag = currentLanguageTag()
+                    val pageDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+                    ToolDetailScreen(
+                        tool = tool!!,
+                        languageTag = languageTag,
+                        bridgeFactory = { page, post, onClose ->
+                            pluginsViewModel.createWebBridge(
+                                page = page,
+                                pluginVersion = page.pluginVersion,
+                                languageTag = languageTag,
+                                theme = { if (pageDark) "dark" else "light" },
+                                onClosePage = onClose,
+                                post = post
+                            )
+                        },
+                        onBack = returnFromToolDetail,
+                        onRemove = {
+                            projectToolsViewModel.removeToolFromProject(toolKey)
+                            returnFromToolDetail()
+                        }
+                    )
+                } else {
+                    ToolUnavailableScreen(onBack = returnFromToolDetail)
+                }
+            }
+        }
+    }
+
+    val projectToolsListState = rememberLazyListState()
+
+    val rightDrawerSheet: @Composable () -> Unit = {
+        ModalDrawerSheet(
+            drawerShape = RectangleShape,
+            drawerContainerColor = settingsPageBackground(),
+            drawerTonalElevation = 0.dp,
+            modifier = Modifier.width(drawerWidth())
+        ) {
+            val tools by projectToolsViewModel.projectTools.collectAsStateWithLifecycle()
+            val activeTools by projectToolsViewModel.activePluginTools.collectAsStateWithLifecycle()
+            val toolsMap = remember(activeTools) { activeTools.associateBy { it.key } }
+
+            ProjectToolsDrawer(
+                workspacePath = projectToolsViewModel.currentWorkspacePath,
+                tools = tools,
+                pluginToolsMap = toolsMap,
+                listState = projectToolsListState,
+                onOpenToolDetail = { tool, item ->
+                    reopenRightDrawerOnDetailBack = true
+                    scope.launch { rightDrawerState.close() }
+                    projectToolsViewModel.selectTool(tool)
+                    navController.navigate("plugin_tool_detail/${tool.key}")
+                },
+                onOpenAllTools = {
+                    scope.launch { rightDrawerState.close() }
+                    navController.navigate("plugin_all_tools")
+                }
+            )
         }
     }
 
@@ -850,7 +972,7 @@ fun AppNavigation(
     // 文件树里点开的图片走这个查看器；聊天面板自带一个，两层互不影响。
     ImageViewerHost(state = drawerImageViewerState, load = drawerImageLoad)
     if (expanded) {
-        // 大屏不套 ModalNavigationDrawer：侧栏常驻在左，抽屉那套 scrim / 手势 / 锚点在这里完全用不上。
+        // 大屏左侧会话侧栏常驻，不走 ModalNavigationDrawer；右侧工具抽屉仍用 Modal 覆盖内容区。
         // 侧栏只在聊天页展开：设置页自己就是「菜单 + 详情」两栏，外面再套一层会话侧栏就成了三栏。
         // 宽度走补间而不是直接增删，否则右侧区域宽度突变，切页时会明显闪一下；
         // 时长与页面过渡取同一个值，两段动画同时收尾。
@@ -884,7 +1006,14 @@ fun AppNavigation(
                 VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
             Box(modifier = Modifier.weight(1f)) {
-                navBody()
+                EndModalDrawer(
+                    state = rightDrawerState,
+                    gesturesEnabled = currentRoute == "chat",
+                    drawerWidth = drawerWidth(),
+                    drawerContent = { rightDrawerSheet() }
+                ) {
+                    navBody()
+                }
             }
         }
     } else {
@@ -903,7 +1032,14 @@ fun AppNavigation(
                 }
             }
         ) {
-            navBody()
+            EndModalDrawer(
+                state = rightDrawerState,
+                gesturesEnabled = currentRoute == "chat",
+                drawerWidth = drawerWidth(),
+                drawerContent = { rightDrawerSheet() }
+            ) {
+                navBody()
+            }
         }
     }
 
@@ -1089,6 +1225,68 @@ private val PREVIEWABLE_IMAGE_EXTS = setOf("png", "jpg", "jpeg", "gif", "webp", 
 
 /** 文件树里点击即调系统安装器的安装包格式。 */
 private val INSTALLABLE_APK_EXTS = setOf("apk", "apks", "xapk")
+
+/**
+ * 全局背景图。单独成 composable，拖拽插件弹层时只有这一层跟随矩形重绘，
+ * 不带动整棵导航树重组。
+ */
+@Composable
+private fun BackgroundImageOverlay(path: String?, imageAlpha: Float) {
+    val imagePath = path ?: return
+    if (imageAlpha <= 0f) return
+    val overlayState by PluginOverlayController.state.collectAsStateWithLifecycle()
+    if (overlayState.suppressBackground) return
+    val screen = LocalView.current
+    val bitmap by produceState<ImageBitmap?>(initialValue = null, imagePath) {
+        value = kotlinx.coroutines.withContext(Dispatchers.IO) {
+            decodeBackgroundBitmap(
+                imagePath,
+                screen.width.coerceAtLeast(1),
+                screen.height.coerceAtLeast(1)
+            )
+        }
+    }
+    bitmap?.let {
+        Image(
+            bitmap = it,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .fillMaxSize()
+                .backgroundWithOverlayHoles(overlayState.bounds, imageAlpha)
+        )
+    }
+}
+
+/**
+ * 画背景图时在插件弹层区域挖洞：弹层矩形内不绘制背景图，其余区域保持原样。
+ * 洞的坐标来自 WebView 的窗口位置与页面上报的 CSS 像素矩形。
+ */
+private fun Modifier.backgroundWithOverlayHoles(
+    bounds: List<PluginOverlayController.Bounds>,
+    imageAlpha: Float
+): Modifier = this
+    .graphicsLayer {
+        alpha = imageAlpha
+        if (bounds.isNotEmpty()) compositingStrategy = CompositingStrategy.Offscreen
+    }
+    .drawWithContent {
+        drawContent()
+        bounds.forEach { bound ->
+            val path = Path().apply {
+                addRoundRect(
+                    RoundRect(
+                        rect = Rect(bound.left, bound.top, bound.right, bound.bottom),
+                        topLeft = CornerRadius(bound.topRadius),
+                        topRight = CornerRadius(bound.topRadius),
+                        bottomRight = CornerRadius(bound.bottomRadius),
+                        bottomLeft = CornerRadius(bound.bottomRadius)
+                    )
+                )
+            }
+            drawPath(path, Color.Transparent, blendMode = BlendMode.Clear)
+        }
+    }
 
 /** 聊天区链接目标 → 归一化后的文件路径；判定为网址（非 `file` scheme）时返回 null。 */
 internal fun asChatFilePath(uri: String): String? {

@@ -55,8 +55,17 @@ data class PromptFragment(
 class PromptFragmentCatalog @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val containerInstaller: ContainerInstaller,
-    private val projectAicodeRoot: ProjectAicodeRoot
+    private val projectAicodeRoot: ProjectAicodeRoot,
+    private val toggleRepository: com.aicode.feature.settings.data.repository.PromptFragmentToggleRepository
 ) {
+
+    /** 被关闭的片段编号缓存；渲染发生在非挂起上下文，开关变更后由设置页调用 [refreshDisabledCache]。 */
+    @Volatile
+    private var disabledNumbersCache: Set<Int> = emptySet()
+
+    suspend fun refreshDisabledCache() {
+        disabledNumbersCache = runCatching { toggleRepository.disabledNumbers() }.getOrDefault(emptySet())
+    }
 
     private val globalDir: File get() = File(containerInstaller.aicodeDir, CUSTOM_DIR)
     private val localDir: File get() = File(containerInstaller.aicodeDir, LOCAL_DIR)
@@ -100,6 +109,7 @@ class PromptFragmentCatalog @Inject constructor(
     /** 静态基线正文：所有生效片段去掉前导注释后按编号拼接。 */
     fun renderStatic(projectRoot: String?): String =
         list(projectRoot)
+            .filter { it.number !in disabledNumbersCache }
             .mapNotNull { it.content.replace(LEADING_COMMENT, "").trim().takeIf { text -> text.isNotEmpty() } }
             .joinToString("\n\n")
 

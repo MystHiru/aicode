@@ -36,7 +36,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.aicode.R
 import com.aicode.core.theme.Spacing
-import com.aicode.feature.agent.domain.root.RootState
 import com.aicode.feature.agent.domain.shizuku.ShizukuState
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Activity
@@ -64,7 +63,7 @@ internal fun AppPermissionsSection(
     onRequestShizukuPermission: () -> Unit,
     onOpenShizuku: () -> Unit,
     onRefreshShizuku: () -> Unit,
-    rootState: RootState,
+    rootAvailable: Boolean,
     onRefreshRoot: () -> Unit
 ) {
     val context = LocalContext.current
@@ -190,11 +189,17 @@ internal fun AppPermissionsSection(
             SettingsRow(
                 icon = FeatherIcons.Zap,
                 title = stringResource(R.string.settings_root),
-                subtitle = stringResource(rootState.hintRes()),
+                subtitle = stringResource(
+                    if (rootAvailable) R.string.settings_root_hint_ready
+                    else R.string.settings_root_hint_unavailable
+                ),
                 onClick = onRefreshRoot,
                 trailing = {
                     Text(
-                        text = stringResource(rootState.statusRes()),
+                        text = stringResource(
+                            if (rootAvailable) R.string.settings_root_status_ready
+                            else R.string.settings_root_status_unavailable
+                        ),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -376,20 +381,6 @@ private fun ShizukuState.hintRes(): Int = when (this) {
     ShizukuState.NOT_RUNNING -> R.string.settings_shizuku_hint_not_running
     ShizukuState.PERMISSION_DENIED -> R.string.settings_shizuku_hint_denied
     ShizukuState.READY -> R.string.settings_shizuku_hint_ready
-}
-
-/** Root 状态对应的右侧状态文字。 */
-@StringRes
-private fun RootState.statusRes(): Int = when (this) {
-    RootState.UNAVAILABLE -> R.string.settings_root_status_unavailable
-    RootState.READY -> R.string.settings_root_status_ready
-}
-
-/** Root 状态对应的副标题。 */
-@StringRes
-private fun RootState.hintRes(): Int = when (this) {
-    RootState.UNAVAILABLE -> R.string.settings_root_hint_unavailable
-    RootState.READY -> R.string.settings_root_hint_ready
 }
 
 /** 权限无法通过系统弹框授予时，提醒用户去系统设置手动开启。 */

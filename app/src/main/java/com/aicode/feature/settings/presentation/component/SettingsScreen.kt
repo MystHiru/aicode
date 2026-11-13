@@ -57,6 +57,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -87,13 +89,29 @@ import com.aicode.feature.settings.data.repository.BackgroundSettingsRepository
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.presentation.SettingsViewModel
+import com.aicode.feature.settings.presentation.RolesViewModel
 import com.aicode.feature.settings.presentation.RootViewModel
 import com.aicode.feature.settings.presentation.ShizukuViewModel
 import com.aicode.feature.settings.presentation.SkillImportState
 import com.aicode.feature.settings.presentation.SkillUiEntry
 import com.aicode.feature.agent.domain.skill.SkillImportError
 import com.aicode.feature.agent.domain.skill.SkillScope
+import com.aicode.feature.agent.domain.subagent.AgentDefinitionScope
 import com.aicode.feature.settings.presentation.SubAgentUiEntry
+import com.aicode.core.util.FileLogger
+import com.aicode.feature.plugin.domain.PluginSettingsAnchors
+import com.aicode.feature.plugin.domain.PluginSettingsPage
+import com.aicode.feature.plugin.presentation.PluginDetailSection
+import com.aicode.feature.plugin.presentation.PluginImportHost
+import com.aicode.feature.plugin.presentation.PluginThemeTokens
+import com.aicode.feature.plugin.presentation.PluginWebPanelScreen
+import com.aicode.feature.plugin.presentation.PluginWebViewCache
+import com.aicode.feature.plugin.presentation.PluginWebViewFactory
+import com.aicode.feature.plugin.presentation.PluginsSection
+import com.aicode.feature.plugin.presentation.PluginsViewModel
+import com.aicode.feature.plugin.presentation.currentLanguageTag
+import com.aicode.feature.plugin.presentation.displayName
+import kotlinx.coroutines.delay
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.ArrowLeft
 import compose.icons.feathericons.BarChart2
@@ -111,6 +129,7 @@ import compose.icons.feathericons.Info
 import compose.icons.feathericons.Lock
 import compose.icons.feathericons.Moon
 import compose.icons.feathericons.MessageSquare
+import compose.icons.feathericons.Package
 import compose.icons.feathericons.Edit2
 import compose.icons.feathericons.PieChart
 import compose.icons.feathericons.Plus
@@ -122,6 +141,7 @@ import compose.icons.feathericons.Shield
 import compose.icons.feathericons.Sliders
 import compose.icons.feathericons.Terminal
 import compose.icons.feathericons.Trash2
+import compose.icons.feathericons.User
 import compose.icons.feathericons.Users
 import compose.icons.feathericons.Zap
 import com.aicode.feature.onboarding.domain.OnboardingStep
@@ -144,6 +164,9 @@ private val SettingsMenuWidth = 320.dp
  */
 private val SettingsTwoPaneMinWidth = 840.dp
 
+/** 插件包选择器接受的类型：部分文件管理器会把 .zip 报成 octet-stream。 */
+private val PluginPackageMimeTypes = arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")
+
 /** 设置页内部二级菜单分区。Menu 为首页菜单，其余为各自的二级页。 */
 internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     Menu(R.string.settings_title),
@@ -161,11 +184,15 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     SubAgents(R.string.settings_subagents),
     SubAgentDetail(R.string.settings_subagents),
     SubAgentEditor(R.string.settings_subagents),
+    Plugins(R.string.settings_plugins),
+    PluginDetail(R.string.settings_plugins),
+    PluginPage(R.string.settings_plugin_page_title),
     Container(R.string.settings_container),
     ContainerDownloads(R.string.container_download_image),
     Proxy(R.string.proxy_title),
     Log(R.string.settings_log),
     Permissions(R.string.settings_permissions),
+    Roles(R.string.settings_roles),
     AppPermissions(R.string.settings_app_permissions),
     BackgroundRun(R.string.settings_category_background),
     RemoteServers(R.string.settings_remote_servers),
@@ -192,6 +219,7 @@ private fun SettingsSection.depth(): Int = when (this) {
     SettingsSection.PromptDetail,
     SettingsSection.SkillDetail,
     SettingsSection.SubAgentDetail,
+    SettingsSection.PluginDetail,
     SettingsSection.ContainerDownloads,
     SettingsSection.Log -> 2
     else -> 1
@@ -384,6 +412,81 @@ fun SettingsScreen(
     val skillZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.importSkillsFromZip(uri, skillImportScope)
     }
+    // 插件的导入流程状态都在 PluginsViewModel 里；这里只记当前打开详情的插件。
+    val pluginsViewModel: PluginsViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+    val plugins by pluginsViewModel.plugins.collectAsStateWithLifecycle()
+    val pluginsLoaded by pluginsViewModel.loaded.collectAsStateWithLifecycle()
+    val pluginDependencyStates by pluginsViewModel.dependencyStates.collectAsStateWithLifecycle()
+    val shizukuGrantedPluginIds by pluginsViewModel.shizukuGrantedPluginIds.collectAsStateWithLifecycle()
+    val shizukuState by pluginsViewModel.shizukuState.collectAsStateWithLifecycle()
+    val pluginDevMode by pluginsViewModel.devMode.collectAsStateWithLifecycle()
+    val pluginDevProjects by pluginsViewModel.devProjects.collectAsStateWithLifecycle()
+    var selectedPluginId by remember { mutableStateOf<String?>(null) }
+    val selectedPlugin = plugins.firstOrNull { it.id == selectedPluginId }
+    val pluginLanguageTag = currentLanguageTag()
+    var activePluginPage by remember { mutableStateOf<PluginSettingsPage?>(null) }
+    // 直接从插件快照算入口，不走 PluginManager.ensureLoaded：组合期间不能同步读盘。
+    val pluginPages = remember(plugins) {
+        plugins.filter { it.isActive }
+            .flatMap { plugin ->
+                plugin.content.settingsPages.map { page ->
+                    page.copy(pluginVersion = plugin.record.version)
+                }
+            }
+    }
+    val pluginZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) pluginsViewModel.import(uri)
+    }
+    // 进入设置后预热最近打开的插件页：提前创建 WebView，打开入口时直接 attach。
+    // 设置页首帧之后再执行，避免 Chromium 拉起阻塞进入动画。
+    // 不在这里加载页面：此时 WebView 还没挂到窗口，0×0 视口会让页面按错误尺寸完成首次布局
+    // （vh 等视口单位会被固定成 0），加载交给页面挂载后的 PluginWebPanelScreen。
+    val pluginThemeDark = PluginThemeTokens.isDark(MaterialTheme.colorScheme)
+    val pluginThemeFontScale = LocalConfiguration.current.fontScale
+    val pluginColorScheme = MaterialTheme.colorScheme
+    val pluginSemanticColors = MaterialTheme.semanticColors
+    val pluginThemeVariables = remember(pluginColorScheme, pluginSemanticColors, pluginThemeFontScale) {
+        PluginThemeTokens.variables(pluginColorScheme, pluginSemanticColors, pluginThemeFontScale)
+    }
+    val pluginThemeBackground = MaterialTheme.semanticColors.pageBackground.toArgb()
+    LaunchedEffect(pluginsLoaded, pluginPages) {
+        if (!pluginsLoaded || pluginPages.isEmpty() || PluginWebViewCache.hasCachedWebView) return@LaunchedEffect
+        val target = PluginWebViewCache.lastPageKey
+            ?.let { key -> pluginPages.firstOrNull { it.cacheKey == key } }
+            ?: pluginPages.first()
+        delay(200)
+        // 预热等待期间用户可能已打开插件页，此时不要再替换掉正在显示的实例。
+        if (PluginWebViewCache.hasCachedWebView) return@LaunchedEffect
+        runCatching {
+            val webView = PluginWebViewFactory.create(
+                context = context,
+                page = target,
+                dark = pluginThemeDark,
+                backgroundColor = pluginThemeBackground,
+                themeVariables = { pluginThemeVariables },
+                onPageFinished = { view ->
+                    PluginWebViewCache.markLoaded(target.cacheKey, PluginWebViewFactory.pageUrl(target))
+                    view.evaluateJavascript(PluginThemeTokens.applyScript(pluginThemeVariables), null)
+                },
+                onMainFrameError = {}
+            )
+            val bridge = pluginsViewModel.createWebBridge(
+                page = target,
+                pluginVersion = target.pluginVersion,
+                languageTag = pluginLanguageTag,
+                theme = { if (pluginThemeDark) "dark" else "light" },
+                onClosePage = {},
+                post = { script ->
+                    runCatching { webView.evaluateJavascript(script, null) }
+                }
+            )
+            webView.addJavascriptInterface(bridge, "__aicodeBridge")
+            PluginWebViewCache.put(target.cacheKey, webView)
+            PluginWebViewCache.putBridge(target.cacheKey, bridge)
+        }.onFailure { e ->
+            FileLogger.w("SettingsScreen", "插件页预热失败", e)
+        }
+    }
     var selectedSubAgent by remember { mutableStateOf<SubAgentUiEntry?>(null) }
     var subAgentToDelete by remember { mutableStateOf<SubAgentUiEntry?>(null) }
     // 子代理编辑目标：null 表示新建一个；编辑现有定义时指向被编辑的条目。
@@ -420,6 +523,8 @@ fun SettingsScreen(
         SettingsSection.SkillEditor -> skillEditorReturn
         SettingsSection.SubAgentDetail -> SettingsSection.SubAgents
         SettingsSection.SubAgentEditor -> subAgentEditorReturn
+        SettingsSection.PluginDetail -> SettingsSection.Plugins
+        SettingsSection.PluginPage -> if (expanded) null else SettingsSection.Menu
         SettingsSection.ContainerDownloads -> SettingsSection.Container
         else -> if (expanded) null else SettingsSection.Menu
     }
@@ -450,6 +555,22 @@ fun SettingsScreen(
         subAgents.firstOrNull { it.name.equals(target, ignoreCase = true) }?.let { fresh ->
             selectedSubAgent = fresh
             pendingSubAgentName = null
+        }
+    }
+
+    // 在详情页卸载插件（或记录消失）后回到列表，别停在一个空页面。
+    LaunchedEffect(selectedPlugin, section) {
+        if (section == SettingsSection.PluginDetail && selectedPlugin == null) section = SettingsSection.Plugins
+    }
+
+    // 插件停用 / 卸载后入口消失，当前停留的插件页要退回菜单。
+    LaunchedEffect(pluginPages, section) {
+        if (section == SettingsSection.PluginPage) {
+            val active = activePluginPage
+            if (active == null || pluginPages.none { it.key == active.key }) {
+                activePluginPage = null
+                section = SettingsSection.Menu
+            }
         }
     }
 
@@ -496,6 +617,11 @@ fun SettingsScreen(
                 )
             },
             onRerunOnboarding = onRerunOnboarding,
+            pluginPages = pluginPages,
+            onOpenPluginPage = { page ->
+                activePluginPage = page
+                section = SettingsSection.PluginPage
+            },
             onOpen = {
                 if (it == SettingsSection.Log) {
                     logReturnSection = SettingsSection.Menu
@@ -555,7 +681,10 @@ fun SettingsScreen(
                 viewModel = viewModel,
                 initialProvider = editingProvider,
                 presetPrefill = providerPresetPrefill,
-                initialTab = if (onboardingStep == OnboardingStep.PROVIDER_FETCH_MODELS || onboardingStep == OnboardingStep.SIMULATE_FETCH_DIALOG) 1 else 0,
+                initialTab = if (
+                    onboardingStep == OnboardingStep.PROVIDER_FETCH_MODELS ||
+                    onboardingStep == OnboardingStep.SIMULATE_FETCH_DIALOG
+                ) 1 else 0,
                 onboardingStep = onboardingStep,
                 onOnboardingModelAdded = onOnboardingModelAdded,
                 onOnboardingDismissFetchDialog = onOnboardingDismissFetchDialog,
@@ -631,6 +760,35 @@ fun SettingsScreen(
                 )
             }
 
+            current == SettingsSection.PluginPage -> {
+                val page = activePluginPage
+                if (page == null) {
+                    // 移动端退出插件页时 old 分支还在退场动画里，此时 activePluginPage 已清空；
+                    // 不渲染大屏「从左侧选择」占位，避免返回瞬间闪一下空态。
+                    if (expanded) SettingsDetailPlaceholder()
+                } else {
+                    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+                    PluginWebPanelScreen(
+                        page = page,
+                        onClosePage = {
+                            activePluginPage = null
+                            section = SettingsSection.Menu
+                        },
+                        bridgeFactory = { post, onClosePage ->
+                            pluginsViewModel.createWebBridge(
+                                page = page,
+                                pluginVersion = page.pluginVersion,
+                                languageTag = pluginLanguageTag,
+                                theme = { if (isDark) "dark" else "light" },
+                                onClosePage = onClosePage,
+                                post = post
+                            )
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+
             current == SettingsSection.RemoteServers ->
                 com.aicode.feature.workspace.presentation.remote.RemoteServerScreen(
                     onNavigateBack = { section = SettingsSection.Menu }
@@ -648,6 +806,8 @@ fun SettingsScreen(
             val stateKey: String = when (current) {
                 SettingsSection.SkillDetail -> "SkillDetail:${selectedSkill?.name.orEmpty()}"
                 SettingsSection.SubAgentDetail -> "SubAgentDetail:${selectedSubAgent?.name.orEmpty()}"
+                SettingsSection.PluginDetail -> "PluginDetail:${selectedPluginId.orEmpty()}"
+                SettingsSection.PluginPage -> "PluginPage:${activePluginPage?.key.orEmpty()}"
                 SettingsSection.PromptDetail -> "PromptDetail:${selectedPrompt?.number ?: 0}"
                 else -> current.name
             }
@@ -666,6 +826,10 @@ fun SettingsScreen(
                             selectedSkill?.name ?: stringResource(current.titleRes)
                         } else if (current == SettingsSection.SubAgentDetail) {
                             selectedSubAgent?.name ?: stringResource(current.titleRes)
+                        } else if (current == SettingsSection.PluginDetail) {
+                            selectedPlugin?.displayName(pluginLanguageTag) ?: stringResource(current.titleRes)
+                        } else if (current == SettingsSection.PluginPage) {
+                            activePluginPage?.title?.resolve(pluginLanguageTag) ?: stringResource(current.titleRes)
                         } else if (expanded && current == SettingsSection.Menu) {
                             // 大屏左栏顶部已经写着「设置」，右栏空态不再重复
                             ""
@@ -780,17 +944,19 @@ fun SettingsScreen(
                             }
                         }
                         SettingsSection.SkillDetail -> selectedSkill?.let { entry ->
-                            IconButton(onClick = {
-                                editingSkill = entry
-                                skillEditorReturn = SettingsSection.SkillDetail
-                                section = SettingsSection.SkillEditor
-                            }) {
-                                Icon(
-                                    FeatherIcons.Edit2,
-                                    contentDescription = stringResource(R.string.skills_edit),
-                                    tint = MaterialTheme.colorScheme.onBackground,
-                                    modifier = Modifier.size(20.dp)
-                                )
+                            if (entry.scope != SkillScope.PLUGIN) {
+                                IconButton(onClick = {
+                                    editingSkill = entry
+                                    skillEditorReturn = SettingsSection.SkillDetail
+                                    section = SettingsSection.SkillEditor
+                                }) {
+                                    Icon(
+                                        FeatherIcons.Edit2,
+                                        contentDescription = stringResource(R.string.skills_edit),
+                                        tint = MaterialTheme.colorScheme.onBackground,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
                         }
                         SettingsSection.SubAgents -> {
@@ -811,16 +977,28 @@ fun SettingsScreen(
                             }
                         }
                         SettingsSection.SubAgentDetail -> selectedSubAgent?.let { entry ->
-                            IconButton(onClick = {
-                                editingSubAgent = entry
-                                subAgentEditorReturn = SettingsSection.SubAgentDetail
-                                section = SettingsSection.SubAgentEditor
-                            }) {
+                            if (entry.scope != AgentDefinitionScope.PLUGIN) {
+                                IconButton(onClick = {
+                                    editingSubAgent = entry
+                                    subAgentEditorReturn = SettingsSection.SubAgentDetail
+                                    section = SettingsSection.SubAgentEditor
+                                }) {
+                                    Icon(
+                                        FeatherIcons.Edit2,
+                                        contentDescription = stringResource(R.string.subagent_edit),
+                                        tint = MaterialTheme.colorScheme.onBackground,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+                        SettingsSection.Plugins -> {
+                            IconButton(onClick = { pluginZipLauncher.launch(PluginPackageMimeTypes) }) {
                                 Icon(
-                                    FeatherIcons.Edit2,
-                                    contentDescription = stringResource(R.string.subagent_edit),
+                                    FeatherIcons.Plus,
+                                    contentDescription = stringResource(R.string.plugins_import),
                                     tint = MaterialTheme.colorScheme.onBackground,
-                                    modifier = Modifier.size(20.dp)
+                                    modifier = Modifier.size(22.dp)
                                 )
                             }
                         }
@@ -1177,19 +1355,37 @@ fun SettingsScreen(
                     onPromote = { viewModel.promoteRuleToGlobal(it) },
                     onDeleteGlobal = { viewModel.deleteGlobalRule(it) }
                 )
+                SettingsSection.Roles -> {
+                    val rolesViewModel: RolesViewModel =
+                        androidx.hilt.navigation.compose.hiltViewModel()
+                    val rolesState by rolesViewModel.state.collectAsStateWithLifecycle()
+                    val pendingCrop by rolesViewModel.pendingCrop.collectAsStateWithLifecycle()
+                    RolesSection(
+                        state = rolesState,
+                        pendingCrop = pendingCrop,
+                        onSelect = { rolesViewModel.select(it) },
+                        onCreate = { rolesViewModel.create(it) },
+                        onSave = { rolesViewModel.save(it) },
+                        onDelete = { rolesViewModel.delete(it) },
+                        onPickAvatar = { id, uri -> rolesViewModel.pickAvatar(id, uri) },
+                        onCancelCrop = { rolesViewModel.cancelCrop() },
+                        onCommitCrop = { rolesViewModel.commitAvatar(it) },
+                        onRemoveAvatar = { rolesViewModel.removeAvatar(it) }
+                    )
+                }
                 SettingsSection.AppPermissions -> {
                     val shizukuViewModel: ShizukuViewModel =
                         androidx.hilt.navigation.compose.hiltViewModel()
                     val shizukuState by shizukuViewModel.state.collectAsStateWithLifecycle()
                     val rootViewModel: RootViewModel =
                         androidx.hilt.navigation.compose.hiltViewModel()
-                    val rootState by rootViewModel.state.collectAsStateWithLifecycle()
+                    val rootAvailable by rootViewModel.available.collectAsStateWithLifecycle()
                     AppPermissionsSection(
                         shizukuState = shizukuState,
                         onRequestShizukuPermission = { shizukuViewModel.requestPermission() },
                         onOpenShizuku = { shizukuViewModel.openShizukuApp() },
                         onRefreshShizuku = { shizukuViewModel.refresh() },
-                        rootState = rootState,
+                        rootAvailable = rootAvailable,
                         onRefreshRoot = { rootViewModel.refresh() }
                     )
                 }
@@ -1221,6 +1417,51 @@ fun SettingsScreen(
                 SettingsSection.SubAgentEditor -> {} // 已在上方 early return 处理
                 SettingsSection.RemoteServers -> {} // 已在上方 early return 处理
                 SettingsSection.Backup -> {} // 已在上方 early return 处理
+                SettingsSection.Plugins -> PluginsSection(
+                    plugins = plugins,
+                    loaded = pluginsLoaded,
+                    onOpenDetail = {
+                        selectedPluginId = it.id
+                        section = SettingsSection.PluginDetail
+                    },
+                    onToggleEnabled = { plugin, enabled -> pluginsViewModel.setEnabled(plugin.id, enabled) },
+                    onUninstall = { plugin -> pluginsViewModel.uninstall(plugin.id) },
+                    devMode = pluginDevMode,
+                    devRootPath = pluginsViewModel.devRootPath,
+                    devProjects = pluginDevProjects,
+                    onSetDevMode = pluginsViewModel::setDevMode,
+                    onRefreshDevProjects = pluginsViewModel::refreshDevProjects,
+                    onInstallDevProject = pluginsViewModel::installDevProject
+                )
+                SettingsSection.PluginDetail -> selectedPlugin?.let { plugin ->
+                    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+                    PluginDetailSection(
+                        plugin = plugin,
+                        onToggleEnabled = { pluginsViewModel.setEnabled(plugin.id, it) },
+                        onUninstall = {
+                            pluginsViewModel.uninstall(plugin.id)
+                            section = SettingsSection.Plugins
+                        },
+                        bridgeFactory = { page, post, onClosePage ->
+                            pluginsViewModel.createWebBridge(
+                                page = page,
+                                pluginVersion = page.pluginVersion,
+                                languageTag = pluginLanguageTag,
+                                theme = { if (isDark) "dark" else "light" },
+                                onClosePage = onClosePage,
+                                post = post
+                            )
+                        },
+                        onClosePage = {
+                            section = SettingsSection.Plugins
+                        },
+                        dependencyState = pluginDependencyStates[plugin.id],
+                        onPrepareDependencies = { pluginsViewModel.prepareDependencies(plugin.id) },
+                        shizukuGranted = plugin.id in shizukuGrantedPluginIds,
+                        shizukuState = shizukuState,
+                        onSetShizukuGranted = { pluginsViewModel.setShizukuGranted(plugin, it) }
+                    )
+                }
                 SettingsSection.About -> AboutSection(
                     updateCheckEnabled = updateCheckEnabled,
                     updateCheckChannel = updateCheckChannel,
@@ -1230,6 +1471,7 @@ fun SettingsScreen(
                     onSelectMirror = { viewModel.setUpdateCheckMirror(it) },
                     onCheckUpdate = { viewModel.checkUpdate(manual = true) }
                 )
+                SettingsSection.PluginPage -> {} // 已在外层全屏分支处理
             }
         }
     }
@@ -1369,7 +1611,8 @@ fun SettingsScreen(
             onSelectTheme = { viewModel.setTerminalTheme(it) },
             onChangeFontSize = { viewModel.setTerminalFontSize(it) },
             onChangeCursorStyle = { viewModel.setTerminalCursorStyle(it) },
-            onChangeFontPath = { viewModel.setTerminalFontPath(it) }
+            onChangeFontPath = { viewModel.setTerminalFontPath(it) },
+            onChangeShowPluginTabs = { viewModel.setTerminalShowPluginTabs(it) }
         )
     }
 
@@ -1453,6 +1696,8 @@ fun SettingsScreen(
     }
 
     SkillImportResultDialog(state = skillImportState, onDismiss = { viewModel.clearSkillImportState() })
+
+    PluginImportHost(viewModel = pluginsViewModel)
 
     subAgentToDelete?.let { target ->
         val deleting = target.name in subAgentDeleting
@@ -1651,8 +1896,11 @@ internal fun SettingsMenu(
     onOpenLanguageSheet: () -> Unit,
     onOpenManual: () -> Unit,
     onRerunOnboarding: () -> Unit,
+    pluginPages: List<PluginSettingsPage>,
+    onOpenPluginPage: (PluginSettingsPage) -> Unit,
     onOpen: (SettingsSection) -> Unit
 ) {
+    val pluginLanguageTag = currentLanguageTag()
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1727,6 +1975,7 @@ internal fun SettingsMenu(
                     )
                 }
             )
+            PluginSettingsRows(pluginPages, PluginSettingsAnchors.GENERAL, pluginLanguageTag, onOpenPluginPage)
         }
 
         // ── AI 配置 ──
@@ -1764,10 +2013,23 @@ internal fun SettingsMenu(
             )
             SettingsDivider()
             SettingsRow(
+                icon = FeatherIcons.Package,
+                title = stringResource(SettingsSection.Plugins.titleRes),
+                onClick = { onOpen(SettingsSection.Plugins) }
+            )
+            SettingsDivider()
+            SettingsRow(
                 icon = FeatherIcons.MessageSquare,
                 title = stringResource(SettingsSection.Prompts.titleRes),
                 onClick = { onOpen(SettingsSection.Prompts) }
             )
+            SettingsDivider()
+            SettingsRow(
+                icon = FeatherIcons.User,
+                title = stringResource(SettingsSection.Roles.titleRes),
+                onClick = { onOpen(SettingsSection.Roles) }
+            )
+            PluginSettingsRows(pluginPages, PluginSettingsAnchors.AI, pluginLanguageTag, onOpenPluginPage)
         }
 
         // ── 运行环境 ──
@@ -1790,6 +2052,7 @@ internal fun SettingsMenu(
                 title = stringResource(SettingsSection.RemoteServers.titleRes),
                 onClick = { onOpen(SettingsSection.RemoteServers) }
             )
+            PluginSettingsRows(pluginPages, PluginSettingsAnchors.ENVIRONMENT, pluginLanguageTag, onOpenPluginPage)
         }
 
         // ── 权限与后台 ──
@@ -1812,6 +2075,7 @@ internal fun SettingsMenu(
                 title = stringResource(SettingsSection.BackgroundRun.titleRes),
                 onClick = { onOpen(SettingsSection.BackgroundRun) }
             )
+            PluginSettingsRows(pluginPages, PluginSettingsAnchors.PERMISSIONS, pluginLanguageTag, onOpenPluginPage)
         }
 
         // ── 数据与诊断 ──
@@ -1840,6 +2104,7 @@ internal fun SettingsMenu(
                 title = stringResource(SettingsSection.Log.titleRes),
                 onClick = { onOpen(SettingsSection.Log) }
             )
+            PluginSettingsRows(pluginPages, PluginSettingsAnchors.DATA, pluginLanguageTag, onOpenPluginPage)
         }
 
         // ── 帮助与关于 ──
@@ -1862,9 +2127,36 @@ internal fun SettingsMenu(
                 title = stringResource(SettingsSection.About.titleRes),
                 onClick = { onOpen(SettingsSection.About) }
             )
+            PluginSettingsRows(pluginPages, PluginSettingsAnchors.HELP, pluginLanguageTag, onOpenPluginPage)
         }
     }
 
+}
+
+/** 插件注册的设置页入口行：按锚点追加到对应分组末尾，副标题标明来源。 */
+@Composable
+private fun PluginSettingsRows(
+    pages: List<PluginSettingsPage>,
+    anchor: String,
+    languageTag: String,
+    onOpen: (PluginSettingsPage) -> Unit
+) {
+    pages.filter { it.anchor == anchor }.forEach { page ->
+        SettingsDivider()
+        SettingsRow(
+            icon = resolvePluginPageIcon(page.icon),
+            title = page.title.resolve(languageTag),
+            subtitle = stringResource(R.string.plugins_ext_entry_subtitle, page.pluginId),
+            onClick = { onOpen(page) }
+        )
+    }
+}
+
+private fun resolvePluginPageIcon(icon: String): ImageVector = when (icon.lowercase()) {
+    "book", "memory", "brain" -> FeatherIcons.Book
+    "file", "text" -> FeatherIcons.FileText
+    "settings" -> FeatherIcons.Sliders
+    else -> FeatherIcons.Package
 }
 
 /** 导入结果弹窗：导入中显示转圈；完成时展示成功数量与逐个跳过原因（整体失败则直接报错误）。 */

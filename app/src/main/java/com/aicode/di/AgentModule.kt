@@ -39,7 +39,7 @@ import com.aicode.feature.agent.domain.tool.container.ExecuteCommandTool
 import com.aicode.feature.agent.domain.tool.container.TerminalSessionTool
 import com.aicode.feature.agent.domain.tool.explorer.ListFilesTool
 import com.aicode.feature.agent.domain.tool.explorer.SearchCodeTool
-import com.aicode.feature.agent.domain.tool.root.RootTool
+import com.aicode.feature.agent.domain.tool.root.RootShellTool
 import com.aicode.feature.agent.domain.tool.shizuku.ShizukuTool
 import com.aicode.feature.agent.domain.tool.skill.LoadSkillTool
 import com.aicode.feature.agent.domain.tool.question.AskUserQuestionTool
@@ -171,7 +171,16 @@ object AgentModule {
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(@ApplicationContext context: Context): OkHttpClient {
+    fun provideRootGrantDao(database: AgentDatabase): com.aicode.feature.agent.data.local.dao.RootGrantDao {
+        return database.rootGrantDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideOkHttpClient(
+        @ApplicationContext context: Context,
+        pluginHttpHookInterceptor: dagger.Lazy<com.aicode.feature.plugin.runtime.PluginHttpHookInterceptor>
+    ): OkHttpClient {
         // 统一 UA 为 aicode/<版本> (Android)；请求已带显式 UA（如用户自定义头）时不覆盖。
         // 版本号走 PackageManager（项目未开启 BuildConfig），dev 构建为 1.x.y-dev.N+hash 天然可溯源。
         val userAgent = runCatching {
@@ -263,6 +272,7 @@ object AgentModule {
                 }
                 chain.proceed(finalRequest)
             }
+            .addInterceptor { chain -> pluginHttpHookInterceptor.get().intercept(chain) }
             .build()
     }
 
@@ -363,7 +373,7 @@ object AgentModule {
         generateImageTool: GenerateImageTool,
         executeCommandTool: ExecuteCommandTool,
         shizukuTool: ShizukuTool,
-        rootTool: RootTool,
+        rootTool: RootShellTool,
         terminalSessionTool: TerminalSessionTool,
         listFilesTool: ListFilesTool,
         searchCodeTool: SearchCodeTool,
@@ -439,6 +449,7 @@ object AgentModule {
         agentNotificationCenter: AgentNotificationCenter,
         eventInjector: AgentEventInjector,
         fileAccess: FileAccessProvider,
+        pluginHookDispatcher: com.aicode.feature.plugin.runtime.PluginHookDispatcher,
         @ApplicationContext context: Context
     ): AgentWorkflow {
         return StatefulAgentWorkflow(
@@ -466,6 +477,7 @@ object AgentModule {
             agentNotificationCenter,
             eventInjector,
             fileAccess,
+            pluginHookDispatcher,
             context
         )
     }
