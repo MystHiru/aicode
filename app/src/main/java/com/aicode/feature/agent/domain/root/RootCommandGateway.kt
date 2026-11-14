@@ -18,7 +18,8 @@ class RootCommandGateway @Inject constructor(
     private val pathResolver: RootPathResolver,
     private val policyEngine: RootPolicyEngine,
     private val grantStore: RootGrantStore,
-    private val approvalManager: RootApprovalManager
+    private val approvalManager: RootApprovalManager,
+    private val toolSafetySettings: com.aicode.feature.settings.data.repository.ToolSafetySettingsRepository
 ) {
     private companion object {
         const val TAG = "RootGateway"
@@ -54,6 +55,12 @@ class RootCommandGateway @Inject constructor(
                 return runArgv(argv, timeoutMs)
             }
             is RootVerdict.Ask -> {
+                // 「宿主命令自动放行」开关：用户显式选择了免逐条确认，Ask 降级为执行。
+                // DENY 分支不受影响——系统分区写入等硬拒绝永远优先。
+                if (toolSafetySettings.isHostCommandAutoAllowed()) {
+                    audit(command, argv, "ALLOW", "宿主命令自动放行已开启", "auto")
+                    return runArgv(argv, timeoutMs)
+                }
                 if (fusedOut(sessionId)) {
                     audit(command, argv, "FUSE", "连续拒绝达到上限，会话已暂停", null)
                     return Result.failure(IllegalStateException("连续多次拒绝 root 操作，会话已暂停；请在「软件权限 → Root 权限」中重新确认后再试"))

@@ -69,6 +69,7 @@ import com.aicode.core.theme.AppThemePreset
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.isDynamicColorSupported
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.AppSwitch
 import com.aicode.core.ui.ListSelectionState
 import com.aicode.core.ui.SelectionToggleAction
 import com.aicode.core.ui.pageEnter
@@ -114,6 +115,7 @@ import com.aicode.feature.plugin.presentation.currentLanguageTag
 import com.aicode.feature.plugin.presentation.displayName
 import kotlinx.coroutines.delay
 import compose.icons.FeatherIcons
+import compose.icons.feathericons.Activity
 import compose.icons.feathericons.ArrowLeft
 import compose.icons.feathericons.BarChart2
 import compose.icons.feathericons.Book
@@ -279,6 +281,9 @@ fun SettingsScreen(
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val themePresetId by viewModel.themePresetId.collectAsStateWithLifecycle()
     val dynamicColorEnabled by viewModel.dynamicColorEnabled.collectAsStateWithLifecycle()
+    val appStyle by viewModel.appStyle.collectAsStateWithLifecycle()
+    val petOverlayEnabled by viewModel.petOverlayEnabled.collectAsStateWithLifecycle()
+    val petOverlaySizeDp by viewModel.petOverlaySizeDp.collectAsStateWithLifecycle()
     val backgroundImagePath by viewModel.backgroundImagePath.collectAsStateWithLifecycle()
     val backgroundAlpha by viewModel.backgroundAlpha.collectAsStateWithLifecycle()
     val languageTag by viewModel.languageTag.collectAsStateWithLifecycle()
@@ -507,6 +512,7 @@ fun SettingsScreen(
     var showImageSourceSheet by remember { mutableStateOf(false) }
     var showThemeSheet by remember { mutableStateOf(false) }
     var showBackgroundSheet by remember { mutableStateOf(false) }
+    var showPetSheet by remember { mutableStateOf(false) }
     var showLanguageSheet by remember { mutableStateOf(false) }
     var showResetTokenStats by remember { mutableStateOf(false) }
 
@@ -606,6 +612,10 @@ fun SettingsScreen(
             themeMode = themeMode,
             themePresetId = themePresetId,
             dynamicColorEnabled = dynamicColorEnabled,
+            appStyle = appStyle,
+            onToggleAppStyle = {
+                viewModel.setAppStyle(if (appStyle == "MUSE") "CLASSIC" else "MUSE")
+            },
             terminalSettings = terminalSettings,
             currentLanguageDisplayName = currentLanguageDisplayName,
             backgroundImagePath = backgroundImagePath,
@@ -613,6 +623,9 @@ fun SettingsScreen(
             onOpenThemeSheet = { showThemeSheet = true },
             onOpenTerminalSettingsSheet = { showTerminalSettingsSheet = true },
             onOpenBackgroundSheet = { showBackgroundSheet = true },
+            onOpenPetSheet = { showPetSheet = true },
+            petOverlayEnabled = petOverlayEnabled,
+            onTogglePetOverlay = { viewModel.setPetOverlayEnabled(it) },
             onOpenLanguageSheet = { showLanguageSheet = true },
             onOpenManual = {
                 context.startActivity(
@@ -1636,6 +1649,16 @@ fun SettingsScreen(
         )
     }
 
+    if (showPetSheet) {
+        PetOverlaySettingsSheet(
+            enabled = petOverlayEnabled,
+            sizeDp = petOverlaySizeDp,
+            onToggle = { viewModel.setPetOverlayEnabled(it) },
+            onSizeChange = { viewModel.setPetOverlaySizeDp(it) },
+            onDismiss = { showPetSheet = false }
+        )
+    }
+
     if (showLanguageSheet) {
         LanguageSelectionSheet(
             currentTag = languageTag,
@@ -1895,6 +1918,8 @@ internal fun SettingsMenu(
     themeMode: AppThemeMode,
     themePresetId: String?,
     dynamicColorEnabled: Boolean,
+    appStyle: String,
+    onToggleAppStyle: () -> Unit,
     terminalSettings: TerminalSettings,
     currentLanguageDisplayName: String,
     backgroundImagePath: String?,
@@ -1902,6 +1927,9 @@ internal fun SettingsMenu(
     onOpenThemeSheet: () -> Unit,
     onOpenTerminalSettingsSheet: () -> Unit,
     onOpenBackgroundSheet: () -> Unit,
+    onOpenPetSheet: () -> Unit,
+    petOverlayEnabled: Boolean,
+    onTogglePetOverlay: (Boolean) -> Unit,
     onOpenLanguageSheet: () -> Unit,
     onOpenManual: () -> Unit,
     onRerunOnboarding: () -> Unit,
@@ -1942,6 +1970,33 @@ internal fun SettingsMenu(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.semanticColors.subtleText
                     )
+                }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon = FeatherIcons.Sliders,
+                title = stringResource(R.string.settings_app_style),
+                subtitle = stringResource(R.string.settings_app_style_desc),
+                onClick = onToggleAppStyle,
+                trailing = {
+                    Text(
+                        text = stringResource(
+                            if (appStyle == "MUSE") R.string.settings_app_style_muse
+                            else R.string.settings_app_style_classic
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.semanticColors.subtleText
+                    )
+                }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon = FeatherIcons.Activity,
+                title = stringResource(R.string.pet_overlay_title),
+                subtitle = stringResource(R.string.pet_overlay_enabled),
+                onClick = onOpenPetSheet,
+                trailing = {
+                    AppSwitch(checked = petOverlayEnabled, onCheckedChange = onTogglePetOverlay)
                 }
             )
             SettingsDivider()

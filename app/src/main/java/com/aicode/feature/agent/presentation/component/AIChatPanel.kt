@@ -760,6 +760,7 @@ fun AIChatPanel(
         if (inputText == "/") viewModel.refreshSlashCommands()
     }
     var pendingAttachments by remember { mutableStateOf<List<PendingUploadAttachment>>(emptyList()) }
+    var showAppPicker by remember { mutableStateOf(false) }
     var uploadingCount by remember { mutableStateOf(0) }
     var messageForMenu by remember { mutableStateOf<AgentUIMessage?>(null) }
     var editingMessage by remember { mutableStateOf<AgentUIMessage?>(null) }
@@ -1028,6 +1029,29 @@ fun AIChatPanel(
     LaunchedEffect(providers) {
         if (providers.isNotEmpty()) {
             settingsViewModel?.loadAllModelMetadata()
+        }
+    }
+
+    fun handlePickedApp(app: InstalledAppEntry) {
+        showAppPicker = false
+        if (projectRoot.isBlank()) {
+            Toast.makeText(context, emptyWorkspaceMessage(context), Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!hasAttachmentSlots(pendingAttachments.size)) {
+            Toast.makeText(context, maxAttachmentMessage(context, MAX_PENDING_ATTACHMENTS), Toast.LENGTH_SHORT).show()
+            return
+        }
+        scope.launch {
+            uploadingCount = pendingAttachments.size + 1
+            runCatching { uploadApkFile(app.apkPath, app.label, viewModel.fileAccess) }
+                .onSuccess { uploaded ->
+                    pendingAttachments = pendingAttachments + uploaded.toPendingAttachment()
+                }
+                .onFailure { error ->
+                    Toast.makeText(context, error.message ?: uploadFallbackError(context), Toast.LENGTH_LONG).show()
+                }
+            uploadingCount = 0
         }
     }
 
@@ -1556,6 +1580,7 @@ fun AIChatPanel(
         LocalMarkdownImageTransformer provides markdownImageTransformer,
         LocalImageViewer provides imageViewerState,
         LocalAttachmentOpener provides attachmentOpener,
+        LocalAttachmentFileAccess provides viewModel.fileAccess,
         LocalSubAgentCardHost provides SubAgentCardHost(
             states = subAgentCards,
             onOpen = { id -> viewModel.selectSession(id) },
@@ -1845,6 +1870,7 @@ fun AIChatPanel(
                     )
                 },
                 onTakePhoto = ::takePhoto,
+                onPickApp = { showAppPicker = true },
                 slashCommands = slashCommands,
                 fileMentionState = fileMentionState,
                 onFileMentionOpen = viewModel::requestFileMention,
@@ -2006,6 +2032,13 @@ fun AIChatPanel(
         // Dialog 是独立 window、不占父布局尺寸，挂在 Scaffold 之后即可覆盖整屏 ——
         // 平板双栏下不会只盖住聊天列，也不会被 MainActivity 画在最上层的全局背景水印压住。
         ImageViewerHost(state = imageViewerState, load = chatImageLoad)
+
+        if (showAppPicker) {
+            AppPickerSheet(
+                onPick = ::handlePickedApp,
+                onDismiss = { showAppPicker = false }
+            )
+        }
     }
 }
 

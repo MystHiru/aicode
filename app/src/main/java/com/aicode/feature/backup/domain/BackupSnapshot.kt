@@ -28,6 +28,10 @@ data class BackupSnapshot(
     val themeMode: String? = null,
     val themePresetId: String? = null,
     val dynamicColorEnabled: Boolean = false,
+    /** 界面风格（CLASSIC / MUSE）；null 表示旧备份，导入时保持现状。 */
+    val appStyle: String? = null,
+    /** 悬浮窗开关；null 表示旧备份，导入时保持现状。 */
+    val petOverlayEnabled: Boolean? = null,
     val keepaliveEnabled: Boolean = false,
     val liveNotificationEnabled: Boolean = false,
     val screenOnEnabled: Boolean = false,
@@ -67,6 +71,10 @@ data class BackupMetadata(
     val themeMode: String? = null,
     val themePresetId: String? = null,
     val dynamicColorEnabled: Boolean = false,
+    /** 界面风格（CLASSIC / MUSE）；null 表示旧备份，导入时保持现状。 */
+    val appStyle: String? = null,
+    /** 悬浮窗开关；null 表示旧备份，导入时保持现状。 */
+    val petOverlayEnabled: Boolean? = null,
     val keepaliveEnabled: Boolean = false,
     val liveNotificationEnabled: Boolean = false,
     val screenOnEnabled: Boolean = false,
@@ -110,6 +118,8 @@ fun BackupSnapshot.toMetadata() = BackupMetadata(
     themeMode = themeMode,
     themePresetId = themePresetId,
     dynamicColorEnabled = dynamicColorEnabled,
+    appStyle = appStyle,
+    petOverlayEnabled = petOverlayEnabled,
     keepaliveEnabled = keepaliveEnabled,
     liveNotificationEnabled = liveNotificationEnabled,
     screenOnEnabled = screenOnEnabled,

@@ -175,6 +175,8 @@ internal fun ChatInputBar(
     onUploadFile: () -> Unit,
     onUploadImage: () -> Unit,
     onTakePhoto: () -> Unit,
+    /** 可选：把已安装应用导出为 APK 附件。null 时不展示该入口。 */
+    onPickApp: (() -> Unit)? = null,
     slashCommands: List<SlashCommand> = emptyList(),
     fileMentionState: FileMentionState = FileMentionState.Idle,
     onFileMentionOpen: () -> Unit = {},
@@ -664,6 +666,12 @@ internal fun ChatInputBar(
             onTakePhoto = {
                 showAttachmentSheet = false
                 onTakePhoto()
+            },
+            onPickApp = onPickApp?.let { pick ->
+                {
+                    showAttachmentSheet = false
+                    pick()
+                }
             },
             onDismiss = { showAttachmentSheet = false }
         )

@@ -298,3 +298,39 @@ internal fun formatBytes(bytes: Long): String {
         else -> "$bytes B"
     }
 }
+
+/**
+ * 把已安装应用的 APK 放进工作区附件目录并返回落盘结果。
+ *
+ * 与 [copyUriToWorkspace] 的区别只在数据源：这里拿不到 content Uri（APK 路径来自 PackageManager），
+ * 所以直接从宿主文件流式读取，其余（去重命名、容器路径、本地副本）保持一致。
+ */
+internal suspend fun uploadApkFile(
+    apkPath: String,
+    displayName: String,
+    fileAccess: FileAccessProvider
+): UploadedWorkspaceFile = withContext(Dispatchers.IO) {
+    val source = File(apkPath)
+    require(source.isFile && source.length() > 0L) { "APK 不可读" }
+
+    val attachmentsDir = "${WorkspacePathMapper.CONTAINER_ROOT}/.aicode/attachments"
+    val baseName = sanitizeUploadFileName(displayName).let {
+        if (it.endsWith(".apk", ignoreCase = true)) it else "$it.apk"
+    }
+    val fileName = uniqueUploadName(fileAccess, attachmentsDir, baseName)
+    val containerPath = "$attachmentsDir/$fileName"
+
+    val sizeBytes = source.inputStream().use { input ->
+        fileAccess.writeStream(containerPath, input, overwrite = true)
+    }
+    val localFile = fileAccess.copyToLocal(containerPath)
+
+    UploadedWorkspaceFile(
+        fileName = fileName,
+        containerPath = containerPath,
+        localPath = localFile.absolutePath,
+        mimeType = "application/vnd.android.package-archive",
+        sizeBytes = sizeBytes,
+        image = null
+    )
+}

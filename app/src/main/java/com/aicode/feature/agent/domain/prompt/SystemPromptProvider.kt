@@ -51,9 +51,12 @@ class SystemPromptProvider @Inject constructor(
         // 每次都重新读盘：未编辑时字符串一致，KV Cache 照常命中；编辑后立即生效，无需重启。
         // 技能/记忆等运行期内容由末尾的 99-runtime-context.md 片段用 {{AICODE_*}} 变量承载。
         override fun build(ctx: AgentContext): String {
-            val rules = promptFragmentCatalog.renderStatic(ctx.projectRoot)
-            // 当前角色的身份放在规则最前：身份由用户在设置里管理，不再固定取 00-identity。
+            // 当前角色的身份放在规则最前；角色存在时跳过 00-identity 片段，避免身份注入两遍。
             val identity = runCatching { roleRepository.current().identity }.getOrDefault("").trim()
+            val rules = promptFragmentCatalog.renderStatic(
+                ctx.projectRoot,
+                skipNumber = if (identity.isEmpty()) null else IDENTITY_FRAGMENT_NUMBER
+            )
             return if (identity.isEmpty()) rules else "$identity\n\n$rules"
         }
     }
@@ -479,6 +482,9 @@ class SystemPromptProvider @Inject constructor(
 
     private companion object {
         const val TAG = "SystemPromptProvider"
+
+        /** 内置身份片段的编号；角色身份生效时跳过它，避免注入两遍。 */
+        const val IDENTITY_FRAGMENT_NUMBER = 0
         const val AGENTS_FILE = "AGENTS.md"
         const val CLAUDE_FILE = "CLAUDE.md"
         const val SUBAGENT_BASE_FILE = "agent/subagent-base.md"

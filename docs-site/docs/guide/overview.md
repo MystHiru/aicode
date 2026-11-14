@@ -42,8 +42,9 @@
 | 子代理 | 派生独立会话并行执行任务，可在设置内新建、编辑与启停，支持自定义模型与工具集（1.11.0 起）→ [文档](/guide/subagent) |
 | 插件 | 导入 `.zip` 插件包，一次为 AI 增加若干技能和子代理，统一启停、授权与卸载（预览功能）→ [文档](/guide/plugins) |
 | Shizuku 工具 | AI 的 `Shizuku` 工具：用 Shizuku 执行系统命令（1.12.0 起）→ [文档](/guide/shizuku) |
-| 自定义提示词 | 覆盖与定制 AI 系统的提示词片段 → [文档](/guide/custom-prompts) |
-| 记忆与项目规则 | 跨会话长期记忆，以及 AGENTS.md / CLAUDE.md 项目规则 → [文档](/guide/memory) |
+| 自定义提示词 | 覆盖与定制 AI 系统的提示词片段，可逐段开关 → [文档](/guide/custom-prompts) |
+| 角色 | 用不同身份提示词对话，可新建、切换与设置头像 → [文档](/guide/roles) |
+| 记忆与项目规则 | 跨会话长期记忆（可在设置里增删改），以及 AGENTS.md / CLAUDE.md 项目规则 → [文档](/guide/memory) |
 
 ### 运行环境
 

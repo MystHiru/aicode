@@ -361,6 +361,7 @@ class SettingsViewModel @Inject constructor(
     private val logSettingsRepository: LogSettingsRepository,
     private val themeSettingsRepository: ThemeSettingsRepository,
     private val backgroundSettingsRepository: BackgroundSettingsRepository,
+    private val petOverlaySettingsRepository: com.aicode.feature.pet.data.PetOverlaySettingsRepository,
     private val keepaliveSettingsRepository: KeepaliveSettingsRepository,
     private val screenOnSettingsRepository: ScreenOnSettingsRepository,
     private val agentSoundSettingsRepository: AgentSoundSettingsRepository,
@@ -615,6 +616,15 @@ class SettingsViewModel @Inject constructor(
 
     private val _dynamicColorEnabled = MutableStateFlow(false)
     val dynamicColorEnabled: StateFlow<Boolean> = _dynamicColorEnabled.asStateFlow()
+
+    private val _appStyle = MutableStateFlow("CLASSIC")
+    val appStyle: StateFlow<String> = _appStyle.asStateFlow()
+
+    private val _petOverlayEnabled = MutableStateFlow(false)
+    val petOverlayEnabled: StateFlow<Boolean> = _petOverlayEnabled.asStateFlow()
+
+    private val _petOverlaySizeDp = MutableStateFlow(com.aicode.feature.pet.data.PetOverlaySettingsRepository.DEFAULT_SIZE_DP)
+    val petOverlaySizeDp: StateFlow<Float> = _petOverlaySizeDp.asStateFlow()
 
     /** 全局自定义背景图文件路径（null=未设置），供设置弹窗展示与预览。 */
     private val _backgroundImagePath = MutableStateFlow<String?>(null)
@@ -1053,6 +1063,24 @@ class SettingsViewModel @Inject constructor(
             launch {
                 themeSettingsRepository.dynamicColorFlow.collectLatest {
                     _dynamicColorEnabled.value = it
+                }
+            }
+
+            launch {
+                petOverlaySettingsRepository.enabledFlow.collectLatest {
+                    _petOverlayEnabled.value = it
+                }
+            }
+
+            launch {
+                petOverlaySettingsRepository.sizeDpFlow.collectLatest {
+                    _petOverlaySizeDp.value = it
+                }
+            }
+
+            launch {
+                themeSettingsRepository.appStyleFlow.collectLatest {
+                    _appStyle.value = it
                 }
             }
 
@@ -2223,6 +2251,35 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             themeSettingsRepository.setDynamicColorEnabled(enabled)
         }
+    }
+
+    fun setAppStyle(style: String) {
+        viewModelScope.launch { themeSettingsRepository.setAppStyle(style) }
+    }
+
+    /** 开关悬浮窗：开启前需已有「在其他应用上层显示」权限，否则引导去授权。 */
+    fun setPetOverlayEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            if (enabled && !android.provider.Settings.canDrawOverlays(context)) {
+                context.startActivity(
+                    android.content.Intent(
+                        android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        android.net.Uri.parse("package:${context.packageName}")
+                    ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                return@launch
+            }
+            petOverlaySettingsRepository.setEnabled(enabled)
+            if (enabled) {
+                com.aicode.feature.pet.presentation.PetOverlayService.start(context)
+            } else {
+                com.aicode.feature.pet.presentation.PetOverlayService.stop(context)
+            }
+        }
+    }
+
+    fun setPetOverlaySizeDp(sizeDp: Float) {
+        viewModelScope.launch { petOverlaySettingsRepository.setSizeDp(sizeDp) }
     }
 
     /** 选择新背景图（拷贝到私有目录后替换）。 */

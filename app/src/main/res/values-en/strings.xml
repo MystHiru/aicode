@@ -2212,4 +2212,27 @@
     <string name="memory_scope_global">Global</string>
     <string name="memory_scope_project">Project</string>
     <string name="settings_memory">Memory</string>
+    <string name="settings_app_style">Interface style</string>
+    <string name="settings_app_style_desc">Classic keeps the current colors and corners; Muse uses MIUIX-style colors with larger corners</string>
+    <string name="settings_app_style_classic">Classic</string>
+    <string name="settings_app_style_muse">Muse</string>
+    <string name="pet_overlay_channel_desc">Keeps the overlay running</string>
+    <string name="pet_overlay_channel_name">Overlay</string>
+    <string name="pet_overlay_notification_title">Overlay running</string>
+    <string name="pet_overlay_enabled">Show overlay</string>
+    <string name="pet_overlay_size">Size</string>
+    <string name="pet_overlay_title">Overlay</string>
+    <string name="app_picker_title">Choose app</string>
+    <string name="app_picker_empty">No matching apps</string>
+    <string name="app_picker_search_hint">Search app name or package</string>
+    <string name="app_picker_clear">Clear</string>
+    <string name="inline_fullscreen">Fullscreen</string>
+    <string name="inline_fullscreen_play">Play fullscreen</string>
+    <string name="inline_preview">Preview</string>
+    <string name="inline_source">Source</string>
+    <string name="inline_play_failed">Cannot play: %1$s</string>
+    <string name="attachment_video_preparing">Preparing video...</string>
+    <string name="attachment_video_failed">Cannot read video file: %1$s</string>
+    <string name="attachment_video_failed_unknown">unknown reason</string>
+    <string name="app_picker_sheet_title">Choose app</string>
 </resources>

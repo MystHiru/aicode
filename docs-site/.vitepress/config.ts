@@ -152,6 +152,7 @@ export default defineConfig({
             { text: '插件', link: '/guide/plugins' },
             { text: 'Shizuku 工具', link: '/guide/shizuku' },
             { text: '自定义提示词', link: '/guide/custom-prompts' },
+            { text: '角色', link: '/guide/roles' },
             { text: '记忆与项目规则', link: '/guide/memory' }
           ]
         },

@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Android 16 实时通知（Live Updates）：声明后通知才可能被系统提升到状态栏/锁屏。API 36 引入，低版本忽略。 -->
@@ -74,6 +76,17 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- 可选悬浮宠物：默认关闭，开启后以前台服务在其他应用上层显示。 -->
+        <service
+            android:name=".feature.pet.presentation.PetOverlayService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="桌面悬浮图标，在其他应用上层显示" />
+        </service>
 
         <!-- Shizuku：用于以 adb shell 身份执行命令（UserService）。
              permission 声明为 INTERACT_ACROSS_USERS_FULL 是官方要求，防止普通应用访问该 provider。 -->

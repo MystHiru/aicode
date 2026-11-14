@@ -170,6 +170,19 @@ data class AgentAttachment(
     val isImage: Boolean
 )
 
+private val VIDEO_EXTENSIONS = listOf(".mp4", ".webm", ".mkv", ".mov", ".m4v", ".3gp")
+private val HTML_EXTENSIONS = listOf(".html", ".htm")
+
+/** 视频：MIME 优先，缺失时退回扩展名。 */
+val AgentAttachment.isVideo: Boolean
+    get() = mimeType.startsWith("video/") ||
+        VIDEO_EXTENSIONS.any { fileName.endsWith(it, ignoreCase = true) }
+
+/** 有可渲染的 HTML 内容。 */
+val AgentAttachment.isHtml: Boolean
+    get() = mimeType.equals("text/html", ignoreCase = true) ||
+        HTML_EXTENSIONS.any { fileName.endsWith(it, ignoreCase = true) }
+
 enum class MessageRole {
     USER, ASSISTANT, TOOL
 }

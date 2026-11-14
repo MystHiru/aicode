@@ -121,6 +121,9 @@ internal fun formatTokenCount(tokens: Long): String = when {
     else -> tokens.toString()
 }
 
+/** 这些语言的代码块就地渲染为网页，而不是高亮源码。 */
+private val HTML_LANGUAGES = setOf("html", "htm")
+
 @Composable
 internal fun MarkdownContent(
     text: String,
@@ -292,7 +295,16 @@ internal fun MarkdownContent(
                         content = it.content,
                         node = it.node,
                     ) { code, language, style ->
-                        SafeMarkdownHighlightedCode(code, language, style, highlightsBuilder, showHeader = true)
+                        // HTML 代码块就地渲染成页面：看效果比读源码直观，仍可切回源码或全屏。
+                        if (language?.trim()?.lowercase() in HTML_LANGUAGES) {
+                            var fullscreen by remember(code) { mutableStateOf(false) }
+                            InlineHtmlView(html = code, onFullscreen = { fullscreen = true })
+                            if (fullscreen) {
+                                FullscreenHtmlDialog(html = code, onDismiss = { fullscreen = false })
+                            }
+                        } else {
+                            SafeMarkdownHighlightedCode(code, language, style, highlightsBuilder, showHeader = true)
+                        }
                     }
                 },
                 // 库默认 maxLines=1 + Ellipsis，单元格长文会被截断；这里放开为完整多行显示。

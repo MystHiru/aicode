@@ -425,6 +425,14 @@ internal fun ToolMessageBody(
             Spacer(Modifier.height(Spacing.sm))
             notifications.forEach { ToolNotificationRow(it) }
         }
+        // browser 打开网页后直接在聊天里渲染该页：AI 打开视频站点就能就地播放。
+        if (!running && message.toolName == "browser") {
+            val pageUrl = remember(message.toolArgs) { extractBrowserUrl(message.toolArgs) }
+            if (pageUrl != null) {
+                Spacer(Modifier.height(Spacing.xs))
+                InlineWebCard(url = pageUrl, title = null, userAgent = LocalBrowserUserAgent.current)
+            }
+        }
         // 文件列表：工具结束后常显在消息底部，一行一个文件，点击用系统 app 打开。
         if (!running && message.attachments.isNotEmpty()) {
             val opener = LocalAttachmentOpener.current
@@ -434,6 +442,18 @@ internal fun ToolMessageBody(
             )
         }
     }
+}
+
+/** 从 browser 工具的入参里取出要打开的网页地址；非导航动作返回 null。 */
+private fun extractBrowserUrl(toolArgs: String?): String? {
+    if (toolArgs.isNullOrBlank()) return null
+    val obj = runCatching {
+        kotlinx.serialization.json.Json.parseToJsonElement(toolArgs) as? kotlinx.serialization.json.JsonObject
+    }.getOrNull() ?: return null
+    val action = (obj["action"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+    if (action != null && action != "navigate" && action != "newTab") return null
+    val url = (obj["url"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+    return url?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
 }
 
 private data class ToolMessageMetadata(

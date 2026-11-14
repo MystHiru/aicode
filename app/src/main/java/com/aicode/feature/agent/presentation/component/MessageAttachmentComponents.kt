@@ -1,5 +1,11 @@
 package com.aicode.feature.agent.presentation.component
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.aicode.feature.agent.presentation.isHtml
+import com.aicode.feature.agent.presentation.isVideo
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
@@ -65,7 +71,9 @@ private val AttachmentThumbSize = 44.dp
 @Composable
 internal fun MessageAttachmentList(
     attachments: List<AgentAttachment>,
-    onClick: ((AgentAttachment) -> Unit)? = null
+    onClick: ((AgentAttachment) -> Unit)? = null,
+    /** 用户自己发出的附件：只给文件行，不就地展开播放器与页面渲染。 */
+    compact: Boolean = false
 ) {
     Column(
         modifier = Modifier
@@ -74,7 +82,12 @@ internal fun MessageAttachmentList(
         verticalArrangement = Arrangement.spacedBy(Spacing.xs)
     ) {
         attachments.forEach { attachment ->
-            MessageAttachmentRow(attachment = attachment, onClick = onClick)
+            when {
+                compact -> MessageAttachmentRow(attachment = attachment, onClick = onClick)
+                attachment.isVideo -> VideoClip(attachment)
+                attachment.isHtml -> HtmlClip(attachment)
+                else -> MessageAttachmentRow(attachment = attachment, onClick = onClick)
+            }
         }
     }
 }
@@ -220,6 +233,9 @@ fun interface AttachmentOpener {
 
 internal val LocalAttachmentOpener = staticCompositionLocalOf<AttachmentOpener> { AttachmentOpener { } }
 
+/** 附件读取用的 FileAccessProvider：聊天区由上层提供，缺省时内联渲染降级成文件行。 */
+internal val LocalAttachmentFileAccess = staticCompositionLocalOf<FileAccessProvider?> { null }
+
 /**
  * 用系统对应 app 打开附件文件（FileProvider 授权 URI）。
  *
@@ -311,4 +327,134 @@ private fun isApk(attachment: AgentAttachment): Boolean {
     if (attachment.mimeType.equals("application/vnd.android.package-archive", ignoreCase = true)) return true
     val name = attachment.fileName.lowercase()
     return name.endsWith(".apk") || name.endsWith(".apks") || name.endsWith(".xapk")
+}
+
+@Composable
+private fun VideoClip(attachment: AgentAttachment) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val fileAccess = LocalAttachmentFileAccess.current
+    var fullscreenUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var preparing by remember(attachment.localPath) { mutableStateOf(true) }
+    var loadError by remember(attachment.localPath) { mutableStateOf<String?>(null) }
+
+    val mediaUri by produceState<android.net.Uri?>(
+        initialValue = null,
+        attachment.localPath,
+        attachment.containerPath,
+        fileAccess
+    ) {
+        value = if (fileAccess == null) null else withContext(Dispatchers.IO) {
+            runCatching {
+                val dir = File(context.cacheDir, "media-preview").apply { mkdirs() }
+                val stamp = attachment.sizeBytes.toString() + "-" + attachment.fileName.hashCode()
+                val target = File(dir, stamp + "-" + attachment.fileName.ifBlank { "clip.mp4" })
+                if (!target.isFile || target.length() == 0L) {
+                    // 优先 copyToLocal：远程模式走 SFTP 直接落盘，不受 readBytes 的 8MB 上限约束；
+                    // 视频几乎都超过那个上限，用 readBytes 会让远程视频直接失败。
+                    val copied = runCatching { fileAccess.copyToLocal(attachment.containerPath) }
+                        .getOrNull()
+                        ?.takeIf { it.isFile && it.length() > 0L }
+                    if (copied != null) {
+                        copied.inputStream().use { input ->
+                            target.outputStream().use { output -> input.copyTo(output) }
+                        }
+                    } else {
+                        // localPath 是 sendFile 落库时的宿主路径，历史消息里可能为空或已失效。
+                        val bytes = runCatching { fileAccess.readBytes(attachment.localPath) }
+                            .getOrNull()
+                            ?.takeIf { it.isNotEmpty() }
+                            ?: fileAccess.readBytes(attachment.containerPath)
+                        require(bytes.isNotEmpty()) { "video is empty" }
+                        target.writeBytes(bytes)
+                    }
+                }
+                android.net.Uri.fromFile(target)
+            }.onFailure { loadError = it.message ?: it.javaClass.simpleName }.getOrNull()
+        }
+        preparing = false
+    }
+
+    val shown = mediaUri
+    if (shown == null) {
+        // 还在准备 → 占位；准备失败 → 说明原因。直接回退成文件行会让人以为功能没生效。
+        if (preparing) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(120.dp)
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(chatMutedSurfaceColor()),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = stringResource(R.string.attachment_video_preparing),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            MessageAttachmentRow(attachment = attachment, onClick = null)
+            Text(
+                text = stringResource(R.string.attachment_video_failed, loadError ?: stringResource(R.string.attachment_video_failed_unknown)),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(start = Spacing.sm, top = 2.dp)
+            )
+        }
+    } else {
+        InlineVideoPlayer(
+            mediaUri = shown,
+            modifier = Modifier.padding(top = Spacing.xs),
+            onFullscreen = { fullscreenUri = shown }
+        )
+    }
+
+    fullscreenUri?.let { target ->
+        FullscreenVideoDialog(mediaUri = target, onDismiss = { fullscreenUri = null })
+    }
+}
+
+/** HTML 附件：内联 WebView 渲染，可切源码、可全屏。 */
+@Composable
+private fun HtmlClip(attachment: AgentAttachment) {
+    val fileAccess = LocalAttachmentFileAccess.current
+    var fullscreen by remember { mutableStateOf(false) }
+
+    val html by produceState<String?>(
+        initialValue = null,
+        attachment.containerPath,
+        fileAccess
+    ) {
+        value = if (fileAccess == null) null else withContext(Dispatchers.IO) {
+            // 先 copyToLocal 再读：远程模式下 readFile 有 8MB 上限，
+            // 带内嵌资源的页面很容易超，落到本地临时文件再读才稳。
+            runCatching {
+                fileAccess.copyToLocal(attachment.containerPath).readText()
+            }.getOrElse {
+                runCatching {
+                    fileAccess.readFile(attachment.containerPath)
+                }.getOrElse {
+                    // 容器路径读不到时退回宿主本地路径（历史消息可能只剩本地副本）。
+                    runCatching {
+                        fileAccess.copyToLocal(attachment.localPath).readText()
+                    }.getOrNull()
+                }
+            }
+        }
+    }
+
+    val content = html
+    if (content == null) {
+        MessageAttachmentRow(attachment = attachment, onClick = null)
+    } else {
+        InlineHtmlView(
+            html = content,
+            modifier = Modifier.padding(top = Spacing.xs),
+            onFullscreen = { fullscreen = true }
+        )
+    }
+
+    if (fullscreen && content != null) {
+        FullscreenHtmlDialog(html = content, onDismiss = { fullscreen = false })
+    }
 }

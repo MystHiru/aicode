@@ -329,6 +329,10 @@ dependencies {
     // HTML 解析与清洗 (用于 WebFetchTool)
     implementation("org.jsoup:jsoup:1.18.1")
 
+    // 聊天内视频附件就地播放（ExoPlayer）
+    implementation("androidx.media3:media3-exoplayer:1.11.1")
+    implementation("androidx.media3:media3-ui:1.11.1")
+
     // 协程
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")

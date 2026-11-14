@@ -107,9 +107,15 @@ class PromptFragmentCatalog @Inject constructor(
     )
 
     /** 静态基线正文：所有生效片段去掉前导注释后按编号拼接。 */
-    fun renderStatic(projectRoot: String?): String =
+    /**
+     * 渲染静态规则。
+     *
+     * [skipNumber] 用于排除已被其他渠道注入的片段：身份（00）现在由角色提供，
+     * 不排除就会在系统提示词里出现两遍。
+     */
+    fun renderStatic(projectRoot: String?, skipNumber: Int? = null): String =
         list(projectRoot)
-            .filter { it.number !in disabledNumbersCache }
+            .filter { it.number !in disabledNumbersCache && it.number != skipNumber }
             .mapNotNull { it.content.replace(LEADING_COMMENT, "").trim().takeIf { text -> text.isNotEmpty() } }
             .joinToString("\n\n")
 

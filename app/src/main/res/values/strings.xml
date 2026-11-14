@@ -2211,4 +2211,27 @@
     <string name="memory_scope_global">全局</string>
     <string name="memory_scope_project">项目</string>
     <string name="settings_memory">记忆</string>
+    <string name="settings_app_style">界面风格</string>
+    <string name="settings_app_style_desc">经典保持现有配色与圆角；Muse 使用 MIUIX 风格配色与更大圆角</string>
+    <string name="settings_app_style_classic">经典</string>
+    <string name="settings_app_style_muse">Muse</string>
+    <string name="pet_overlay_channel_desc">保持悬浮窗运行</string>
+    <string name="pet_overlay_channel_name">悬浮窗</string>
+    <string name="pet_overlay_notification_title">悬浮窗运行中</string>
+    <string name="pet_overlay_enabled">显示悬浮窗</string>
+    <string name="pet_overlay_size">大小</string>
+    <string name="pet_overlay_title">悬浮窗</string>
+    <string name="app_picker_title">选择应用</string>
+    <string name="app_picker_empty">没有匹配的应用</string>
+    <string name="app_picker_search_hint">搜索应用名或包名</string>
+    <string name="app_picker_clear">清空</string>
+    <string name="inline_fullscreen">全屏</string>
+    <string name="inline_fullscreen_play">全屏播放</string>
+    <string name="inline_preview">预览</string>
+    <string name="inline_source">源码</string>
+    <string name="inline_play_failed">无法播放：%1$s</string>
+    <string name="attachment_video_preparing">正在准备视频…</string>
+    <string name="attachment_video_failed">无法读取视频文件：%1$s</string>
+    <string name="attachment_video_failed_unknown">未知原因</string>
+    <string name="app_picker_sheet_title">选择应用</string>
 </resources>

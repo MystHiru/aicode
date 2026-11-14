@@ -39,6 +39,7 @@ class ThemeSettingsRepository @Inject constructor(
         val DARK_THEME_KEY = booleanPreferencesKey("dark_theme_enabled")
         val THEME_PRESET_KEY = stringPreferencesKey("theme_preset_id")
         val DYNAMIC_COLOR_KEY = booleanPreferencesKey("dynamic_color_enabled")
+        val APP_STYLE_KEY = stringPreferencesKey("app_style")
     }
 
     val themeModeFlow: Flow<AppThemeMode> = context.themeDataStore.data.map { prefs ->
@@ -66,6 +67,14 @@ class ThemeSettingsRepository @Inject constructor(
         context.themeDataStore.edit { it[DYNAMIC_COLOR_KEY] = enabled }
     }
 
+    /** 界面风格（经典 / Muse），未设置时为经典。 */
+    val appStyleFlow: Flow<String> =
+        context.themeDataStore.data.map { it[APP_STYLE_KEY] ?: "CLASSIC" }
+
+    suspend fun setAppStyle(style: String) {
+        context.themeDataStore.edit { it[APP_STYLE_KEY] = style }
+    }
+
     /** 备份快照：返回当前持久化的主题模式名（未设置时为 null，导入时回退默认）。 */
     suspend fun snapshot(): String? = themeModeFlow.first().name
 
@@ -81,6 +90,8 @@ class ThemeSettingsRepository @Inject constructor(
 
     /** 备份快照：莫奈取色开关。 */
     suspend fun dynamicColorSnapshot(): Boolean = dynamicColorFlow.first()
+
+    suspend fun appStyleSnapshot(): String = appStyleFlow.first()
 
     /** 从备份还原配色主题与莫奈开关；id 为 null 时清除键回退默认。 */
     suspend fun restoreColors(presetId: String?, dynamicColor: Boolean) {

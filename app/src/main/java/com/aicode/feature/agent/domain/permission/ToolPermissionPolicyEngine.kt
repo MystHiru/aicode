@@ -26,8 +26,11 @@ import javax.inject.Singleton
  *      记 `git pull` 而非 `git`，使不同子命令各自独立授权）。
  * 非 shell 的 ASK 工具按整工具（pattern=`*`）匹配。
  *
- * [SHIZUKU_TOOL]（Shizuku）与 [ROOT_TOOL]（Root）按高危处理：无论内置白名单或已记忆规则，
- * 一律 ASK 且不可记忆；AUTO 模式也不自动放行（除非已开启「禁用安全拦截」或「宿主命令自动放行」）。
+ * [SHIZUKU_TOOL]（Shizuku）按高危处理：无论内置白名单或已记忆规则，一律 ASK 且不可记忆；
+ * AUTO 模式也不自动放行（除非已开启「禁用安全拦截」或「宿主命令自动放行」）。
+ *
+ * [ROOT_TOOL]（Root）不在这里强制确认：它自带按「真实路径 + 操作类型」的授权网关，
+ * 工具层只做普通 ASK（可记忆），真正的逐条审批由网关负责，避免两次弹窗。
  */
 @Singleton
 class ToolPermissionPolicyEngine @Inject constructor(
@@ -38,12 +41,12 @@ class ToolPermissionPolicyEngine @Inject constructor(
 ) {
     private companion object {
         /** 以 `command` 参数承载 shell 命令、按命令前缀做指令级匹配的工具。 */
-        val SHELL_TOOLS = setOf("Bash", SHIZUKU_TOOL, ROOT_TOOL)
+        val SHELL_TOOLS = setOf("Bash", SHIZUKU_TOOL)
 
         /** Shizuku 工具：以 adb shell 身份直接操作宿主 Android 系统，按高危处理（一律弹窗、不可记忆）。 */
         const val SHIZUKU_TOOL = "Shizuku"
 
-        /** Root 工具：以 su 身份操作宿主系统，与 Shizuku 同等按高危处理。 */
+        /** Root 工具：审批在 RootCommandGateway 内部完成，工具层不再重复确认。 */
         const val ROOT_TOOL = "Root"
 
         /**
@@ -72,8 +75,8 @@ class ToolPermissionPolicyEngine @Inject constructor(
          */
         const val BROWSER_TOOL = "browser"
 
-        /** 直接操作宿主系统的工具，权限评估与「宿主命令自动放行」开关共用。 */
-        val HOST_TOOLS = setOf(SHIZUKU_TOOL, ROOT_TOOL)
+        /** 直接操作宿主系统且无自带审批的工具；「宿主命令自动放行」开关作用于它。 */
+        val HOST_TOOLS = setOf(SHIZUKU_TOOL)
 
         /** 「工作区内写操作自动放行」作用的文件写入工具。 */
         val WORKSPACE_WRITE_TOOLS = setOf("writeFile", "editFile")

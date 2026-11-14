@@ -94,7 +94,8 @@ class BackupManagerImpl @Inject constructor(
     private val visionModelSettingsRepository: VisionModelSettingsRepository,
     private val compactionModelSettingsRepository: CompactionModelSettingsRepository,
     private val syncSettingsRepository: SyncSettingsRepository,
-    private val workspaceRepository: WorkspaceRepository
+    private val workspaceRepository: WorkspaceRepository,
+    private val petOverlaySettingsRepository: com.aicode.feature.pet.data.PetOverlaySettingsRepository
 ) : BackupManager {
 
     private val json = Json {
@@ -351,6 +352,8 @@ class BackupManagerImpl @Inject constructor(
         themeMode = if (options.appSettings) themeSettingsRepository.snapshot() else null,
         themePresetId = if (options.appSettings) themeSettingsRepository.presetSnapshot() else null,
         dynamicColorEnabled = if (options.appSettings) themeSettingsRepository.dynamicColorSnapshot() else false,
+        appStyle = if (options.appSettings) themeSettingsRepository.appStyleSnapshot() else null,
+        petOverlayEnabled = if (options.appSettings) petOverlaySettingsRepository.enabledSnapshot() else null,
         keepaliveEnabled = if (options.appSettings) keepaliveSettingsRepository.snapshot() else false,
         liveNotificationEnabled = if (options.appSettings) liveNotificationSettingsRepository.snapshot() else false,
         approvalNotificationEnabled = if (options.appSettings) approvalNotificationSettingsRepository.snapshot() else false,
@@ -644,6 +647,8 @@ class BackupManagerImpl @Inject constructor(
         if (meta.includesAppSettings) {
             meta.themeMode?.let { themeSettingsRepository.restore(it) }
             themeSettingsRepository.restoreColors(meta.themePresetId, meta.dynamicColorEnabled)
+            meta.appStyle?.let { themeSettingsRepository.setAppStyle(it) }
+            meta.petOverlayEnabled?.let { petOverlaySettingsRepository.setEnabled(it) }
             keepaliveSettingsRepository.restore(meta.keepaliveEnabled)
             liveNotificationSettingsRepository.restore(meta.liveNotificationEnabled)
             approvalNotificationSettingsRepository.restore(meta.approvalNotificationEnabled)

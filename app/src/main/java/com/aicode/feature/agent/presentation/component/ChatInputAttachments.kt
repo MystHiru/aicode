@@ -460,6 +460,7 @@ internal fun AttachmentSheet(
     onUploadFile: () -> Unit,
     onUploadImage: () -> Unit,
     onTakePhoto: () -> Unit,
+    onPickApp: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState()
@@ -493,6 +494,14 @@ internal fun AttachmentSheet(
                 enabled = canUploadImages,
                 onClick = onUploadImage
             )
+            if (onPickApp != null) {
+                AttachmentSheetItem(
+                    icon = FeatherIcons.Zap,
+                    title = stringResource(com.aicode.R.string.app_picker_sheet_title),
+                    enabled = true,
+                    onClick = onPickApp
+                )
+            }
             AttachmentSheetItem(
                 icon = FeatherIcons.Camera,
                 title = stringResource(com.aicode.R.string.chat_take_photo),

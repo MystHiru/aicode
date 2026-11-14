@@ -140,6 +140,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -157,6 +158,10 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var backgroundSettings: BackgroundSettingsRepository
+
+    /** 可选悬浮窗：冷启动时若已开启且已授权，补起前台服务。 */
+    @Inject
+    lateinit var petOverlaySettings: com.aicode.feature.pet.data.PetOverlaySettingsRepository
 
     /** 屏幕常亮开关：只在 App 前台约束屏幕，切后台由系统自动失效。 */
     @Inject
@@ -257,6 +262,7 @@ class MainActivity : ComponentActivity() {
             val themeMode by themeSettings.themeModeFlow.collectAsStateWithLifecycle(initialValue = AppThemeMode.AUTO)
             val themePresetId by themeSettings.themePresetIdFlow.collectAsStateWithLifecycle(initialValue = null)
             val dynamicColor by themeSettings.dynamicColorFlow.collectAsStateWithLifecycle(initialValue = false)
+            val appStyleName by themeSettings.appStyleFlow.collectAsStateWithLifecycle(initialValue = "CLASSIC")
             val systemDarkTheme = isSystemInDarkTheme()
             val darkTheme = when (themeMode) {
                 AppThemeMode.AUTO -> systemDarkTheme
@@ -277,7 +283,9 @@ class MainActivity : ComponentActivity() {
             AIEditorTheme(
                 darkTheme = darkTheme,
                 preset = AppThemePreset.findById(themePresetId),
-                dynamicColor = dynamicColor
+                dynamicColor = dynamicColor,
+                style = runCatching { com.aicode.core.theme.AppStyle.valueOf(appStyleName) }
+                    .getOrDefault(com.aicode.core.theme.AppStyle.CLASSIC)
             ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
@@ -333,6 +341,13 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             if (keepaliveSettings.isEnabled()) {
                 TerminalKeepaliveService.enablePersistent(this@MainActivity)
+            }
+        }
+
+        // 悬浮窗同理：开关开着且仍有悬浮权限时才拉起，服务内部会再校验一次。
+        lifecycleScope.launch {
+            if (petOverlaySettings.enabledFlow.first() && android.provider.Settings.canDrawOverlays(this@MainActivity)) {
+                com.aicode.feature.pet.presentation.PetOverlayService.start(this@MainActivity)
             }
         }
     }
