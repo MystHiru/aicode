@@ -103,6 +103,7 @@ import compose.icons.feathericons.Moon
 import compose.icons.feathericons.Plus
 import compose.icons.feathericons.RefreshCw
 import compose.icons.feathericons.Sliders
+import compose.icons.feathericons.Square
 import compose.icons.feathericons.Smartphone
 import compose.icons.feathericons.Sun
 import compose.icons.feathericons.Tablet
@@ -190,6 +191,7 @@ fun BrowserScreen(
                 embedded = embedded,
                 onNavigateBack = onNavigateBack,
                 onReload = { scope.launchBrowserOp { browserManager.reload() } },
+                onStop = { browserManager.stopLoading() },
                 onNavigate = { url ->
                     isEditingAddress = false
                     scope.launchBrowserOp { browserManager.navigate(url) }
@@ -198,8 +200,8 @@ fun BrowserScreen(
         },
         bottomBar = {
             BrowserBottomBar(
-                canGoBack = activeTab?.loading == false,
-                canGoForward = activeTab?.loading == false,
+                canGoBack = activeTab?.canGoBack == true,
+                canGoForward = activeTab?.canGoForward == true,
                 tabsCount = state.tabs.size,
                 hasActiveSettings = state.nightMode || state.devToolsOpen || state.userAgentPreset != BrowserUserAgentPreset.DEFAULT,
                 embedded = embedded,
@@ -434,6 +436,7 @@ private fun BrowserTopBar(
     embedded: Boolean,
     onNavigateBack: () -> Unit,
     onReload: () -> Unit,
+    onStop: () -> Unit,
     onNavigate: (String) -> Unit
 ) {
     var addressInput by rememberSaveable(stateSaver = TextFieldValue.Saver) {
@@ -604,15 +607,14 @@ private fun BrowserTopBar(
 
                 // 右侧：刷新按钮
                 IconButton(
-                    onClick = onReload,
-                    enabled = !loading,
+                    onClick = if (loading) onStop else onReload,
                     modifier = Modifier.size(40.dp)
                 ) {
                     if (loading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.primary
+                        Icon(
+                            FeatherIcons.Square,
+                            contentDescription = stringResource(R.string.browser_stop),
+                            modifier = Modifier.size(16.dp)
                         )
                     } else {
                         Icon(

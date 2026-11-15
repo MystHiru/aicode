@@ -167,8 +167,6 @@ private fun InlineWebView(
                     useWideViewPort = true
                     allowFileAccess = false
                     allowContentAccess = false
-                    setAllowFileAccessFromFileURLs(false)
-                    setAllowUniversalAccessFromFileURLs(false)
                     builtInZoomControls = false
                     displayZoomControls = false
                 }

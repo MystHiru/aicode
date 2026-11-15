@@ -158,8 +158,6 @@ private fun HtmlWebView(html: String) {
                     useWideViewPort = true
                     allowFileAccess = false
                     allowContentAccess = false
-                    setAllowFileAccessFromFileURLs(false)
-                    setAllowUniversalAccessFromFileURLs(false)
                     mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                     builtInZoomControls = false
                     displayZoomControls = false

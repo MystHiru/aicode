@@ -114,6 +114,8 @@ data class BrowserTabState(
     val url: String = "",
     val title: String = "",
     val loading: Boolean = false,
+    val canGoBack: Boolean = false,
+    val canGoForward: Boolean = false,
     val error: String? = null,
     val devToolsOpen: Boolean = false
 )
@@ -200,6 +202,8 @@ class BrowserManager @Inject constructor(
         var url: String = "",
         var title: String = "",
         var loading: Boolean = false,
+        var canGoBack: Boolean = false,
+        var canGoForward: Boolean = false,
         var error: String? = null,
         var devToolsOpen: Boolean = false,
         val consoleLogs: ArrayDeque<BrowserConsoleEntry> = ArrayDeque(),
@@ -214,6 +218,8 @@ class BrowserManager @Inject constructor(
             url = url,
             title = title,
             loading = loading,
+            canGoBack = canGoBack,
+            canGoForward = canGoForward,
             error = error,
             devToolsOpen = devToolsOpen
         )
@@ -357,6 +363,7 @@ class BrowserManager @Inject constructor(
                 tab.url = url.orEmpty()
                 tab.title = ""
                 tab.error = null
+                syncHistory(tab, view)
                 view?.setBackgroundColor(if (nightMode) NIGHT_BG_COLOR else Color.WHITE)
                 if (view != null && nightMode) applyNightModeTo(view)
                 publishState()
@@ -366,6 +373,7 @@ class BrowserManager @Inject constructor(
                 val tab = tabHolderRef() ?: return
                 tab.loading = false
                 tab.url = url.orEmpty()
+                syncHistory(tab, view)
                 if (view != null && nightMode) applyNightModeTo(view)
                 if (view != null && tab.devToolsOpen) injectEruda(view, autoShow = false)
                 val finish = {
@@ -382,6 +390,13 @@ class BrowserManager @Inject constructor(
                         finish()
                     }
                 }
+            }
+
+            override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                val tab = tabHolderRef() ?: return
+                if (!url.isNullOrBlank()) tab.url = url
+                syncHistory(tab, view)
+                publishState()
             }
 
             override fun onReceivedError(
@@ -524,6 +539,11 @@ class BrowserManager @Inject constructor(
         updateContainerView()
         FileLogger.i(TAG, "Tab created: $id (initialUrl=$initialUrl)")
         return tab
+    }
+
+    private fun syncHistory(tab: TabHolder, view: WebView?) {
+        tab.canGoBack = view?.canGoBack() == true
+        tab.canGoForward = view?.canGoForward() == true
     }
 
     private fun publishState() {
@@ -1793,6 +1813,17 @@ class BrowserManager @Inject constructor(
         tab.loadDeferred = deferred
         tab.webView.reload()
         withTimeout(NAVIGATE_TIMEOUT_MS) { deferred.await() }.getOrThrow()
+    }
+
+    /** 停掉当前页未完成的加载。已经发出的请求会被 WebView 取消，不抛给界面。 */
+    fun stopLoading(tabId: String? = null) {
+        val tab = findTab(tabId ?: activeTabId) ?: return
+        tab.webView.stopLoading()
+        tab.loading = false
+        tab.loadDeferred?.complete(Result.success(tab.url))
+        tab.loadDeferred = null
+        syncHistory(tab, tab.webView)
+        publishState()
     }
 
     fun getUrl(tabId: String? = null): String = findTab(tabId ?: activeTabId)?.url ?: _state.value.url
