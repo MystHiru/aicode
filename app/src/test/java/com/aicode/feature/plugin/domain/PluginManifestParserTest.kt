@@ -2,6 +2,7 @@ package com.aicode.feature.plugin.domain
 
 import com.aicode.feature.plugin.PluginFixtures
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -100,6 +101,52 @@ class PluginManifestParserTest {
         assertEquals(1, m.providers.size)
         assertEquals("gateway", m.providers.single().id)
         assertEquals("http://127.0.0.1:18080/v1", m.providers.single().baseUrl)
+    }
+
+    @Test
+    fun modelAccessContribution_isParsed() {
+        val json = """
+            {
+              "manifestVersion": 1,
+              "id": "demo.team",
+              "name": "Team Chat",
+              "version": "1.0.0",
+              "publisher": "demo",
+              "repository": "https://example.com/demo/team",
+              "description": "Team chat demo",
+              "license": "MIT",
+              "engines": {"pluginApi": "^1.0.0"},
+              "contributes": {
+                "modelAccess": {"purpose": "在团队群聊中轮流调用多个模型"}
+              }
+            }
+        """.trimIndent()
+
+        val m = success(json)
+        assertEquals("在团队群聊中轮流调用多个模型", m.modelAccess?.purpose)
+        assertEquals(1, m.contributionCount)
+    }
+
+    @Test
+    fun modelAccessRejectsUnknownFields() {
+        val json = """
+            {
+              "manifestVersion": 1,
+              "id": "demo.team",
+              "name": "Team Chat",
+              "version": "1.0.0",
+              "publisher": "demo",
+              "repository": "https://example.com/demo/team",
+              "description": "Team chat demo",
+              "license": "MIT",
+              "engines": {"pluginApi": "^1.0.0"},
+              "contributes": {
+                "modelAccess": {"purpose": "团队群聊", "providers": ["openai"]}
+              }
+            }
+        """.trimIndent()
+
+        assertRejected(json, PluginErrorCode.UNSUPPORTED_FIELD, "contributes.modelAccess.providers")
     }
 
     @Test
@@ -384,6 +431,38 @@ class PluginManifestParserTest {
     }
 
     @Test
+    fun pluginLifecycleHooks_areParsed() {
+        val manifest = success(
+            hooksManifest(
+                hooksBlock = """{"id": "on-installed", "event": "plugin.installed", "handler": "hooks.onInstalled"},
+                    {"id": "on-uninstalled", "event": "plugin.uninstalled", "handler": "hooks.onUninstalled"},
+                    {"id": "on-enabled", "event": "plugin.enabled", "handler": "hooks.onEnabled"},
+                    {"id": "on-disabled", "event": "plugin.disabled", "handler": "hooks.onDisabled"}"""
+            )
+        )
+        assertEquals(
+            listOf(
+                PluginHookRef("on-installed", "plugin.installed", "hooks.onInstalled", PluginHookModes.OBSERVE),
+                PluginHookRef("on-uninstalled", "plugin.uninstalled", "hooks.onUninstalled", PluginHookModes.OBSERVE),
+                PluginHookRef("on-enabled", "plugin.enabled", "hooks.onEnabled", PluginHookModes.OBSERVE),
+                PluginHookRef("on-disabled", "plugin.disabled", "hooks.onDisabled", PluginHookModes.OBSERVE)
+            ),
+            manifest.hooks
+        )
+    }
+
+    @Test
+    fun pluginLifecycleHooksRequireObserveMode() {
+        assertRejected(
+            hooksManifest(
+                hooksBlock = """{"id": "on-installed", "event": "plugin.installed", "handler": "hooks.onInstalled", "mode": "transform"}"""
+            ),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.hooks[0].mode"
+        )
+    }
+
+    @Test
     fun appStartedRequiresObserveMode() {
         assertRejected(
             hooksManifest(
@@ -533,6 +612,67 @@ class PluginManifestParserTest {
     }
 
     @Test
+    fun workspaceToolsContribution_isParsed() {
+        val tool = success(workspaceToolsManifest()).workspaceTools.single()
+        assertEquals("build-apk", tool.id)
+        assertEquals("构建 APK", tool.title.resolve("zh-CN"))
+        assertEquals("hammer", tool.icon)
+        assertEquals("构建", tool.category)
+        assertEquals("pages/build-apk.html", tool.pageFile)
+    }
+
+    @Test
+    fun workspaceToolLabels_useDefaultsAndTrim() {
+        val trimmed = success(
+            workspaceToolsManifest("\"title\": \"构建 APK\", \"icon\": \" hammer \", \"category\": \" 构建 \"")
+        ).workspaceTools.single()
+        assertEquals("hammer", trimmed.icon)
+        assertEquals("构建", trimmed.category)
+
+        val defaults = success(workspaceToolsManifest("\"title\": \"构建 APK\"")).workspaceTools.single()
+        assertEquals("play", defaults.icon)
+        assertEquals("通用", defaults.category)
+    }
+
+    @Test
+    fun workspaceToolUnknownField_isRejected() {
+        assertRejected(
+            workspaceToolsManifest("\"title\": \"构建 APK\", \"handler\": \"tools.build\""),
+            PluginErrorCode.UNSUPPORTED_FIELD,
+            "contributes.workspaceTools[0].handler"
+        )
+    }
+
+    @Test
+    fun workspaceToolLabels_rejectOversizeAndControlChars() {
+        assertRejected(
+            workspaceToolsManifest("\"title\": \"构建 APK\", \"icon\": \"${"x".repeat(33)}\""),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.workspaceTools[0].icon"
+        )
+        assertRejected(
+            workspaceToolsManifest("\"title\": \"构建 APK\", \"category\": \"${"类".repeat(33)}\""),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.workspaceTools[0].category"
+        )
+        assertRejected(
+            workspaceToolsManifest("\"title\": \"构建 APK\", \"icon\": \"ha\\u0001mmer\""),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.workspaceTools[0].icon"
+        )
+        assertRejected(
+            workspaceToolsManifest("\"title\": \"构建 APK\", \"category\": \"构\\u0001建\""),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.workspaceTools[0].category"
+        )
+        assertRejected(
+            workspaceToolsManifest("\"title\": \"构建 APK\", \"icon\": \"  \""),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.workspaceTools[0].icon"
+        )
+    }
+
+    @Test
     fun pathHelper_matchesSpec() {
         assertTrue(PluginManifestParser.isSafeRelativePath("skills/a/SKILL.md"))
         assertTrue(!PluginManifestParser.isSafeRelativePath(""))
@@ -563,6 +703,76 @@ class PluginManifestParserTest {
         }
     """.trimIndent()
 
+    private fun backupHooksManifest(
+        backupBlock: String = "\"backup\": {\"purpose\": \"把我自己的数据也备份一份\"},",
+        hooksBlock: String = """{"id": "exported", "event": "backup.export.before", "handler": "hooks.exported"}"""
+    ): String = """
+        {
+          "manifestVersion": 1,
+          "id": "community.backup-kit",
+          "name": "Backup Kit",
+          "version": "1.0.0",
+          "publisher": "community",
+          "repository": "https://example.com/community/backup-kit",
+          "description": "Backups",
+          "license": "MIT",
+          "engines": {"pluginApi": "^1.0.0"},
+          "runtime": {"type": "javascript", "entry": "dist/main.js"},
+          "contributes": {
+            $backupBlock
+            "hooks": [$hooksBlock]
+          }
+        }
+    """.trimIndent()
+
+    @Test
+    fun backupHooks_areParsedWithDeclaration() {
+        val m = success(backupHooksManifest())
+        assertEquals(PluginBackupRef("把我自己的数据也备份一份"), m.backup)
+        assertEquals(
+            listOf(PluginHookRef("exported", "backup.export.before", "hooks.exported", PluginHookModes.OBSERVE)),
+            m.hooks
+        )
+    }
+
+    @Test
+    fun backupHooks_requireDeclaration() {
+        assertRejected(
+            backupHooksManifest(backupBlock = ""),
+            PluginErrorCode.FIELD_MISSING,
+            "contributes.backup"
+        )
+    }
+
+    @Test
+    fun backupHooks_requireObserveMode() {
+        assertRejected(
+            backupHooksManifest(
+                hooksBlock = """{"id": "exported", "event": "backup.export.before", "handler": "hooks.exported", "mode": "transform"}"""
+            ),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.hooks[0].mode"
+        )
+    }
+
+    @Test
+    fun backupDeclaration_requiresPurpose() {
+        assertRejected(
+            backupHooksManifest(backupBlock = "\"backup\": {\"purpose\": \"\"},"),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.backup.purpose"
+        )
+    }
+
+    @Test
+    fun backupDeclaration_rejectsUnknownField() {
+        assertRejected(
+            backupHooksManifest(backupBlock = "\"backup\": {\"purpose\": \"备份\", \"path\": \"x\"},"),
+            PluginErrorCode.UNSUPPORTED_FIELD,
+            "contributes.backup.path"
+        )
+    }
+
     private fun mcpManifest(): String = """
         {
           "manifestVersion": 1,
@@ -577,6 +787,27 @@ class PluginManifestParserTest {
           "contributes": {
             "mcp": [
               {"id": "project-context", "file": "mcp/project-context.json"}
+            ]
+          }
+        }
+    """.trimIndent()
+
+    private fun workspaceToolsManifest(
+        toolBody: String = "\"title\": \"构建 APK\", \"icon\": \"hammer\", \"category\": \"构建\""
+    ): String = """
+        {
+          "manifestVersion": 1,
+          "id": "community.workspace-kit",
+          "name": "Workspace Kit",
+          "version": "1.0.0",
+          "publisher": "community",
+          "repository": "https://example.com/community/workspace-kit",
+          "description": "Workspace tools",
+          "license": "MIT",
+          "engines": {"pluginApi": "^1.0.0"},
+          "contributes": {
+            "workspaceTools": [
+              {"id": "build-apk", $toolBody, "pageFile": "pages/build-apk.html"}
             ]
           }
         }
@@ -606,7 +837,7 @@ class PluginManifestParserTest {
     """.trimIndent()
 
     private fun settingsManifest(
-        anchor: String = "settings.ai",
+        slot: String = "settings.ai",
         page: String = "ui/memory.html",
         pluginApi: String = "^1.0.0"
     ): String = """
@@ -621,45 +852,277 @@ class PluginManifestParserTest {
           "license": "MIT",
           "engines": {"pluginApi": "$pluginApi"},
           "contributes": {
-            "settingsPages": [
-              {"id": "memory", "title": "记忆", "anchor": "$anchor", "page": "$page"}
+            "uiEntries": [
+              {"id": "memory", "title": "记忆", "slot": "$slot", "page": "$page"}
             ]
           }
         }
     """.trimIndent()
 
     @Test
-    fun settingsPage_isParsedWithDefaultIcon() {
+    fun settingsEntry_isParsedWithDefaultIcon() {
         val m = success(settingsManifest())
-        assertEquals(listOf("memory"), m.settingsPages.map { it.id })
-        assertEquals("settings.ai", m.settingsPages.single().anchor)
-        assertEquals("ui/memory.html", m.settingsPages.single().page)
-        assertEquals("book", m.settingsPages.single().icon)
+        assertEquals(listOf("memory"), m.uiEntries.map { it.id })
+        assertEquals("settings.ai", m.uiEntries.single().slot)
+        assertEquals("ui/memory.html", m.uiEntries.single().page)
+        assertEquals("book", m.uiEntries.single().icon)
     }
 
     @Test
-    fun settingsPage_rejectsUnknownAnchor() {
+    fun uiEntries_acceptsDrawerAndHeaderSlots() {
+        assertEquals("drawer.footer", success(settingsManifest(slot = "drawer.footer")).uiEntries.single().slot)
+        assertEquals("chat.header.menu", success(settingsManifest(slot = "chat.header.menu")).uiEntries.single().slot)
+        assertEquals("chat.welcome", success(settingsManifest(slot = "chat.welcome")).uiEntries.single().slot)
+        assertEquals("chat.session.menu", success(settingsManifest(slot = "chat.session.menu")).uiEntries.single().slot)
+        assertEquals(
+            "files.tree.menu",
+            success(
+                entriesManifest(
+                    """{"id":"f","title":"文件动作","slot":"files.tree.menu","handler":"actions.file"}""",
+                    runtime = true
+                )
+            ).uiEntries.single().slot
+        )
+        assertEquals(
+            "editor.selection.menu",
+            success(
+                entriesManifest(
+                    """{"id":"e","title":"选区动作","slot":"editor.selection.menu","handler":"actions.selection"}""",
+                    runtime = true
+                )
+            ).uiEntries.single().slot
+        )
+    }
+
+    private fun entriesManifest(entries: String, runtime: Boolean = false): String {
+        val runtimeBlock = if (runtime) {
+            "\"runtime\": {\"type\": \"javascript\", \"entry\": \"dist/main.js\"},"
+        } else {
+            ""
+        }
+        return """
+            {
+              "manifestVersion": 1,
+              "id": "demo.entries",
+              "name": "Entries",
+              "version": "1.0.0",
+              "publisher": "demo",
+              "repository": "https://example.com/demo/entries",
+              "description": "Entries demo",
+              "license": "MIT",
+              "engines": {"pluginApi": "^1.0.0"},
+              $runtimeBlock
+              "contributes": {"uiEntries": [$entries]}
+            }
+        """.trimIndent()
+    }
+
+    @Test
+    fun uiEntries_parsesActionEntryWithRuntime() {
+        val m = success(
+            entriesManifest(
+                """{"id":"a","title":"同步","slot":"chat.session.menu","handler":"actions.sync","confirm":true}""",
+                runtime = true
+            )
+        )
+        val entry = m.uiEntries.single()
+        assertEquals(PluginUiEntryKind.ACTION, entry.kind)
+        assertEquals("actions.sync", entry.handler)
+        assertTrue(entry.confirm)
+    }
+
+    @Test
+    fun uiEntries_actionRequiresRuntime() {
         assertRejected(
-            settingsManifest(anchor = "settings.nowhere"),
-            PluginErrorCode.FIELD_INVALID,
-            "contributes.settingsPages[0].anchor"
+            entriesManifest("""{"id":"a","title":"同步","slot":"drawer.footer","handler":"actions.sync"}"""),
+            PluginErrorCode.FIELD_MISSING,
+            "runtime"
         )
     }
 
     @Test
-    fun settingsPage_rejectsNonHtmlPage() {
+    fun uiEntries_rejectsEntryWithoutKind() {
+        assertRejected(
+            entriesManifest("""{"id":"x","title":"X","slot":"chat.welcome"}"""),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.uiEntries[0]"
+        )
+    }
+
+    @Test
+    fun uiEntries_rejectsPageInActionOnlySlot() {
+        assertRejected(
+            entriesManifest("""{"id":"p","title":"页","slot":"files.tree.menu","page":"p.html"}"""),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.uiEntries[0].page"
+        )
+    }
+
+    private fun backupDataManifest(
+        entry: String,
+        backupBlock: String = "\"backup\": {\"purpose\": \"额外备份\"},",
+        hooksBlock: String = """{"id": "export", "event": "backup.export.before", "handler": "hooks.exportBefore"}"""
+    ): String = """
+        {
+          "manifestVersion": 1,
+          "id": "demo.backup-data",
+          "name": "Backup Data",
+          "version": "1.0.0",
+          "publisher": "demo",
+          "repository": "https://example.com/demo/backup-data",
+          "description": "Backup data demo",
+          "license": "MIT",
+          "engines": {"pluginApi": "^1.0.0"},
+          "runtime": {"type": "javascript", "entry": "dist/main.js"},
+          "contributes": {
+            $backupBlock
+            "hooks": [$hooksBlock],
+            "uiEntries": [$entry]
+          }
+        }
+    """.trimIndent()
+
+    @Test
+    fun uiEntries_acceptsBackupDataSlot() {
+        val m = success(
+            backupDataManifest(
+                """{"id":"extra","title":"记忆 / 技能","slot":"backup.data","icon":"package"}"""
+            )
+        )
+        val entry = m.uiEntries.single()
+        assertEquals(PluginUiSlots.BACKUP_DATA, entry.slot)
+        assertEquals(PluginUiEntryKind.DATA, entry.kind)
+        assertNull(entry.page)
+        assertNull(entry.handler)
+    }
+
+    @Test
+    fun uiEntries_rejectsPageInBackupDataSlot() {
+        assertRejected(
+            backupDataManifest("""{"id":"p","title":"页","slot":"backup.data","page":"p.html"}"""),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.uiEntries[0].page"
+        )
+    }
+
+    @Test
+    fun uiEntries_rejectsHandlerInBackupDataSlot() {
+        assertRejected(
+            backupDataManifest("""{"id":"a","title":"动作","slot":"backup.data","handler":"actions.backup"}"""),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.uiEntries[0].handler"
+        )
+    }
+
+    @Test
+    fun backupData_requiresDeclarationAndExportHook() {
+        assertRejected(
+            backupDataManifest(
+                """{"id":"extra","title":"扩展数据","slot":"backup.data"}""",
+                backupBlock = ""
+            ),
+            PluginErrorCode.FIELD_MISSING,
+            "contributes.backup"
+        )
+        assertRejected(
+            backupDataManifest(
+                """{"id":"extra","title":"扩展数据","slot":"backup.data"}""",
+                hooksBlock = """{"id": "import", "event": "backup.import.finished", "handler": "hooks.onImport"}"""
+            ),
+            PluginErrorCode.FIELD_MISSING,
+            "contributes.hooks"
+        )
+    }
+
+    @Test
+    fun uiEntries_rejectsHandlerInSettingsSlot() {
+        assertRejected(
+            entriesManifest(
+                """{"id":"a","title":"动作","slot":"settings.ai","handler":"actions.sync"}""",
+                runtime = true
+            ),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.uiEntries[0].slot"
+        )
+    }
+
+    @Test
+    fun uiEntries_rejectsConfirmWithoutHandler() {
+        assertRejected(
+            entriesManifest("""{"id":"p","title":"页","slot":"chat.welcome","page":"p.html","confirm":true}"""),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.uiEntries[0].confirm"
+        )
+    }
+
+    @Test
+    fun uiEntries_rejectsUnknownSlot() {
+        assertRejected(
+            settingsManifest(slot = "settings.nowhere"),
+            PluginErrorCode.FIELD_INVALID,
+            "contributes.uiEntries[0].slot"
+        )
+    }
+
+    @Test
+    fun uiEntries_rejectsThirdEntryInSameSlot() {
+        val text = base.replace(
+            "\"contributes\": {",
+            """"contributes": {
+            "uiEntries": [
+              {"id": "a", "title": "A", "slot": "drawer.footer", "page": "a.html"},
+              {"id": "b", "title": "B", "slot": "drawer.footer", "page": "b.html"},
+              {"id": "c", "title": "C", "slot": "drawer.footer", "page": "c.html"}
+            ],"""
+        )
+        assertRejected(text, PluginErrorCode.FIELD_INVALID, "contributes.uiEntries[2].slot")
+    }
+
+    @Test
+    fun settingsEntry_rejectsNonHtmlPage() {
         assertRejected(
             settingsManifest(page = "ui/memory.json"),
             PluginErrorCode.FIELD_INVALID,
-            "contributes.settingsPages[0].page"
+            "contributes.uiEntries[0].page"
         )
     }
 
     @Test
-    fun settingsPage_requiresCompatiblePluginApi() {
+    fun settingsEntry_requiresCompatiblePluginApi() {
         assertRejected(
             settingsManifest(pluginApi = "^2.0.0"),
             PluginErrorCode.API_INCOMPATIBLE
+        )
+    }
+
+    @Test
+    fun icon_acceptsBuiltinNameAndPackageImage() {
+        val builtin = success(PluginFixtures.manifest(extra = ",\n  \"icon\": \"terminal\""))
+        assertEquals("terminal", builtin.icon)
+
+        val png = success(PluginFixtures.manifest(extra = ",\n  \"icon\": \"icons/logo.png\""))
+        assertEquals("icons/logo.png", png.icon)
+
+        val webp = success(PluginFixtures.manifest(extra = ",\n  \"icon\": \"icons/logo.WEBP\""))
+        assertEquals("icons/logo.WEBP", webp.icon)
+    }
+
+    @Test
+    fun icon_rejectsUnsupportedImageAndUnsafePath() {
+        assertRejected(
+            PluginFixtures.manifest(extra = ",\n  \"icon\": \"icons/logo.svg\""),
+            PluginErrorCode.FIELD_INVALID,
+            "icon"
+        )
+        assertRejected(
+            PluginFixtures.manifest(extra = ",\n  \"icon\": \"../logo.png\""),
+            PluginErrorCode.FIELD_INVALID,
+            "icon"
+        )
+        assertRejected(
+            PluginFixtures.manifest(extra = ",\n  \"icon\": \"\""),
+            PluginErrorCode.FIELD_INVALID,
+            "icon"
         )
     }
 }

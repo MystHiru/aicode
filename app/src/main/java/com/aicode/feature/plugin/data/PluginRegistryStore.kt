@@ -3,8 +3,10 @@ package com.aicode.feature.plugin.data
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.plugin.domain.PluginManifestParser
 import java.io.File
+import java.io.IOException
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.nio.file.StandardCopyOption
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -19,26 +21,44 @@ data class PluginRecord(
     val version: String,
     val enabled: Boolean,
     val installedAt: Long,
-    /** 安装来源标识，目前只有 `local`（本地导入）。 */
+    /** 安装来源标识：`local`（本地导入）或 `index`（在线索引）。 */
     val origin: String,
     val archiveSha256: String,
     val manifestSha256: String,
+    /** 在线安装绑定的索引来源；本地导入为 null。 */
+    val sourceId: String? = null,
+    val sourceName: String? = null,
+    val indexUrl: String? = null,
+    val repository: String? = null,
+    val official: Boolean = false,
     /** 依赖是否已在本容器准备完成。 */
     val dependenciesReady: Boolean = false,
     /** 依赖输入文件的 sha256；变化后需要重新准备。 */
-    val dependenciesHash: String? = null
+    val dependenciesHash: String? = null,
+    /** 每次安装独立生成，区分同版本、同清单甚至相同 ZIP 的重装。 */
+    val installRevision: String? = null
 )
 
 @Serializable
 private data class RegistryFile(val schema: Int = SCHEMA, val plugins: List<PluginRecord> = emptyList())
 
-private const val SCHEMA = 3
+@Serializable
+internal data class PluginInstallTransaction(val id: String, val revision: String, val hadPrevious: Boolean)
+
+private const val SCHEMA = 5
 
 /** 安装记录库：一个 JSON 文件，临时文件加原子重命名落盘，崩溃不会留下写了一半的内容。 */
 class PluginRegistryStore(private val file: File) {
 
+    @Volatile
+    private var lastLoadFailed = false
+
+    /** 最近一次 [load] 是否因文件损坏或版本不认识而失败；调用方据此避免误删安装目录。 */
+    val loadFailed: Boolean get() = lastLoadFailed
+
     /** 文件不存在返回空。文件损坏或版本不认识时先备份再按空处理，不覆盖原内容。 */
     fun load(): List<PluginRecord> {
+        lastLoadFailed = false
         if (!file.isFile) return emptyList()
         return try {
             val parsed = JSON.decodeFromString<RegistryFile>(file.readText())
@@ -49,6 +69,7 @@ class PluginRegistryStore(private val file: File) {
                 }
             }.distinctBy { it.id }
         } catch (e: Exception) {
+            lastLoadFailed = true
             val backup = File(file.parentFile, "${file.name}.corrupt-${System.currentTimeMillis()}")
             FileLogger.e(TAG, "插件安装记录无法读取，已备份为 ${backup.name}", e)
             file.renameTo(backup)
@@ -58,17 +79,47 @@ class PluginRegistryStore(private val file: File) {
 
     /** 失败时抛出异常，由调用方回滚；不回退到非原子写。 */
     fun save(records: List<PluginRecord>) {
-        val dir = file.parentFile ?: throw IllegalStateException("registry 路径没有父目录")
+        writeAtomically(file, JSON.encodeToString(RegistryFile(plugins = records)))
+    }
+
+    // 与 registry 同在宿主私有目录，不能用插件安装目录里的标记决定是否提交。
+    private val transactionFile = File(file.parentFile, "${file.name}.install")
+
+    internal fun saveInstallTransaction(transaction: PluginInstallTransaction) {
+        writeAtomically(transactionFile, JSON.encodeToString(transaction))
+    }
+
+    internal fun loadInstallTransaction(): PluginInstallTransaction? {
+        return try {
+            val text = String(Files.readAllBytes(transactionFile.toPath()), Charsets.UTF_8)
+            JSON.decodeFromString<PluginInstallTransaction>(text).also {
+                if (!PluginManifestParser.isValidPluginId(it.id) || it.revision.isBlank()) {
+                    throw IOException("安装事务无效")
+                }
+            }
+        } catch (_: NoSuchFileException) {
+            null
+        } catch (e: Exception) {
+            throw IOException("无法读取安装事务", e)
+        }
+    }
+
+    internal fun clearInstallTransaction() {
+        Files.deleteIfExists(transactionFile.toPath())
+    }
+
+    private fun writeAtomically(target: File, text: String) {
+        val dir = target.parentFile ?: throw IOException("registry 路径没有父目录")
         dir.mkdirs()
-        val tmp = File(dir, "${file.name}.tmp")
+        val tmp = File(dir, "${target.name}.tmp")
         tmp.outputStream().use { out ->
-            out.write(JSON.encodeToString(RegistryFile(plugins = records)).toByteArray(Charsets.UTF_8))
+            out.write(text.toByteArray(Charsets.UTF_8))
             out.fd.sync()
         }
         try {
-            Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE)
+            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE)
         } catch (e: AtomicMoveNotSupportedException) {
-            Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
     }
 

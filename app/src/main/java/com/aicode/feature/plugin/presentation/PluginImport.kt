@@ -21,6 +21,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -29,17 +32,26 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicode.R
 import com.aicode.core.theme.Spacing
-import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.AdaptiveModalBottomSheet
+import com.aicode.core.ui.AppTextField
+import com.aicode.core.ui.dialogTextFieldColors
 import com.aicode.feature.plugin.domain.PluginError
 import com.aicode.feature.plugin.domain.PluginErrorCode
-import com.aicode.feature.plugin.domain.PluginPreview
-import com.aicode.feature.settings.presentation.component.SettingsDivider
 import com.aicode.feature.settings.presentation.component.SettingsGroup
 import com.aicode.feature.settings.presentation.component.SettingsGroupHeader
+import java.net.URI
 
 /** 单次最多逐条列出的导入问题数，其余折叠成「还有 N 个问题」。 */
 private const val MAX_LISTED_ERRORS = 5
+
+/** 只做明确的等价归一：去空白、末尾斜杠与 .git 后缀，scheme/host 小写。 */
+private fun normalizeRepositoryInput(raw: String): String {
+    val text = raw.trim().trimEnd('/').removeSuffix(".git")
+    return runCatching {
+        val uri = URI(text)
+        "${uri.scheme.lowercase()}://${uri.host.lowercase()}${uri.path.orEmpty().trimEnd('/')}"
+    }.getOrDefault(text)
+}
 
 /** 导入流程的全部弹层：读取中、失败列表、预览与授权确认。放在设置页底部与其他对话框并列。 */
 @Composable
@@ -101,6 +113,11 @@ private fun PluginPreviewSheet(
     val preview = state.preview
     val manifest = preview.manifest
     val languageTag = currentLanguageTag()
+    val expectedRepository = state.expectedRepository
+    val requiresManualRepository = expectedRepository != null && !state.officialSource
+    var repositoryInput by rememberSaveable(state.preview.token) { mutableStateOf("") }
+    val repositoryMatches = !requiresManualRepository ||
+        normalizeRepositoryInput(repositoryInput) == normalizeRepositoryInput(expectedRepository.orEmpty())
 
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -131,51 +148,70 @@ private fun PluginPreviewSheet(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            state.sourceLabel?.let { source ->
+                Text(
+                    text = if (state.officialSource) {
+                        stringResource(R.string.plugins_install_source_official, source)
+                    } else {
+                        stringResource(R.string.plugins_install_source_community, source)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (installSourceChanged(preview, state.origin)) {
+                Text(
+                    text = stringResource(R.string.plugins_install_source_changed),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
             Text(
                 text = manifest.description.resolve(languageTag),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
 
-            Notice(stringResource(R.string.plugins_preview_local_notice))
-            Notice(stringResource(R.string.plugins_preview_behavior_notice))
-            if (manifest.runtime != null) {
-                Notice(stringResource(R.string.plugins_preview_runtime_notice))
-            }
-            if (manifest.hooks.isNotEmpty()) {
-                Notice(stringResource(R.string.plugins_preview_hook_notice))
-            }
-            if (manifest.mcp.isNotEmpty()) {
-                Notice(stringResource(R.string.plugins_preview_mcp_notice))
-            }
-            if (manifest.shizuku != null) {
-                Notice(stringResource(R.string.plugins_preview_shizuku_notice))
-            }
-            preview.installedVersion?.let { installed ->
-                Notice(
-                    stringResource(
-                        if (preview.identical) R.string.plugins_preview_identical_notice
-                        else R.string.plugins_preview_replace_notice,
-                        installed
-                    )
+            SettingsGroupHeader(text = stringResource(R.string.plugins_preview_contents))
+            SettingsGroup {
+                PluginContentRows(
+                    content = preview.content,
+                    languageTag = languageTag,
+                    active = true
                 )
             }
 
-            SettingsGroupHeader(text = stringResource(R.string.plugins_preview_contents))
-            SettingsGroup {
-                contentLines(preview).forEachIndexed { index, line ->
-                    if (index > 0) SettingsDivider()
-                    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.lg, vertical = 12.dp)) {
-                        Text(text = line.first, style = MaterialTheme.typography.bodyLarge)
-                        if (line.second.isNotBlank()) {
-                            Text(
-                                text = line.second,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+            if (requiresManualRepository) {
+                SettingsGroupHeader(text = stringResource(R.string.plugins_install_repository_header))
+                Text(
+                    text = stringResource(R.string.plugins_install_repository_reason),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = expectedRepository.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                AppTextField(
+                    value = repositoryInput,
+                    onValueChange = { repositoryInput = it },
+                    label = stringResource(R.string.plugins_install_repository_label),
+                    placeholder = "https://github.com/owner/repo",
+                    colors = dialogTextFieldColors(),
+                    isError = repositoryInput.isNotBlank() && !repositoryMatches,
+                    supportingText = {
+                        Text(
+                            text = stringResource(
+                                if (repositoryInput.isBlank() || repositoryMatches) {
+                                    R.string.plugins_install_repository_hint
+                                } else {
+                                    R.string.plugins_install_repository_mismatch
+                                }
                             )
-                        }
+                        )
                     }
-                }
+                )
             }
 
             state.error?.let { error ->
@@ -195,7 +231,7 @@ private fun PluginPreviewSheet(
                     Text(stringResource(R.string.common_cancel))
                 }
                 Spacer(Modifier.width(Spacing.sm))
-                Button(onClick = onInstall, enabled = !state.installing) {
+                Button(onClick = onInstall, enabled = !state.installing && repositoryMatches) {
                     if (state.installing) {
                         CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                     } else {
@@ -211,42 +247,6 @@ private fun PluginPreviewSheet(
         }
     }
 }
-
-@Composable
-private fun Notice(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.semanticColors.subtleText
-    )
-}
-
-/** 预览里「将提供的内容」逐行：(标题, 描述)。 */
-@Composable
-private fun contentLines(preview: PluginPreview): List<Pair<String, String>> =
-    preview.content.skills.map {
-        stringResource(R.string.plugins_content_skill, it.skill.name) to it.skill.description
-    } + preview.content.agents.map {
-        stringResource(R.string.plugins_content_agent, it.definition.name) to it.definition.description
-    } + preview.content.workspaceTools.map {
-        stringResource(
-            R.string.plugins_content_tool,
-            it.title.resolve(currentLanguageTag())
-        ) to it.description.resolve(currentLanguageTag())
-    } + preview.content.tools.map {
-        stringResource(
-            R.string.plugins_content_ai_tool,
-            it.title.resolve(currentLanguageTag())
-        ) to it.description.resolve(currentLanguageTag())
-    } + preview.content.hooks.map {
-        stringResource(R.string.plugins_content_hook, it.event) to it.handler
-    } + preview.content.mcp.map {
-        stringResource(R.string.plugins_content_mcp, it.originalName) to mcpDescription(it)
-    } + listOfNotNull(
-        preview.content.shizuku?.let {
-            stringResource(R.string.plugins_content_shizuku, it.purpose) to it.purpose
-        }
-    )
 
 /** 把领域层的错误码翻译成界面文案；[PluginError.detail] 是语言无关的定位信息，原样带入。 */
 @Composable

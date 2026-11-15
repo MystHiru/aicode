@@ -43,7 +43,7 @@ object PluginManifestParser {
 
     private val TOP_LEVEL_KEYS = setOf(
         "manifestVersion", "id", "name", "version", "publisher", "repository",
-        "description", "license", "engines", "runtime", "contributes", "configPage"
+        "description", "license", "engines", "runtime", "contributes", "configPage", "icon"
     )
     private val ENGINE_KEYS = setOf("pluginApi")
     private val RUNTIME_KEYS = setOf("type", "entry", "command", "dependencies", "resident")
@@ -51,14 +51,20 @@ object PluginManifestParser {
     private val CONTRIBUTION_KEYS = setOf("id", "file")
     private val TOOL_KEYS = setOf("id", "title", "description", "inputSchema", "handler")
     private val HOOK_KEYS = setOf("id", "event", "handler", "mode")
-    private val SETTINGS_PAGE_KEYS = setOf("id", "title", "anchor", "page", "icon")
+    private val UI_ENTRY_KEYS = setOf("id", "slot", "title", "page", "handler", "confirm", "icon")
+    private val WORKSPACE_TOOL_KEYS = setOf("id", "title", "description", "icon", "category", "pageFile")
     private val PROVIDER_KEYS = setOf("id", "name", "description", "format", "baseUrl")
     private val SHIZUKU_KEYS = setOf("purpose")
+    private val BACKUP_KEYS = setOf("purpose")
+    private val MODEL_ACCESS_KEYS = setOf("purpose")
+    private val OVERLAY_KEYS = setOf("purpose", "surfaces")
+    private val OVERLAY_SURFACE_KEYS = setOf("id", "page", "width", "height", "draggable", "snap")
 
     private val PLUGIN_ID = Regex("^[a-z][a-z0-9-]{0,31}\\.[a-z][a-z0-9-]{0,31}$")
     private val PUBLISHER = Regex("^[a-z][a-z0-9-]{0,31}$")
     private val LOCAL_ID = Regex("^[A-Za-z][A-Za-z0-9_-]{0,63}$")
     private val HANDLER_NAME = Regex("^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+    private val BUILTIN_ICON = Regex("^[a-z][a-z0-9-]{0,31}$")
     private val LANGUAGE_TAG = Regex("^[a-z]{2,3}(-[a-z0-9]{2,8})*$")
 
     private const val MAX_NAME = 80
@@ -71,11 +77,26 @@ object PluginManifestParser {
     private const val MAX_IDS_PER_TYPE = 64
     private const val MAX_PROVIDER_URL = 2048
     private const val MAX_SHIZUKU_PURPOSE = 200
+    private const val MAX_BACKUP_PURPOSE = 200
+    private const val MAX_MODEL_ACCESS_PURPOSE = 200
+    private const val MAX_OVERLAY_PURPOSE = 200
+    private const val MAX_WORKSPACE_TOOL_ICON = 32
+    private const val MAX_WORKSPACE_TOOL_CATEGORY = 32
+    private const val MAX_OVERLAY_SURFACES = 3
+    private const val MIN_OVERLAY_EDGE = 48
+    private const val MAX_OVERLAY_WIDTH = 720
+    private const val MAX_OVERLAY_HEIGHT = 1200
     const val MAX_PATH_LENGTH = 200
     const val MAX_PATH_DEPTH = 8
 
     /** 插件 ID 同时用作安装目录名，读取已保存记录时也要用它拦住被篡改的值。 */
     fun isValidPluginId(id: String): Boolean = PLUGIN_ID.matches(id)
+
+    /** 清单 `icon` 以 `.png` / `.webp` 结尾时按包内位图路径解析，其余值按内置图标名处理。 */
+    fun isIconFilePath(value: String): Boolean {
+        val lower = value.lowercase()
+        return lower.endsWith(".png") || lower.endsWith(".webp")
+    }
 
     /** 包内相对路径：不含绝对路径、`.` / `..` 段、空段、反斜杠与控制字符，长度与深度有限。 */
     fun isSafeRelativePath(path: String): Boolean {
@@ -107,8 +128,12 @@ object PluginManifestParser {
             val engines = readEngines(obj)
             val runtime = readRuntime(obj)
             val contributes = readContributes(obj)
+            val icon = readIcon(obj)
 
-            val needsRuntime = contributes != null && (contributes.tools.isNotEmpty() || contributes.hooks.isNotEmpty())
+            val needsRuntime = contributes != null && (
+                contributes.tools.isNotEmpty() || contributes.hooks.isNotEmpty() ||
+                    contributes.uiEntries.any { it.handler != null }
+                )
             if (needsRuntime && runtime == null) missing("runtime")
             if (errors.isNotEmpty()) return ManifestParseResult.Failure(errors.toList())
 
@@ -126,14 +151,18 @@ object PluginManifestParser {
                     skills = requireNotNull(contributes).skills,
                     agents = contributes.agents,
                     workspaceTools = contributes.workspaceTools,
-                    settingsPages = contributes.settingsPages,
+                    uiEntries = contributes.uiEntries,
                     runtime = runtime,
                     tools = contributes.tools,
                     hooks = contributes.hooks,
                     mcp = contributes.mcp,
                     providers = contributes.providers,
                     shizuku = contributes.shizuku,
-                    configPage = contributes.configPage ?: readConfigPage(obj["configPage"], "configPage")
+                    overlay = contributes.overlay,
+                    backup = contributes.backup,
+                    modelAccess = contributes.modelAccess,
+                    configPage = contributes.configPage ?: readConfigPage(obj["configPage"], "configPage"),
+                    icon = icon
                 )
             )
         }
@@ -178,6 +207,18 @@ object PluginManifestParser {
         private fun readVersion(obj: JsonObject): SemVer? {
             val raw = obj["version"] ?: return null.also { missing("version") }
             return raw.stringOrNull()?.let { SemVer.parse(it) } ?: null.also { invalid("version") }
+        }
+
+        /** 可选插件图标：内置标识符，或以 `.png` / `.webp` 结尾的包内相对路径。 */
+        private fun readIcon(obj: JsonObject): String? {
+            val raw = obj["icon"] ?: return null
+            val text = raw.stringOrNull()?.trim()
+            if (text.isNullOrEmpty()) return null.also { invalid("icon") }
+            if (isIconFilePath(text)) {
+                return if (isSafeRelativePath(text)) text else null.also { invalid("icon") }
+            }
+            // 不支持的图片后缀（如 .svg / .jpg）在这里明确拒绝，不静默当作内置图标名
+            return if (BUILTIN_ICON.matches(text)) text else null.also { invalid("icon") }
         }
 
         private fun readText(obj: JsonObject, key: String, maxLength: Int): String? {
@@ -350,12 +391,15 @@ object PluginManifestParser {
             val skills: List<PluginContributionRef>,
             val agents: List<PluginContributionRef>,
             val workspaceTools: List<PluginWorkspaceToolRef>,
-            val settingsPages: List<PluginSettingsPageRef>,
+            val uiEntries: List<PluginUiEntryRef>,
             val tools: List<PluginToolRef>,
             val hooks: List<PluginHookRef>,
             val mcp: List<PluginMcpRef>,
             val providers: List<PluginProviderRef>,
             val shizuku: PluginShizukuRef?,
+            val overlay: PluginOverlayRef?,
+            val backup: PluginBackupRef?,
+            val modelAccess: PluginModelAccessRef?,
             val configPage: String?
         )
 
@@ -364,9 +408,10 @@ object PluginManifestParser {
             val contributes = raw as? JsonObject ?: return null.also { invalid("contributes") }
             var ok = true
             contributes.keys.filter {
-                it != "skills" && it != "agents" && it != "workspaceTools" && it != "settingsPages" &&
+                it != "skills" && it != "agents" && it != "workspaceTools" && it != "uiEntries" &&
                     it != "tools" && it != "hooks" && it != "mcp" && it != "providers" &&
-                    it != "shizuku" && it != "configPage"
+                    it != "shizuku" && it != "overlay" && it != "backup" && it != "modelAccess" &&
+                    it != "configPage"
             }.forEach {
                 err(PluginErrorCode.UNSUPPORTED_CONTRIBUTION, it)
                 ok = false
@@ -374,7 +419,7 @@ object PluginManifestParser {
             val skills = readContributionList(contributes["skills"], "contributes.skills") ?: run { ok = false; emptyList() }
             val agents = readContributionList(contributes["agents"], "contributes.agents") ?: run { ok = false; emptyList() }
             val workspaceTools = readWorkspaceTools(contributes["workspaceTools"], "contributes.workspaceTools") ?: run { ok = false; emptyList() }
-            val settingsPages = readSettingsPages(contributes["settingsPages"], "contributes.settingsPages")
+            val uiEntries = readUiEntries(contributes["uiEntries"], "contributes.uiEntries")
                 ?: run { ok = false; emptyList() }
             val tools = readTools(contributes["tools"], "contributes.tools") ?: run { ok = false; emptyList() }
             val hooks = readHooks(contributes["hooks"], "contributes.hooks") ?: run { ok = false; emptyList() }
@@ -388,15 +433,47 @@ object PluginManifestParser {
                     if (contributes["shizuku"] != null) ok = false
                     null
                 }
+            val overlay = readOverlay(contributes["overlay"], "contributes.overlay")
+                ?: run {
+                    if (contributes["overlay"] != null) ok = false
+                    null
+                }
+            val backup = readBackup(contributes["backup"], "contributes.backup")
+                ?: run {
+                    if (contributes["backup"] != null) ok = false
+                    null
+                }
+            val modelAccess = readModelAccess(contributes["modelAccess"], "contributes.modelAccess")
+                ?: run {
+                    if (contributes["modelAccess"] != null) ok = false
+                    null
+                }
+            if (hooks.any { it.event in PluginHookEvents.BACKUP } && backup == null) {
+                missing("contributes.backup")
+                ok = false
+            }
+            if (uiEntries.any { it.slot == PluginUiSlots.BACKUP_DATA }) {
+                if (backup == null) {
+                    missing("contributes.backup")
+                    ok = false
+                }
+                if (hooks.none { it.event == PluginHookEvents.BACKUP_EXPORT_BEFORE }) {
+                    missing("contributes.hooks")
+                    ok = false
+                }
+            }
             val configPage = readConfigPage(contributes["configPage"], "contributes.configPage")
-            if (ok && skills.isEmpty() && agents.isEmpty() && workspaceTools.isEmpty() && settingsPages.isEmpty() &&
+            if (ok && skills.isEmpty() && agents.isEmpty() && workspaceTools.isEmpty() && uiEntries.isEmpty() &&
                 tools.isEmpty() && hooks.isEmpty() && mcp.isEmpty() && providers.isEmpty() &&
-                shizuku == null && configPage == null
+                shizuku == null && overlay == null && backup == null && modelAccess == null && configPage == null
             ) {
                 invalid("contributes")
                 ok = false
             }
-            return if (ok) Contributes(skills, agents, workspaceTools, settingsPages, tools, hooks, mcp, providers, shizuku, configPage) else null
+            return if (ok) Contributes(
+                skills, agents, workspaceTools, uiEntries, tools, hooks, mcp, providers,
+                shizuku, overlay, backup, modelAccess, configPage
+            ) else null
         }
 
         private fun readConfigPage(raw: JsonElement?, path: String): String? {
@@ -600,6 +677,134 @@ object PluginManifestParser {
             return PluginShizukuRef(purpose)
         }
 
+        /** 缺省表示不接收备份事件；声明只需给出用途，展示在使用者授权界面。 */
+        private fun readBackup(raw: JsonElement?, path: String): PluginBackupRef? {
+            if (raw == null) return null
+            val obj = raw as? JsonObject ?: return null.also { invalid(path) }
+            obj.keys.filter { it !in BACKUP_KEYS }.forEach {
+                err(PluginErrorCode.UNSUPPORTED_FIELD, "$path.$it")
+            }
+            val purpose = obj["purpose"]?.stringOrNull()?.trim()
+            if (purpose.isNullOrEmpty() || purpose.length > MAX_BACKUP_PURPOSE) {
+                invalid("$path.purpose")
+                return null
+            }
+            return PluginBackupRef(purpose)
+        }
+
+        /** 缺省表示不调用使用者供应商；声明只需给出用途，安装预览会展示。 */
+        private fun readModelAccess(raw: JsonElement?, path: String): PluginModelAccessRef? {
+            if (raw == null) return null
+            val obj = raw as? JsonObject ?: return null.also { invalid(path) }
+            obj.keys.filter { it !in MODEL_ACCESS_KEYS }.forEach {
+                err(PluginErrorCode.UNSUPPORTED_FIELD, "$path.$it")
+            }
+            val purpose = obj["purpose"]?.stringOrNull()?.trim()
+            if (purpose.isNullOrEmpty() || purpose.length > MAX_MODEL_ACCESS_PURPOSE) {
+                invalid("$path.purpose")
+                return null
+            }
+            return PluginModelAccessRef(purpose)
+        }
+
+        private fun readOverlay(raw: JsonElement?, path: String): PluginOverlayRef? {
+            if (raw == null) return null
+            val obj = raw as? JsonObject ?: return null.also { invalid(path) }
+            var ok = true
+            obj.keys.filter { it !in OVERLAY_KEYS }.forEach {
+                err(PluginErrorCode.UNSUPPORTED_FIELD, "$path.$it")
+                ok = false
+            }
+            val purpose = obj["purpose"]?.stringOrNull()?.trim()
+            if (purpose.isNullOrEmpty() || purpose.length > MAX_OVERLAY_PURPOSE) {
+                invalid("$path.purpose")
+                ok = false
+            }
+            val surfaces = mutableListOf<PluginOverlaySurfaceRef>()
+            val rawSurfaces = obj["surfaces"]
+            if (rawSurfaces != null) {
+                val array = rawSurfaces as? JsonArray
+                if (array == null) {
+                    invalid("$path.surfaces")
+                    ok = false
+                } else if (array.size > MAX_OVERLAY_SURFACES) {
+                    invalid("$path.surfaces")
+                    ok = false
+                } else {
+                    val seen = mutableSetOf<String>()
+                    array.forEachIndexed { index, element ->
+                        val itemPath = "$path.surfaces[$index]"
+                        val item = element as? JsonObject
+                        if (item == null) {
+                            invalid(itemPath)
+                            ok = false
+                            return@forEachIndexed
+                        }
+                        item.keys.filter { it !in OVERLAY_SURFACE_KEYS }.forEach {
+                            err(PluginErrorCode.UNSUPPORTED_FIELD, "$itemPath.$it")
+                            ok = false
+                        }
+                        val id = item["id"]?.stringOrNull()?.takeIf { LOCAL_ID.matches(it) }
+                        if (id == null || !seen.add(id)) {
+                            invalid("$itemPath.id")
+                            ok = false
+                        }
+                        val page = item["page"]?.stringOrNull()?.trim()
+                        val isHtml = page != null && (
+                            page.endsWith(".html", ignoreCase = true) || page.endsWith(".htm", ignoreCase = true)
+                            )
+                        if (page == null || !isSafeRelativePath(page) || !isHtml) {
+                            invalid("$itemPath.page")
+                            ok = false
+                        }
+                        val widthRaw = item["width"]
+                        val width = if (widthRaw == null) {
+                            240
+                        } else {
+                            (widthRaw as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull
+                                ?: run { invalid("$itemPath.width"); ok = false; 0 }
+                        }
+                        val heightRaw = item["height"]
+                        val height = if (heightRaw == null) {
+                            320
+                        } else {
+                            (heightRaw as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull
+                                ?: run { invalid("$itemPath.height"); ok = false; 0 }
+                        }
+                        if (width !in MIN_OVERLAY_EDGE..MAX_OVERLAY_WIDTH ||
+                            height !in MIN_OVERLAY_EDGE..MAX_OVERLAY_HEIGHT
+                        ) {
+                            invalid("$itemPath.size")
+                            ok = false
+                        }
+                        val draggableRaw = item["draggable"]
+                        val draggable = if (draggableRaw == null) {
+                            true
+                        } else {
+                            (draggableRaw as? JsonPrimitive)?.booleanOrNull
+                                ?: run { invalid("$itemPath.draggable"); ok = false; false }
+                        }
+                        val snapRaw = item["snap"]
+                        val snap = if (snapRaw == null) {
+                            PluginOverlaySnap.NONE
+                        } else {
+                            (snapRaw as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+                                ?.takeIf { it in PluginOverlaySnap.ALL }
+                                ?: run { invalid("$itemPath.snap"); ok = false; PluginOverlaySnap.NONE }
+                        }
+                        if (id != null && page != null) {
+                            surfaces += PluginOverlaySurfaceRef(id, page, width, height, draggable, snap)
+                        }
+                    }
+                }
+            }
+            if (surfaces.isEmpty()) {
+                invalid("$path.surfaces")
+                ok = false
+            }
+            return if (ok && purpose != null) PluginOverlayRef(purpose, surfaces) else null
+        }
+
         private fun readWorkspaceTools(raw: JsonElement?, path: String): List<PluginWorkspaceToolRef>? {
             if (raw == null) return emptyList()
             val array = raw as? JsonArray ?: return null.also { invalid(path) }
@@ -614,13 +819,35 @@ object PluginManifestParser {
                     ok = false
                     return@forEachIndexed
                 }
+                item.keys.filter { it !in WORKSPACE_TOOL_KEYS }.forEach {
+                    err(PluginErrorCode.UNSUPPORTED_FIELD, "$itemPath.$it")
+                    ok = false
+                }
                 val id = item["id"]?.stringOrNull()?.takeIf { LOCAL_ID.matches(it) }
                 val titleRaw = item["title"]
                 val title = if (titleRaw != null) parseLocalized(titleRaw, "$itemPath.title", MAX_NAME) else null
                 val descRaw = item["description"]
                 val description = if (descRaw != null) parseLocalized(descRaw, "$itemPath.description", MAX_DESCRIPTION) ?: LocalizedText.single("") else LocalizedText.single("")
-                val icon = item["icon"]?.stringOrNull() ?: "play"
-                val category = item["category"]?.stringOrNull() ?: "通用"
+                var icon = "play"
+                val iconRaw = item["icon"]
+                if (iconRaw != null) {
+                    val text = readWorkspaceToolLabel(iconRaw, "$itemPath.icon", MAX_WORKSPACE_TOOL_ICON)
+                    if (text == null) {
+                        ok = false
+                    } else {
+                        icon = text
+                    }
+                }
+                var category = "通用"
+                val categoryRaw = item["category"]
+                if (categoryRaw != null) {
+                    val text = readWorkspaceToolLabel(categoryRaw, "$itemPath.category", MAX_WORKSPACE_TOOL_CATEGORY)
+                    if (text == null) {
+                        ok = false
+                    } else {
+                        category = text
+                    }
+                }
                 val pageFile = item["pageFile"]?.stringOrNull()
                 val isHtmlPage = pageFile != null && (
                     pageFile.endsWith(".html", ignoreCase = true) ||
@@ -651,12 +878,22 @@ object PluginManifestParser {
             return if (ok) result else null
         }
 
-        /** 缺省视为空列表；每项必须有局部 ID、标题、已知锚点与包内 HTML 页面。 */
-        private fun readSettingsPages(raw: JsonElement?, path: String): List<PluginSettingsPageRef>? {
+        /** workspaceTools 的 icon/category 是短标签：非空、有长度上限、不含控制字符。 */
+        private fun readWorkspaceToolLabel(raw: JsonElement, path: String, maxLength: Int): String? {
+            val text = raw.stringOrNull()?.trim()
+            if (text.isNullOrEmpty() || text.length > maxLength || hasControlChars(text)) {
+                invalid(path)
+                return null
+            }
+            return text
+        }
+
+        /** 缺省视为空列表；每项必须有局部 ID、标题、已知槽位，以及 page / handler 二者之一。 */
+        private fun readUiEntries(raw: JsonElement?, path: String): List<PluginUiEntryRef>? {
             if (raw == null) return emptyList()
             val array = raw as? JsonArray ?: return null.also { invalid(path) }
             if (array.size > MAX_IDS_PER_TYPE) return null.also { invalid(path) }
-            val result = mutableListOf<PluginSettingsPageRef>()
+            val result = mutableListOf<PluginUiEntryRef>()
             var ok = true
             array.forEachIndexed { index, element ->
                 val itemPath = "$path[$index]"
@@ -666,35 +903,74 @@ object PluginManifestParser {
                     ok = false
                     return@forEachIndexed
                 }
-                item.keys.filter { it !in SETTINGS_PAGE_KEYS }.forEach {
+                item.keys.filter { it !in UI_ENTRY_KEYS }.forEach {
                     err(PluginErrorCode.UNSUPPORTED_FIELD, "$itemPath.$it")
                     ok = false
                 }
                 val id = item["id"]?.stringOrNull()?.takeIf { LOCAL_ID.matches(it) }
                 val titleRaw = item["title"]
                 val title = if (titleRaw != null) parseLocalized(titleRaw, "$itemPath.title", MAX_NAME) else null
-                val anchor = item["anchor"]?.stringOrNull()?.takeIf { it in PluginSettingsAnchors.ALL }
+                val slot = item["slot"]?.stringOrNull()?.takeIf { it in PluginUiSlots.ALL }
                 val page = item["page"]?.stringOrNull()
+                val handlerRaw = item["handler"]?.stringOrNull()
+                val handler = handlerRaw?.trim()?.takeIf { HANDLER_NAME.matches(it) }
+                val confirmRaw = item["confirm"]
+                val confirm = if (confirmRaw != null) (confirmRaw as? JsonPrimitive)?.booleanOrNull else false
                 val icon = item["icon"]?.stringOrNull()?.trim() ?: "book"
                 if (id == null) { invalid("$itemPath.id"); ok = false }
                 if (title == null) { invalid("$itemPath.title"); ok = false }
-                if (anchor == null) { invalid("$itemPath.anchor"); ok = false }
-                if (page == null || !isSafeRelativePath(page) ||
-                    !(page.endsWith(".html", ignoreCase = true) || page.endsWith(".htm", ignoreCase = true))
+                if (slot == null) { invalid("$itemPath.slot"); ok = false }
+                if (page != null && (!isSafeRelativePath(page) ||
+                        !(page.endsWith(".html", ignoreCase = true) || page.endsWith(".htm", ignoreCase = true)))
                 ) {
                     invalid("$itemPath.page")
                     ok = false
+                }
+                if (handlerRaw != null && handler == null) { invalid("$itemPath.handler"); ok = false }
+                if (confirmRaw != null && confirm == null) { invalid("$itemPath.confirm"); ok = false }
+                if (slot != null) {
+                    if (slot in PluginUiSlots.DATA_ONLY) {
+                        // 数据选项由宿主渲染开关，不接受页面、动作或确认框。
+                        if (page != null) { invalid("$itemPath.page"); ok = false }
+                        if (handlerRaw != null) { invalid("$itemPath.handler"); ok = false }
+                        if (confirmRaw != null) { invalid("$itemPath.confirm"); ok = false }
+                        if (result.count { it.slot == slot } >= 1) { invalid("$itemPath.slot"); ok = false }
+                    } else {
+                        val kinds = listOfNotNull(page, handler)
+                        if (kinds.size != 1) { invalid(itemPath); ok = false }
+                        if (confirm == true && handler == null) { invalid("$itemPath.confirm"); ok = false }
+                        if (slot in PluginUiSlots.ACTION_ONLY && page != null) {
+                            invalid("$itemPath.page")
+                            ok = false
+                        }
+                        if (PluginUiSlots.isSettingsSlot(slot) && handler != null) {
+                            invalid("$itemPath.slot")
+                            ok = false
+                        }
+                        if (result.count { it.slot == slot } >= PluginUiSlots.MAX_ENTRIES_PER_PLUGIN) {
+                            invalid("$itemPath.slot")
+                            ok = false
+                        }
+                    }
                 }
                 if (icon.isEmpty() || icon.length > 32) {
                     invalid("$itemPath.icon")
                     ok = false
                 }
-                if (ok && id != null && title != null && anchor != null && page != null) {
+                if (ok && id != null && title != null && slot != null) {
                     if (result.any { it.id == id }) {
                         err(PluginErrorCode.DUPLICATE_ID, "$path.$id")
                         ok = false
                     } else {
-                        result += PluginSettingsPageRef(id, title, anchor, page, icon)
+                        result += PluginUiEntryRef(
+                            id = id,
+                            slot = slot,
+                            title = title,
+                            page = page,
+                            handler = handler,
+                            confirm = confirm == true,
+                            icon = icon
+                        )
                     }
                 }
             }

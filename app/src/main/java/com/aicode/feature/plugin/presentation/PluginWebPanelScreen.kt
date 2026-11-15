@@ -41,11 +41,14 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicode.R
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
-import com.aicode.feature.plugin.domain.PluginSettingsPage
+import com.aicode.feature.plugin.domain.PluginPage
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -56,13 +59,15 @@ import java.util.concurrent.atomic.AtomicReference
  */
 @Composable
 fun PluginWebPanelScreen(
-    page: PluginSettingsPage,
+    page: PluginPage,
     onClosePage: () -> Unit,
     bridgeFactory: (post: (String) -> Unit, onClosePage: () -> Unit) -> PluginWebBridge,
     modifier: Modifier = Modifier,
-    applySystemBarInsets: Boolean = true
+    applySystemBarInsets: Boolean = true,
+    entryContext: () -> PluginEntryContext = { PluginEntryContext() }
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val colorScheme = MaterialTheme.colorScheme
     val semantic = MaterialTheme.semanticColors
     val configuration = LocalConfiguration.current
@@ -102,7 +107,7 @@ fun PluginWebPanelScreen(
             themeVariables = { currentVariables },
             onPageFinished = { view ->
                 failed = false
-                PluginWebViewCache.markLoaded(page.cacheKey, pageUrl)
+                PluginWebViewCache.markLoaded(page.cacheKey, pageUrl, view)
                 view.evaluateJavascript(PluginThemeTokens.applyScript(currentVariables), null)
             },
             onMainFrameError = { failed = true }
@@ -110,13 +115,15 @@ fun PluginWebPanelScreen(
     }
 
     val bridge = remember(webView, page.cacheKey) {
-        cachedBridge ?: bridgeFactory({ script ->
+        val bridge = cachedBridge ?: bridgeFactory({ script ->
             runCatching { webView.evaluateJavascript(script, null) }
         }, onClosePage).also { created ->
             PluginWebViewCache.putBridge(page.cacheKey, created)
-            // 注入对象只在页面下次加载时出现；这里先注入，LaunchedEffect 随后 loadUrl。
-            webView.addJavascriptInterface(created, "__aicodeBridge")
         }
+        // 注入对象只在页面下次加载时出现；这里先注册，LaunchedEffect 随后 loadUrl。
+        // 缓存复用时桥可能已经注册过，installer 按 WebView + 桥实例去重。
+        PluginWebBridgeInstaller.install(webView, bridge) { message -> bridge.postMessage(message) }
+        bridge
     }
 
     // 缓存复用时页面持有的是同一个桥实例，回调要换成当前组合的。
@@ -126,8 +133,30 @@ fun PluginWebPanelScreen(
             onClosePage = onClosePage,
             post = { script ->
                 runCatching { webView.evaluateJavascript(script, null) }
-            }
+            },
+            pageContext = entryContext
         )
+    }
+
+    DisposableEffect(bridge, lifecycleOwner, viewportReady) {
+        val lifecycle = lifecycleOwner.lifecycle
+        val observer = LifecycleEventObserver { _, event ->
+            if (viewportReady) {
+                when (event) {
+                    Lifecycle.Event.ON_RESUME -> bridge.setVisible(true, "resumed")
+                    Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> bridge.setVisible(false, "hidden")
+                    else -> Unit
+                }
+            }
+        }
+        if (viewportReady) {
+            bridge.setVisible(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED), "shown")
+            lifecycle.addObserver(observer)
+        }
+        onDispose {
+            lifecycle.removeObserver(observer)
+            bridge.setVisible(false, "hidden")
+        }
     }
 
     LaunchedEffect(webView, pageUrl, viewportReady) {
@@ -182,9 +211,12 @@ fun PluginWebPanelScreen(
         }
     }
 
+    // 实例可能来自缓存：离开时只摘掉并暂停，内容和桥留给下一次打开复用。
     DisposableEffect(webView) {
+        webView.onResume()
         onDispose {
             PluginWebViewCache.release(webView)
+            webView.onPause()
         }
     }
 

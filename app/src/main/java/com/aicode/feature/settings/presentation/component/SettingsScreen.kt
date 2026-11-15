@@ -58,7 +58,6 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -89,10 +88,10 @@ import com.aicode.feature.settings.data.repository.AppThemeMode
 import com.aicode.feature.settings.data.repository.BackgroundSettingsRepository
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.ModelMetadata
-import com.aicode.feature.settings.presentation.SettingsViewModel
 import com.aicode.feature.settings.presentation.MemoryViewModel
 import com.aicode.feature.settings.presentation.RolesViewModel
 import com.aicode.feature.settings.presentation.RootViewModel
+import com.aicode.feature.settings.presentation.SettingsViewModel
 import com.aicode.feature.settings.presentation.ShizukuViewModel
 import com.aicode.feature.settings.presentation.SkillImportState
 import com.aicode.feature.settings.presentation.SkillUiEntry
@@ -101,12 +100,21 @@ import com.aicode.feature.agent.domain.skill.SkillScope
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionScope
 import com.aicode.feature.settings.presentation.SubAgentUiEntry
 import com.aicode.core.util.FileLogger
-import com.aicode.feature.plugin.domain.PluginSettingsAnchors
-import com.aicode.feature.plugin.domain.PluginSettingsPage
+import com.aicode.feature.plugin.domain.PluginPage
+import com.aicode.feature.plugin.domain.PluginUiEntry
+import com.aicode.feature.plugin.domain.PluginUiSlots
+import com.aicode.feature.plugin.domain.PluginStatus
 import com.aicode.feature.plugin.presentation.PluginDetailSection
+import com.aicode.feature.plugin.presentation.PluginDevDetailSection
+import com.aicode.feature.plugin.presentation.PluginDevProject
+import com.aicode.feature.plugin.presentation.PluginSettingsSheet
 import com.aicode.feature.plugin.presentation.PluginImportHost
+import com.aicode.feature.plugin.presentation.PluginStoreDetailSection
+import com.aicode.feature.plugin.presentation.PluginStoreItem
 import com.aicode.feature.plugin.presentation.PluginThemeTokens
-import com.aicode.feature.plugin.presentation.PluginWebPanelScreen
+import com.aicode.feature.plugin.presentation.PluginPageHost
+import com.aicode.feature.plugin.presentation.pluginPageIcon
+import com.aicode.feature.plugin.presentation.PluginWebBridgeInstaller
 import com.aicode.feature.plugin.presentation.PluginWebViewCache
 import com.aicode.feature.plugin.presentation.PluginWebViewFactory
 import com.aicode.feature.plugin.presentation.PluginsSection
@@ -117,9 +125,9 @@ import kotlinx.coroutines.delay
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Activity
 import compose.icons.feathericons.ArrowLeft
+import compose.icons.feathericons.Bookmark
 import compose.icons.feathericons.BarChart2
 import compose.icons.feathericons.Book
-import compose.icons.feathericons.Bookmark
 import compose.icons.feathericons.BookOpen
 import compose.icons.feathericons.Box
 import compose.icons.feathericons.Cloud
@@ -141,6 +149,7 @@ import compose.icons.feathericons.RefreshCw
 import compose.icons.feathericons.RotateCcw
 import compose.icons.feathericons.Save
 import compose.icons.feathericons.Server
+import compose.icons.feathericons.Settings
 import compose.icons.feathericons.Shield
 import compose.icons.feathericons.Sliders
 import compose.icons.feathericons.Terminal
@@ -190,6 +199,8 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     SubAgentEditor(R.string.settings_subagents),
     Plugins(R.string.settings_plugins),
     PluginDetail(R.string.settings_plugins),
+    PluginStoreDetail(R.string.settings_plugins),
+    PluginDevDetail(R.string.settings_plugins),
     PluginPage(R.string.settings_plugin_page_title),
     Container(R.string.settings_container),
     ContainerDownloads(R.string.container_download_image),
@@ -225,6 +236,8 @@ private fun SettingsSection.depth(): Int = when (this) {
     SettingsSection.SkillDetail,
     SettingsSection.SubAgentDetail,
     SettingsSection.PluginDetail,
+    SettingsSection.PluginStoreDetail,
+    SettingsSection.PluginDevDetail,
     SettingsSection.ContainerDownloads,
     SettingsSection.Log -> 2
     else -> 1
@@ -424,31 +437,52 @@ fun SettingsScreen(
     val pluginsViewModel: PluginsViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     val plugins by pluginsViewModel.plugins.collectAsStateWithLifecycle()
     val pluginsLoaded by pluginsViewModel.loaded.collectAsStateWithLifecycle()
+    val pluginsRefreshing by pluginsViewModel.refreshing.collectAsStateWithLifecycle()
     val pluginDependencyStates by pluginsViewModel.dependencyStates.collectAsStateWithLifecycle()
     val shizukuGrantedPluginIds by pluginsViewModel.shizukuGrantedPluginIds.collectAsStateWithLifecycle()
+    val overlayGrantedPluginIds by pluginsViewModel.overlayGrantedPluginIds.collectAsStateWithLifecycle()
+    val backupGrantedPluginIds by pluginsViewModel.backupGrantedPluginIds.collectAsStateWithLifecycle()
     val shizukuState by pluginsViewModel.shizukuState.collectAsStateWithLifecycle()
     val pluginDevMode by pluginsViewModel.devMode.collectAsStateWithLifecycle()
     val pluginDevProjects by pluginsViewModel.devProjects.collectAsStateWithLifecycle()
+    val pluginDevRefreshing by pluginsViewModel.devRefreshing.collectAsStateWithLifecycle()
+    val pluginIndexSourceText by pluginsViewModel.indexSourceText.collectAsStateWithLifecycle()
+    val pluginDownloadMirror by pluginsViewModel.downloadMirror.collectAsStateWithLifecycle()
     var selectedPluginId by remember { mutableStateOf<String?>(null) }
+    var selectedStoreItem by remember { mutableStateOf<PluginStoreItem?>(null) }
+    var selectedDevProject by remember { mutableStateOf<PluginDevProject?>(null) }
+    val currentDevProject = pluginDevProjects.firstOrNull { it.dirName == selectedDevProject?.dirName }
+        ?: selectedDevProject
+    var showPluginSettingsSheet by remember { mutableStateOf(false) }
+    var showPluginUninstallConfirm by remember { mutableStateOf(false) }
     val selectedPlugin = plugins.firstOrNull { it.id == selectedPluginId }
     val pluginLanguageTag = currentLanguageTag()
-    var activePluginPage by remember { mutableStateOf<PluginSettingsPage?>(null) }
     // 直接从插件快照算入口，不走 PluginManager.ensureLoaded：组合期间不能同步读盘。
-    val pluginPages = remember(plugins) {
+    val pluginPages = remember(plugins, pluginLanguageTag) {
         plugins.filter { it.isActive }
+            .sortedBy { it.displayName(pluginLanguageTag) }
             .flatMap { plugin ->
-                plugin.content.settingsPages.map { page ->
-                    page.copy(pluginVersion = plugin.record.version)
+                plugin.content.uiEntries.mapNotNull { entry ->
+                    entry.page?.copy(pluginVersion = plugin.record.version)
                 }
             }
     }
+    // 备份页「选择导出数据」组末尾的插件数据选项。
+    val backupDataEntries: List<PluginUiEntry> = remember(plugins, pluginLanguageTag) {
+        plugins.filter { it.isActive }
+            .sortedBy { it.displayName(pluginLanguageTag) }
+            .flatMap { plugin ->
+                plugin.content.uiEntries.filter { it.slot == PluginUiSlots.BACKUP_DATA }
+            }
+    }
+    var activePluginPage by remember { mutableStateOf<PluginPage?>(null) }
     val pluginZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) pluginsViewModel.import(uri)
     }
     // 进入设置后预热最近打开的插件页：提前创建 WebView，打开入口时直接 attach。
     // 设置页首帧之后再执行，避免 Chromium 拉起阻塞进入动画。
     // 不在这里加载页面：此时 WebView 还没挂到窗口，0×0 视口会让页面按错误尺寸完成首次布局
-    // （vh 等视口单位会被固定成 0），加载交给页面挂载后的 PluginWebPanelScreen。
+    // （vh 等视口单位会被固定成 0），加载交给页面挂载后的 PluginPageHost。
     val pluginThemeDark = PluginThemeTokens.isDark(MaterialTheme.colorScheme)
     val pluginThemeFontScale = LocalConfiguration.current.fontScale
     val pluginColorScheme = MaterialTheme.colorScheme
@@ -473,7 +507,7 @@ fun SettingsScreen(
                 backgroundColor = pluginThemeBackground,
                 themeVariables = { pluginThemeVariables },
                 onPageFinished = { view ->
-                    PluginWebViewCache.markLoaded(target.cacheKey, PluginWebViewFactory.pageUrl(target))
+                    PluginWebViewCache.markLoaded(target.cacheKey, PluginWebViewFactory.pageUrl(target), view)
                     view.evaluateJavascript(PluginThemeTokens.applyScript(pluginThemeVariables), null)
                 },
                 onMainFrameError = {}
@@ -488,7 +522,9 @@ fun SettingsScreen(
                     runCatching { webView.evaluateJavascript(script, null) }
                 }
             )
-            webView.addJavascriptInterface(bridge, "__aicodeBridge")
+            PluginWebBridgeInstaller.install(webView, bridge) { message ->
+                bridge.postMessage(message)
+            }
             PluginWebViewCache.put(target.cacheKey, webView)
             PluginWebViewCache.putBridge(target.cacheKey, bridge)
         }.onFailure { e ->
@@ -533,6 +569,8 @@ fun SettingsScreen(
         SettingsSection.SubAgentDetail -> SettingsSection.SubAgents
         SettingsSection.SubAgentEditor -> subAgentEditorReturn
         SettingsSection.PluginDetail -> SettingsSection.Plugins
+        SettingsSection.PluginStoreDetail -> SettingsSection.Plugins
+        SettingsSection.PluginDevDetail -> SettingsSection.Plugins
         SettingsSection.PluginPage -> if (expanded) null else SettingsSection.Menu
         SettingsSection.ContainerDownloads -> SettingsSection.Container
         else -> if (expanded) null else SettingsSection.Menu
@@ -572,11 +610,29 @@ fun SettingsScreen(
         if (section == SettingsSection.PluginDetail && selectedPlugin == null) section = SettingsSection.Plugins
     }
 
+    // 商店 / 开发中详情依赖内存里的选中项；没有选中项时退回插件列表。
+    LaunchedEffect(selectedStoreItem, section) {
+        if (section == SettingsSection.PluginStoreDetail && selectedStoreItem == null) {
+            section = SettingsSection.Plugins
+        }
+    }
+    LaunchedEffect(selectedDevProject, section) {
+        if (section == SettingsSection.PluginDevDetail && selectedDevProject == null) {
+            section = SettingsSection.Plugins
+        }
+    }
+
+    // 离开插件列表 / 详情时收起对应弹层，避免返回时意外重新弹出。
+    LaunchedEffect(section) {
+        if (section != SettingsSection.Plugins) showPluginSettingsSheet = false
+        if (section != SettingsSection.PluginDetail) showPluginUninstallConfirm = false
+    }
+
     // 插件停用 / 卸载后入口消失，当前停留的插件页要退回菜单。
     LaunchedEffect(pluginPages, section) {
         if (section == SettingsSection.PluginPage) {
             val active = activePluginPage
-            if (active == null || pluginPages.none { it.key == active.key }) {
+            if (active == null || pluginPages.none { it.key == active.key && it.cacheKey == active.cacheKey }) {
                 activePluginPage = null
                 section = SettingsSection.Menu
             }
@@ -783,22 +839,13 @@ fun SettingsScreen(
                     // 不渲染大屏「从左侧选择」占位，避免返回瞬间闪一下空态。
                     if (expanded) SettingsDetailPlaceholder()
                 } else {
-                    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-                    PluginWebPanelScreen(
+                    PluginPageHost(
                         page = page,
-                        onClosePage = {
+                        languageTag = pluginLanguageTag,
+                        pluginsViewModel = pluginsViewModel,
+                        onClose = {
                             activePluginPage = null
                             section = SettingsSection.Menu
-                        },
-                        bridgeFactory = { post, onClosePage ->
-                            pluginsViewModel.createWebBridge(
-                                page = page,
-                                pluginVersion = page.pluginVersion,
-                                languageTag = pluginLanguageTag,
-                                theme = { if (isDark) "dark" else "light" },
-                                onClosePage = onClosePage,
-                                post = post
-                            )
                         },
                         modifier = Modifier.fillMaxSize()
                     )
@@ -813,6 +860,9 @@ fun SettingsScreen(
             current == SettingsSection.Backup ->
                 BackupScreen(
                     viewModel = androidx.hilt.navigation.compose.hiltViewModel(),
+                    pluginDataEntries = backupDataEntries,
+                    backupGrantedPluginIds = backupGrantedPluginIds,
+                    languageTag = pluginLanguageTag,
                     onNavigateBack = { section = SettingsSection.Menu }
                 )
 
@@ -823,6 +873,9 @@ fun SettingsScreen(
                 SettingsSection.SkillDetail -> "SkillDetail:${selectedSkill?.name.orEmpty()}"
                 SettingsSection.SubAgentDetail -> "SubAgentDetail:${selectedSubAgent?.name.orEmpty()}"
                 SettingsSection.PluginDetail -> "PluginDetail:${selectedPluginId.orEmpty()}"
+                SettingsSection.PluginStoreDetail ->
+                    "PluginStoreDetail:${selectedStoreItem?.source?.id.orEmpty()}:${selectedStoreItem?.plugin?.id.orEmpty()}"
+                SettingsSection.PluginDevDetail -> "PluginDevDetail:${selectedDevProject?.dirName.orEmpty()}"
                 SettingsSection.PluginPage -> "PluginPage:${activePluginPage?.key.orEmpty()}"
                 SettingsSection.PromptDetail -> "PromptDetail:${selectedPrompt?.number ?: 0}"
                 else -> current.name
@@ -844,6 +897,12 @@ fun SettingsScreen(
                             selectedSubAgent?.name ?: stringResource(current.titleRes)
                         } else if (current == SettingsSection.PluginDetail) {
                             selectedPlugin?.displayName(pluginLanguageTag) ?: stringResource(current.titleRes)
+                        } else if (current == SettingsSection.PluginStoreDetail) {
+                            selectedStoreItem?.plugin?.name?.resolve(pluginLanguageTag)
+                                ?: stringResource(current.titleRes)
+                        } else if (current == SettingsSection.PluginDevDetail) {
+                            currentDevProject?.let { it.name?.resolve(pluginLanguageTag) ?: it.dirName }
+                                ?: stringResource(current.titleRes)
                         } else if (current == SettingsSection.PluginPage) {
                             activePluginPage?.title?.resolve(pluginLanguageTag) ?: stringResource(current.titleRes)
                         } else if (expanded && current == SettingsSection.Menu) {
@@ -1009,11 +1068,29 @@ fun SettingsScreen(
                             }
                         }
                         SettingsSection.Plugins -> {
+                            IconButton(onClick = { showPluginSettingsSheet = true }) {
+                                Icon(
+                                    FeatherIcons.Settings,
+                                    contentDescription = stringResource(R.string.plugins_settings_title),
+                                    tint = MaterialTheme.colorScheme.onBackground,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
                             IconButton(onClick = { pluginZipLauncher.launch(PluginPackageMimeTypes) }) {
                                 Icon(
                                     FeatherIcons.Plus,
                                     contentDescription = stringResource(R.string.plugins_import),
                                     tint = MaterialTheme.colorScheme.onBackground,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                        SettingsSection.PluginDetail -> selectedPlugin?.let {
+                            IconButton(onClick = { showPluginUninstallConfirm = true }) {
+                                Icon(
+                                    FeatherIcons.Trash2,
+                                    contentDescription = stringResource(R.string.plugins_uninstall),
+                                    tint = MaterialTheme.colorScheme.error,
                                     modifier = Modifier.size(22.dp)
                                 )
                             }
@@ -1225,7 +1302,6 @@ fun SettingsScreen(
                         onDeleteFragment = promptsViewModel::deleteFragment,
                         onReorder = promptsViewModel::reorderFragments,
                         onToggleBuiltinDisabled = promptsViewModel::setBuiltinDisabled,
-                        onToggleFragment = promptsViewModel::setFragmentEnabled,
                         onBatchDeleteFragments = promptsViewModel::deleteFragments
                     )
                     if (showResetPrompts) {
@@ -1442,28 +1518,42 @@ fun SettingsScreen(
                 SettingsSection.Plugins -> PluginsSection(
                     plugins = plugins,
                     loaded = pluginsLoaded,
+                    devMode = pluginDevMode,
+                    devProjects = pluginDevProjects,
+                    devRootPath = pluginsViewModel.devRootPath,
+                    refreshing = pluginsRefreshing,
+                    devRefreshing = pluginDevRefreshing,
+                    onRefresh = pluginsViewModel::refresh,
+                    onRefreshDevProjects = pluginsViewModel::refreshDevProjects,
+                    onOpenDevDetail = {
+                        selectedDevProject = it
+                        section = SettingsSection.PluginDevDetail
+                    },
+                    onSetDevEnabled = { project, enabled ->
+                        val installed = plugins.firstOrNull { it.id == project.pluginId }
+                        when {
+                            installed != null -> if (installed.status == PluginStatus.OK) {
+                                pluginsViewModel.setEnabled(installed.id, enabled)
+                            }
+                            enabled && project.error == null -> pluginsViewModel.installDevProject(project)
+                        }
+                    },
                     onOpenDetail = {
                         selectedPluginId = it.id
                         section = SettingsSection.PluginDetail
                     },
                     onToggleEnabled = { plugin, enabled -> pluginsViewModel.setEnabled(plugin.id, enabled) },
-                    onUninstall = { plugin -> pluginsViewModel.uninstall(plugin.id) },
-                    devMode = pluginDevMode,
-                    devRootPath = pluginsViewModel.devRootPath,
-                    devProjects = pluginDevProjects,
-                    onSetDevMode = pluginsViewModel::setDevMode,
-                    onRefreshDevProjects = pluginsViewModel::refreshDevProjects,
-                    onInstallDevProject = pluginsViewModel::installDevProject
+                    onShowStorePreview = pluginsViewModel::showPreview,
+                    onOpenStoreDetail = {
+                        selectedStoreItem = it
+                        section = SettingsSection.PluginStoreDetail
+                    }
                 )
                 SettingsSection.PluginDetail -> selectedPlugin?.let { plugin ->
                     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
                     PluginDetailSection(
                         plugin = plugin,
                         onToggleEnabled = { pluginsViewModel.setEnabled(plugin.id, it) },
-                        onUninstall = {
-                            pluginsViewModel.uninstall(plugin.id)
-                            section = SettingsSection.Plugins
-                        },
                         bridgeFactory = { page, post, onClosePage ->
                             pluginsViewModel.createWebBridge(
                                 page = page,
@@ -1481,7 +1571,25 @@ fun SettingsScreen(
                         onPrepareDependencies = { pluginsViewModel.prepareDependencies(plugin.id) },
                         shizukuGranted = plugin.id in shizukuGrantedPluginIds,
                         shizukuState = shizukuState,
-                        onSetShizukuGranted = { pluginsViewModel.setShizukuGranted(plugin, it) }
+                        onSetShizukuGranted = { pluginsViewModel.setShizukuGranted(plugin, it) },
+                        overlayGranted = plugin.id in overlayGrantedPluginIds,
+                        onSetOverlayGranted = { pluginsViewModel.setOverlayGranted(plugin, it) },
+                        backupGranted = plugin.id in backupGrantedPluginIds,
+                        onSetBackupGranted = { pluginsViewModel.setBackupGranted(plugin, it) }
+                    )
+                }
+                SettingsSection.PluginStoreDetail -> selectedStoreItem?.let { item ->
+                    PluginStoreDetailSection(
+                        item = item,
+                        onShowPreview = pluginsViewModel::showPreview
+                    )
+                }
+                SettingsSection.PluginDevDetail -> currentDevProject?.let { project ->
+                    PluginDevDetailSection(
+                        project = project,
+                        plugins = plugins,
+                        devRootPath = pluginsViewModel.devRootPath,
+                        onInstall = { pluginsViewModel.installDevProject(project) }
                     )
                 }
                 SettingsSection.About -> AboutSection(
@@ -1731,6 +1839,47 @@ fun SettingsScreen(
 
     PluginImportHost(viewModel = pluginsViewModel)
 
+    if (showPluginUninstallConfirm) {
+        selectedPlugin?.let { plugin ->
+            AlertDialog(
+                onDismissRequest = { showPluginUninstallConfirm = false },
+                title = { Text(stringResource(R.string.plugins_uninstall_confirm_title)) },
+                text = {
+                    Text(stringResource(R.string.plugins_uninstall_confirm_message, plugin.displayName(pluginLanguageTag)))
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showPluginUninstallConfirm = false
+                            pluginsViewModel.uninstall(plugin.id)
+                        }
+                    ) { Text(stringResource(R.string.common_delete)) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showPluginUninstallConfirm = false }) {
+                        Text(stringResource(R.string.common_cancel))
+                    }
+                }
+            )
+        }
+    }
+
+    if (showPluginSettingsSheet && section == SettingsSection.Plugins) {
+        PluginSettingsSheet(
+            devMode = pluginDevMode,
+            devRootPath = pluginsViewModel.devRootPath,
+            indexSourceText = pluginIndexSourceText,
+            downloadMirror = pluginDownloadMirror,
+            onSetIndexSourceText = pluginsViewModel::setIndexSourceText,
+            onSetDownloadMirror = pluginsViewModel::setDownloadMirror,
+            onSetDevMode = pluginsViewModel::setDevMode,
+            onDismiss = {
+                pluginsViewModel.savePluginSettings()
+                showPluginSettingsSheet = false
+            }
+        )
+    }
+
     subAgentToDelete?.let { target ->
         val deleting = target.name in subAgentDeleting
         var deleteStarted by remember(target) { mutableStateOf(false) }
@@ -1933,8 +2082,8 @@ internal fun SettingsMenu(
     onOpenLanguageSheet: () -> Unit,
     onOpenManual: () -> Unit,
     onRerunOnboarding: () -> Unit,
-    pluginPages: List<PluginSettingsPage>,
-    onOpenPluginPage: (PluginSettingsPage) -> Unit,
+    pluginPages: List<PluginPage>,
+    onOpenPluginPage: (PluginPage) -> Unit,
     onOpen: (SettingsSection) -> Unit
 ) {
     val pluginLanguageTag = currentLanguageTag()
@@ -2039,7 +2188,7 @@ internal fun SettingsMenu(
                     )
                 }
             )
-            PluginSettingsRows(pluginPages, PluginSettingsAnchors.GENERAL, pluginLanguageTag, onOpenPluginPage)
+            PluginSettingsRows(pluginPages, PluginUiSlots.SETTINGS_GENERAL, pluginLanguageTag, onOpenPluginPage)
         }
 
         // ── AI 配置 ──
@@ -2099,7 +2248,7 @@ internal fun SettingsMenu(
                 title = stringResource(SettingsSection.Memory.titleRes),
                 onClick = { onOpen(SettingsSection.Memory) }
             )
-            PluginSettingsRows(pluginPages, PluginSettingsAnchors.AI, pluginLanguageTag, onOpenPluginPage)
+            PluginSettingsRows(pluginPages, PluginUiSlots.SETTINGS_AI, pluginLanguageTag, onOpenPluginPage)
         }
 
         // ── 运行环境 ──
@@ -2122,7 +2271,7 @@ internal fun SettingsMenu(
                 title = stringResource(SettingsSection.RemoteServers.titleRes),
                 onClick = { onOpen(SettingsSection.RemoteServers) }
             )
-            PluginSettingsRows(pluginPages, PluginSettingsAnchors.ENVIRONMENT, pluginLanguageTag, onOpenPluginPage)
+            PluginSettingsRows(pluginPages, PluginUiSlots.SETTINGS_ENVIRONMENT, pluginLanguageTag, onOpenPluginPage)
         }
 
         // ── 权限与后台 ──
@@ -2145,7 +2294,7 @@ internal fun SettingsMenu(
                 title = stringResource(SettingsSection.BackgroundRun.titleRes),
                 onClick = { onOpen(SettingsSection.BackgroundRun) }
             )
-            PluginSettingsRows(pluginPages, PluginSettingsAnchors.PERMISSIONS, pluginLanguageTag, onOpenPluginPage)
+            PluginSettingsRows(pluginPages, PluginUiSlots.SETTINGS_PERMISSIONS, pluginLanguageTag, onOpenPluginPage)
         }
 
         // ── 数据与诊断 ──
@@ -2174,7 +2323,7 @@ internal fun SettingsMenu(
                 title = stringResource(SettingsSection.Log.titleRes),
                 onClick = { onOpen(SettingsSection.Log) }
             )
-            PluginSettingsRows(pluginPages, PluginSettingsAnchors.DATA, pluginLanguageTag, onOpenPluginPage)
+            PluginSettingsRows(pluginPages, PluginUiSlots.SETTINGS_DATA, pluginLanguageTag, onOpenPluginPage)
         }
 
         // ── 帮助与关于 ──
@@ -2197,36 +2346,29 @@ internal fun SettingsMenu(
                 title = stringResource(SettingsSection.About.titleRes),
                 onClick = { onOpen(SettingsSection.About) }
             )
-            PluginSettingsRows(pluginPages, PluginSettingsAnchors.HELP, pluginLanguageTag, onOpenPluginPage)
+            PluginSettingsRows(pluginPages, PluginUiSlots.SETTINGS_HELP, pluginLanguageTag, onOpenPluginPage)
         }
     }
 
 }
 
-/** 插件注册的设置页入口行：按锚点追加到对应分组末尾，副标题标明来源。 */
+/** 插件槽位入口行：按槽位追加到对应分组末尾，副标题标明来源。 */
 @Composable
 private fun PluginSettingsRows(
-    pages: List<PluginSettingsPage>,
-    anchor: String,
+    pages: List<PluginPage>,
+    slot: String,
     languageTag: String,
-    onOpen: (PluginSettingsPage) -> Unit
+    onOpen: (PluginPage) -> Unit
 ) {
-    pages.filter { it.anchor == anchor }.forEach { page ->
+    pages.filter { it.slot == slot }.forEach { page ->
         SettingsDivider()
         SettingsRow(
-            icon = resolvePluginPageIcon(page.icon),
+            icon = pluginPageIcon(page.icon),
             title = page.title.resolve(languageTag),
             subtitle = stringResource(R.string.plugins_ext_entry_subtitle, page.pluginId),
             onClick = { onOpen(page) }
         )
     }
-}
-
-private fun resolvePluginPageIcon(icon: String): ImageVector = when (icon.lowercase()) {
-    "book", "memory", "brain" -> FeatherIcons.Book
-    "file", "text" -> FeatherIcons.FileText
-    "settings" -> FeatherIcons.Sliders
-    else -> FeatherIcons.Package
 }
 
 /** 导入结果弹窗：导入中显示转圈；完成时展示成功数量与逐个跳过原因（整体失败则直接报错误）。 */

@@ -4,28 +4,81 @@ package com.aicode.feature.plugin.domain
 data class PluginContributionRef(val id: String, val file: String)
 
 /**
- * 设置页入口可挂载的宿主分组。插件只能取这里的值，不能自定义插入位置，
- * 避免第三方入口打乱设置页布局；新增分组属于宿主插件 API 变更。
+ * 插件页可挂载的宿主槽位。插件只能取这里的值，不能自定义插入位置，
+ * 避免第三方入口打乱宿主布局；新增槽位属于宿主插件 API 变更。
  */
-object PluginSettingsAnchors {
-    const val GENERAL = "settings.general"
-    const val AI = "settings.ai"
-    const val ENVIRONMENT = "settings.environment"
-    const val PERMISSIONS = "settings.permissions"
-    const val DATA = "settings.data"
-    const val HELP = "settings.help"
+object PluginUiSlots {
+    const val SETTINGS_GENERAL = "settings.general"
+    const val SETTINGS_AI = "settings.ai"
+    const val SETTINGS_ENVIRONMENT = "settings.environment"
+    const val SETTINGS_PERMISSIONS = "settings.permissions"
+    const val SETTINGS_DATA = "settings.data"
+    const val SETTINGS_HELP = "settings.help"
 
-    val ALL = setOf(GENERAL, AI, ENVIRONMENT, PERMISSIONS, DATA, HELP)
+    /** 侧栏底部、浏览器与设置之上。 */
+    const val DRAWER_FOOTER = "drawer.footer"
+
+    /** 聊天顶栏「更多」菜单底部。 */
+    const val CHAT_HEADER_MENU = "chat.header.menu"
+
+    /** 聊天空态建议区。 */
+    const val CHAT_WELCOME = "chat.welcome"
+
+    /** 会话长按菜单。 */
+    const val CHAT_SESSION_MENU = "chat.session.menu"
+
+    /** 文件树文件/目录长按菜单。 */
+    const val FILES_TREE_MENU = "files.tree.menu"
+
+    /** 代码编辑器选中文本后的浮动菜单。 */
+    const val EDITOR_SELECTION_MENU = "editor.selection.menu"
+
+    /** 备份页「选择导出数据」组末尾，用于插件提供额外数据选项。 */
+    const val BACKUP_DATA = "backup.data"
+
+    val ALL = setOf(
+        SETTINGS_GENERAL, SETTINGS_AI, SETTINGS_ENVIRONMENT, SETTINGS_PERMISSIONS, SETTINGS_DATA, SETTINGS_HELP,
+        DRAWER_FOOTER, CHAT_HEADER_MENU, CHAT_WELCOME, CHAT_SESSION_MENU, FILES_TREE_MENU, EDITOR_SELECTION_MENU,
+        BACKUP_DATA
+    )
+
+    /** 这些槽位只接受动作入口，不提供页面或提示词。 */
+    val ACTION_ONLY = setOf(FILES_TREE_MENU, EDITOR_SELECTION_MENU)
+
+    /** 这些槽位只接受数据选项：没有页面、没有 handler，由宿主渲染开关。 */
+    val DATA_ONLY = setOf(BACKUP_DATA)
+
+    /** 单插件在每个槽位可声明的入口数；超出在安装时拒绝，避免一个插件挤满列表。 */
+    const val MAX_ENTRIES_PER_PLUGIN = 2
+
+    /** 设置页槽位：只接受页面入口，交互型入口在聊天上下文里使用。 */
+    fun isSettingsSlot(slot: String): Boolean = slot.startsWith("settings.")
 }
 
-/** `contributes.settingsPages` 声明的设置页入口；[page] 是包内 HTML 相对路径。 */
-data class PluginSettingsPageRef(
+/** 槽位入口的三种形态：HTML 页面、调用插件 runtime 的动作，或宿主渲染的数据选项。 */
+enum class PluginUiEntryKind { PAGE, ACTION, DATA }
+
+/**
+ * `contributes.uiEntries` 声明的一个槽位入口。`page` 与 `handler` 必须且只能出现一个；
+ * `page` 是包内 HTML 相对路径，`handler` 走插件 runtime 的 `ui.invoke`。
+ */
+data class PluginUiEntryRef(
     val id: String,
+    val slot: String,
     val title: LocalizedText,
-    val anchor: String,
-    val page: String,
+    val page: String? = null,
+    val handler: String? = null,
+    /** 仅动作入口：执行前让宿主弹确认框。 */
+    val confirm: Boolean = false,
     val icon: String = "book"
-)
+) {
+    val kind: PluginUiEntryKind
+        get() = when {
+            slot == PluginUiSlots.BACKUP_DATA -> PluginUiEntryKind.DATA
+            page != null -> PluginUiEntryKind.PAGE
+            else -> PluginUiEntryKind.ACTION
+        }
+}
 
 /** `contributes.workspaceTools` 声明的工作区工具项，包含入口元数据与页面定义文件引用。 */
 data class PluginWorkspaceToolRef(
@@ -104,6 +157,27 @@ object PluginHookEvents {
     /** 宿主判定需要使用者确认后、弹窗前的代审核。 */
     const val AGENT_PERMISSION_REVIEW = "agent.permission.review"
 
+    /** 插件安装或版本替换完成；只派发给该插件自身。 */
+    const val PLUGIN_INSTALLED = "plugin.installed"
+
+    /** 插件卸载生效前；此时安装目录与数据目录仍可访问。 */
+    const val PLUGIN_UNINSTALLED = "plugin.uninstalled"
+
+    /** 插件启用生效后。 */
+    const val PLUGIN_ENABLED = "plugin.enabled"
+
+    /** 插件停用生效前；此时插件仍可运行。 */
+    const val PLUGIN_DISABLED = "plugin.disabled"
+
+    /** 一次完整备份开始写入归档前；payload 带插件暂存目录，插件把额外数据写入其中。 */
+    const val BACKUP_EXPORT_BEFORE = "backup.export.before"
+
+    /** 一次还原成功后；payload 带备份包中该插件区段的暂存目录，插件从其中恢复数据。 */
+    const val BACKUP_IMPORT_FINISHED = "backup.import.finished"
+
+    /** 涉及备份文件与使用者数据的事件；声明这些事件必须同时声明 contributes.backup。 */
+    val BACKUP = setOf(BACKUP_EXPORT_BEFORE, BACKUP_IMPORT_FINISHED)
+
     /** 只允许 `mode: "transform"` 的事件。 */
     val TRANSFORM = setOf(AGENT_TOOL_BEFORE, AGENT_TOOL_AFTER, AGENT_HTTP_BEFORE)
 
@@ -122,7 +196,13 @@ object PluginHookEvents {
         AGENT_TOOL_BEFORE,
         AGENT_TOOL_AFTER,
         AGENT_HTTP_BEFORE,
-        AGENT_PERMISSION_REVIEW
+        AGENT_PERMISSION_REVIEW,
+        PLUGIN_INSTALLED,
+        PLUGIN_UNINSTALLED,
+        PLUGIN_ENABLED,
+        PLUGIN_DISABLED,
+        BACKUP_EXPORT_BEFORE,
+        BACKUP_IMPORT_FINISHED
     )
 }
 
@@ -166,6 +246,46 @@ data class PluginProviderRef(
 data class PluginShizukuRef(val purpose: String)
 
 /**
+ * `contributes.backup` 声明插件接收备份与还原事件。事件会带出完整备份文件，
+ * 可能包含 API Key、会话记录等敏感数据，因此必须由使用者单独授权。
+ */
+data class PluginBackupRef(val purpose: String)
+
+/**
+ * `contributes.modelAccess` 声明插件会调用使用者已配置的 AI 供应商。
+ * 声明本身不授予 Key 读取权限；请求经宿主适配器发出，会计入对应渠道的用量。
+ */
+data class PluginModelAccessRef(val purpose: String)
+
+/** `contributes.overlay.surfaces[]` 声明的宿主托管浮层；页面由宿主 WebView 加载。 */
+data class PluginOverlaySurfaceRef(
+    val id: String,
+    val page: String,
+    val width: Int = 240,
+    val height: Int = 320,
+    val draggable: Boolean = true,
+    val snap: String = PluginOverlaySnap.NONE
+)
+
+/**
+ * 浮层松手后的吸附轴。窗口几何由宿主完成，插件只消费 `snap` 事件调整贴边后的表现。
+ */
+object PluginOverlaySnap {
+    const val NONE = "none"
+    const val X = "x"
+    const val Y = "y"
+    const val BOTH = "both"
+
+    val ALL = setOf(NONE, X, Y, BOTH)
+}
+
+/** `contributes.overlay` 声明插件使用系统悬浮窗；使用者需在插件详情中单独授权。 */
+data class PluginOverlayRef(
+    val purpose: String,
+    val surfaces: List<PluginOverlaySurfaceRef> = emptyList()
+)
+
+/**
  * 已通过结构校验的插件清单（`plugin.json`）。校验只证明格式合法，不代表可信：
  * 安装身份还取决于来源，清单里的 `id` / `publisher` 文本不是身份证明。
  */
@@ -182,20 +302,26 @@ data class PluginManifest(
     val skills: List<PluginContributionRef>,
     val agents: List<PluginContributionRef>,
     val workspaceTools: List<PluginWorkspaceToolRef> = emptyList(),
-    val settingsPages: List<PluginSettingsPageRef> = emptyList(),
+    val uiEntries: List<PluginUiEntryRef> = emptyList(),
     val runtime: PluginRuntimeRef? = null,
     val tools: List<PluginToolRef> = emptyList(),
     val hooks: List<PluginHookRef> = emptyList(),
     val mcp: List<PluginMcpRef> = emptyList(),
     val providers: List<PluginProviderRef> = emptyList(),
     val shizuku: PluginShizukuRef? = null,
-    val configPage: String? = null
+    val overlay: PluginOverlayRef? = null,
+    val backup: PluginBackupRef? = null,
+    val modelAccess: PluginModelAccessRef? = null,
+    val configPage: String? = null,
+    /** 内置图标名，或包内 `.png` / `.webp` 相对路径；缺省用宿主默认图标。 */
+    val icon: String? = null
 ) {
     /** 清单声明的贡献总数。 */
     val contributionCount: Int
-        get() = skills.size + agents.size + workspaceTools.size + settingsPages.size +
+        get() = skills.size + agents.size + workspaceTools.size + uiEntries.size +
             tools.size + hooks.size + mcp.size + providers.size + (if (shizuku != null) 1 else 0) +
-            (if (configPage != null) 1 else 0)
+            (if (overlay != null) 1 + overlay.surfaces.size else 0) + (if (backup != null) 1 else 0) +
+            (if (modelAccess != null) 1 else 0) + (if (configPage != null) 1 else 0)
 }
 
 /** 安装与加载过程中的失败原因。UI 按 [PluginErrorCode] 取本地化文案，[detail] 是语言无关的定位信息。 */

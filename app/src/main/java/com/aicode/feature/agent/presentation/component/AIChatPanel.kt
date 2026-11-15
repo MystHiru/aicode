@@ -92,6 +92,7 @@ import com.aicode.feature.agent.presentation.QueuedRequest
 import com.aicode.feature.agent.presentation.hasVisibleContent
 import com.aicode.feature.onboarding.domain.OnboardingStep
 import com.aicode.feature.onboarding.presentation.onboardingTarget
+import com.aicode.feature.plugin.domain.PluginUiEntry
 import com.aicode.feature.plugin.presentation.PluginTipBanner
 import com.aicode.feature.settings.presentation.SettingsViewModel
 import com.aicode.feature.settings.domain.model.DashboardContext
@@ -664,7 +665,10 @@ fun AIChatPanel(
     viewModel: AIAgentViewModel,
     onNavigateToTerminal: () -> Unit = {},
     onNavigateToGit: () -> Unit = {},
-    onNavigateToBrowser: () -> Unit = {},
+    pluginEntries: List<PluginUiEntry> = emptyList(),
+    pluginLanguageTag: String = "zh-CN",
+    onPluginEntry: (PluginUiEntry) -> Unit = {},
+    welcomePluginEntries: List<PluginUiEntry> = emptyList(),
     settingsViewModel: SettingsViewModel? = null,
     workspaceViewModel: WorkspaceViewModel? = null,
     onOpenDrawer: () -> Unit,
@@ -672,7 +676,6 @@ fun AIChatPanel(
     /** 大屏右栏当前开的是终端 / Git 时，顶栏对应图标高亮。 */
     terminalActive: Boolean = false,
     gitActive: Boolean = false,
-    browserActive: Boolean = false,
     currentFile: String? = null,
     selectedCode: String? = null,
     onboardingStep: OnboardingStep? = null,
@@ -1603,14 +1606,15 @@ fun AIChatPanel(
                 onNewChat = { viewModel.newSession() },
                 onNavigateToTerminal = onNavigateToTerminal,
                 onNavigateToGit = onNavigateToGit,
-                onNavigateToBrowser = onNavigateToBrowser,
                 currentMode = currentMode,
                 onToggleMode = { viewModel.setSessionMode(it) },
                 connectionState = connectionState?.takeIf { isRemote },
                 showMenuButton = showMenuButton,
                 terminalActive = terminalActive,
                 gitActive = gitActive,
-                browserActive = browserActive
+                pluginEntries = pluginEntries,
+                pluginLanguageTag = pluginLanguageTag,
+                onPluginEntry = onPluginEntry
             )
         }
     ) { padding ->
@@ -1647,6 +1651,9 @@ fun AIChatPanel(
                 } else if (messages.isEmpty()) {
                     WelcomeState(
                         bottomReserve = with(LocalDensity.current) { inputBarReservePx.toDp() },
+                        pluginEntries = welcomePluginEntries,
+                        languageTag = pluginLanguageTag,
+                        onPluginEntry = onPluginEntry,
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
