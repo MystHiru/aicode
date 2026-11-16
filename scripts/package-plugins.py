@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把 plugin-samples 下的示例插件打成可导入的 zip 包。
+"""把 plugins/samples 下的示例插件打成可导入的 zip 包。
 
 用法：
     python3 scripts/package-plugins.py                 # 打包全部示例
@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SAMPLES_DIR = ROOT / "plugin-samples"
+SAMPLES_DIR = ROOT / "plugins/samples"
 OUTPUT_DIR = ROOT / "plugin-packages"
 
 # 与宿主安装器保持同一量级的上限，避免打出必然被拒绝的包。
@@ -29,7 +31,7 @@ MAX_ENTRIES = 512
 MAX_ENTRY_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
 
-SKIPPED_DIRS = {".git", ".gradle", "node_modules", ".venv", "__pycache__", ".idea"}
+SKIPPED_DIRS = {".git", ".gradle", "node_modules", ".venv", "__pycache__", ".idea", "test"}
 SKIPPED_NAMES = {".DS_Store", "Thumbs.db"}
 
 
@@ -73,6 +75,25 @@ def iter_package_files(sample_dir: Path):
         yield path, relative.as_posix()
 
 
+def build_samples(sample_dirs: list[Path]) -> None:
+    """打包前从 src 重新生成每个插件的 dist/main.js 与 pages/ 产物。"""
+    node = shutil.which("node")
+    if not node:
+        fail("未找到 node，无法从 src 构建插件产物")
+    build_script = ROOT / "plugins/build.mjs"
+    if not build_script.is_file():
+        fail(f"缺少构建脚本: {build_script}")
+    for sample_dir in sample_dirs:
+        print(f"构建 {sample_dir.name} ...", flush=True)
+        result = subprocess.run(
+            [node, str(build_script), "--plugin", sample_dir.name],
+            cwd=ROOT,
+            check=False,
+        )
+        if result.returncode != 0:
+            fail(f"{sample_dir.name} 构建失败")
+
+
 def package_sample(sample_dir: Path, output_dir: Path) -> Path:
     manifest = load_manifest(sample_dir)
     plugin_id = manifest["id"]
@@ -111,7 +132,7 @@ def package_sample(sample_dir: Path, output_dir: Path) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="打包 plugin-samples 下的示例插件")
+    parser = argparse.ArgumentParser(description="打包 plugins/samples 下的示例插件")
     parser.add_argument("samples", nargs="*", help="只打包指定目录名；省略则打包全部")
     parser.add_argument("--clean", action="store_true", help="打包前删除 plugin-packages 下已有的 zip")
     args = parser.parse_args()
@@ -129,6 +150,8 @@ def main() -> int:
         )
     if not sample_dirs:
         fail(f"{SAMPLES_DIR} 下没有找到示例插件")
+
+    build_samples(sample_dirs)
 
     for sample_dir in sample_dirs:
         if not sample_dir.is_dir():
