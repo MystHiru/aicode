@@ -88,6 +88,9 @@
     <string name="settings_startup_session_recent_desc">Open the most recently updated session</string>
     <string name="settings_delete_external_workspace_sessions">Delete external workspace chats</string>
     <string name="settings_delete_external_workspace_sessions_desc">Also delete a workspace\'s chats when an external local workspace is removed</string>
+    <string name="settings_general_reply">Reply</string>
+    <string name="settings_auto_expand_reasoning">Auto-expand thinking</string>
+    <string name="settings_auto_expand_reasoning_desc">Thinking starts expanded; when off it stays collapsed until tapped</string>
     <string name="settings_general_network">Network</string>
     <string name="settings_first_byte_timeout">First byte timeout</string>
     <string name="settings_first_byte_timeout_desc">Max wait for the first response chunk</string>
@@ -726,6 +729,13 @@
     <string name="drawer_expand_subagents">Expand subagents</string>
     <string name="drawer_collapse_subagents">Collapse subagents</string>
     <string name="file_browser_up">Up one level</string>
+    <string name="file_browser_title">Files</string>
+    <string name="file_browser_add_folder">Add local folder</string>
+    <string name="file_browser_add_folder_failed">Cannot add this folder. Pick a folder in device storage and grant storage permission</string>
+    <string name="file_browser_upload_file">Upload files</string>
+    <string name="file_browser_upload_folder">Upload folder</string>
+    <string name="file_browser_upload_failed">Upload failed. Check storage permission and write access to the target folder</string>
+    <string name="file_browser_remove_folder">Remove this folder</string>
     <string name="file_browser_empty">Empty folder</string>
     <string name="file_browser_error">Failed to read folder</string>
     <string name="file_browser_refresh">Refresh</string>

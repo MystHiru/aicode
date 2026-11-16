@@ -88,6 +88,9 @@
     <string name="settings_startup_session_recent_desc">直接进入最近更新的会话</string>
     <string name="settings_delete_external_workspace_sessions">删除外部工作区聊天记录</string>
     <string name="settings_delete_external_workspace_sessions_desc">移除外部本地工作区时，一并删除该工作区的聊天记录</string>
+    <string name="settings_general_reply">回复</string>
+    <string name="settings_auto_expand_reasoning">思考自动展开</string>
+    <string name="settings_auto_expand_reasoning_desc">思考过程默认展开显示，关闭后保持收起、点击查看</string>
     <string name="settings_general_network">网络</string>
     <string name="settings_first_byte_timeout">首字节超时</string>
     <string name="settings_first_byte_timeout_desc">等待首个响应块的最长时间</string>
@@ -721,6 +724,13 @@
     <string name="drawer_expand_subagents">展开子代理</string>
     <string name="drawer_collapse_subagents">收起子代理</string>
     <string name="file_browser_up">上一级</string>
+    <string name="file_browser_title">文件树</string>
+    <string name="file_browser_add_folder">添加本机文件夹</string>
+    <string name="file_browser_add_folder_failed">无法添加该文件夹，请选择设备存储中的目录并授予存储权限</string>
+    <string name="file_browser_upload_file">上传文件</string>
+    <string name="file_browser_upload_folder">上传文件夹</string>
+    <string name="file_browser_upload_failed">上传失败，请检查存储权限与目标目录写入权限</string>
+    <string name="file_browser_remove_folder">移除此文件夹</string>
     <string name="file_browser_empty">空目录</string>
     <string name="file_browser_error">读取目录失败</string>
     <string name="file_browser_refresh">刷新</string>

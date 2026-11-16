@@ -210,7 +210,9 @@ sealed interface UpdateCheckUiState {
     /** 下载或自检失败。[previous] 保留版本信息，供「重试」与「浏览器下载」继续使用。 */
     data class DownloadFailed(
         val previous: NewVersion,
-        val message: String
+        val message: String,
+        /** 换镜像只影响下载来源；自检判定同版本/更旧时换镜像无用，不展示该提示。 */
+        val showMirrorHint: Boolean = true
     ) : UpdateCheckUiState
 
     data class Error(val message: String) : UpdateCheckUiState
@@ -592,6 +594,9 @@ class SettingsViewModel @Inject constructor(
 
     private val _enterToSend = MutableStateFlow(false)
     val enterToSend: StateFlow<Boolean> = _enterToSend.asStateFlow()
+
+    private val _autoExpandReasoning = MutableStateFlow(true)
+    val autoExpandReasoning: StateFlow<Boolean> = _autoExpandReasoning.asStateFlow()
 
     private val _compactionThresholdPercent = MutableStateFlow(85)
     val compactionThresholdPercent: StateFlow<Int> = _compactionThresholdPercent.asStateFlow()
@@ -1015,6 +1020,12 @@ class SettingsViewModel @Inject constructor(
             launch {
                 generalSettingsRepository.enterToSendFlow.collectLatest {
                     _enterToSend.value = it
+                }
+            }
+
+            launch {
+                generalSettingsRepository.autoExpandReasoningFlow.collectLatest {
+                    _autoExpandReasoning.value = it
                 }
             }
 
@@ -1552,18 +1563,25 @@ class SettingsViewModel @Inject constructor(
     /** 重新扫描技能（进入设置页 / 启停切换后调用，反映磁盘上增删改）。 */
     fun refreshSkills() {
         viewModelScope.launch {
-            _skills.value = withContext(Dispatchers.IO) {
-                val disabled = skillRepository.disabledNames()
-                skillRepository.listAllSkills().map { entry ->
-                    SkillUiEntry(
-                        name = entry.skill.name,
-                        description = entry.skill.description,
-                        scope = entry.scope,
-                        disabled = entry.skill.name.lowercase() in disabled,
-                        instructions = entry.skill.instructions,
-                        requiredTools = entry.skill.requiredTools
-                    )
+            _skills.value = try {
+                withContext(Dispatchers.IO) {
+                    skillRepository.refreshDirectoryCache()
+                    val disabled = skillRepository.disabledNames()
+                    skillRepository.listAllSkills().map { entry ->
+                        SkillUiEntry(
+                            name = entry.skill.name,
+                            description = entry.skill.description,
+                            scope = entry.scope,
+                            disabled = entry.skill.name.lowercase() in disabled,
+                            instructions = entry.skill.instructions,
+                            requiredTools = entry.skill.requiredTools
+                        )
+                    }
                 }
+            } catch (error: java.io.IOException) {
+                if (error is java.io.InterruptedIOException) throw error
+                FileLogger.w("Settings", "技能清单读取失败", error)
+                emptyList()
             }
         }
     }
@@ -1707,25 +1725,32 @@ class SettingsViewModel @Inject constructor(
     /** 重新扫描子代理定义（进入设置页 / 删除后调用，反映盘上增删改）。 */
     fun refreshSubAgents() {
         viewModelScope.launch {
-            _subAgents.value = withContext(Dispatchers.IO) {
-                val disabled = agentDefinitionRepository.disabledNames()
-                agentDefinitionRepository.listAll().map { entry ->
-                    SubAgentUiEntry(
-                        name = entry.definition.name,
-                        description = entry.definition.description,
-                        scope = entry.scope,
-                        disabled = entry.definition.name.lowercase() in disabled,
-                        providerId = entry.definition.providerId,
-                        model = entry.definition.model,
-                        reasoningEffort = entry.definition.reasoningEffort,
-                        mode = entry.definition.mode,
-                        allowedTools = entry.definition.allowedTools,
-                        disallowedTools = entry.definition.disallowedTools,
-                        inject = entry.definition.inject,
-                        prompt = entry.definition.prompt,
-                        filePath = entry.definition.filePath
-                    )
+            _subAgents.value = try {
+                withContext(Dispatchers.IO) {
+                    agentDefinitionRepository.refreshDirectoryCache()
+                    val disabled = agentDefinitionRepository.disabledNames()
+                    agentDefinitionRepository.listAll().map { entry ->
+                        SubAgentUiEntry(
+                            name = entry.definition.name,
+                            description = entry.definition.description,
+                            scope = entry.scope,
+                            disabled = entry.definition.name.lowercase() in disabled,
+                            providerId = entry.definition.providerId,
+                            model = entry.definition.model,
+                            reasoningEffort = entry.definition.reasoningEffort,
+                            mode = entry.definition.mode,
+                            allowedTools = entry.definition.allowedTools,
+                            disallowedTools = entry.definition.disallowedTools,
+                            inject = entry.definition.inject,
+                            prompt = entry.definition.prompt,
+                            filePath = entry.definition.filePath
+                        )
+                    }
                 }
+            } catch (error: java.io.IOException) {
+                if (error is java.io.InterruptedIOException) throw error
+                FileLogger.w("Settings", "子代理清单读取失败", error)
+                emptyList()
             }
         }
     }
@@ -1948,7 +1973,8 @@ class SettingsViewModel @Inject constructor(
                     } else {
                         _updateCheckState.value = UpdateCheckUiState.DownloadFailed(
                             previous = target,
-                            message = verifyFailureMessage(verify)
+                            message = verifyFailureMessage(verify),
+                            showMirrorHint = verify !is ApkVerifyResult.NotNewer
                         )
                     }
                 }
@@ -2197,6 +2223,13 @@ class SettingsViewModel @Inject constructor(
     fun setEnterToSend(enabled: Boolean) {
         viewModelScope.launch {
             generalSettingsRepository.setEnterToSend(enabled)
+        }
+    }
+
+    /** 思考卡片是否默认展开正文。 */
+    fun setAutoExpandReasoning(enabled: Boolean) {
+        viewModelScope.launch {
+            generalSettingsRepository.setAutoExpandReasoning(enabled)
         }
     }
 

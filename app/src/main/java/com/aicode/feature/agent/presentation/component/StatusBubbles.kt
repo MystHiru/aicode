@@ -27,11 +27,17 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -651,7 +657,11 @@ private val REASONING_PREVIEW_MARKERS = charArrayOf(' ', '\t', '#', '*', '-', '>
 private val ReasoningWindowMaxHeight = 300.dp
 
 /**
- * 思考过程折叠行：左对齐、浅色弱化，与正式回复区分。**默认收起**，点这一行随时展开/收起。
+ * 思考过程折叠行：左对齐、浅色弱化，与正式回复区分。默认展开态由 [defaultExpanded] 决定
+ * （「偏好设置 → 思考自动展开」），点这一行随时展开/收起。
+ *
+ * 展开态与其他正文一样可长按选中复制（外层 [SelectionContainer] 统一负责选区）；
+ * 内容仍用懒渲染，超长思考不会因展开而一次性组合全部块。
  *
  * 收起态只占一行：行首思考图标 + 一行内容预览（见 [reasoningPreviewLine]，超宽省略号截断）；
  * 展开态换成完整正文（Markdown 渲染）。两态之间没有「显示尾巴几行」的中间态。
@@ -675,14 +685,18 @@ internal fun ReasoningBubble(
     live: Boolean = false,
     /** 展开态的外部覆盖（宿主持久化，见 [AIAgentViewModel.reasoningExpansionOverrides]）；null = 用内部状态。 */
     expandedOverride: Boolean? = null,
+    /** 没有外部覆盖时的初始展开态，取自「思考自动展开」偏好。 */
+    defaultExpanded: Boolean = false,
     /** 手动展开/收起时回传新状态，由上层持久化。 */
-    onExpandedChange: ((Boolean) -> Unit)? = null
+    onExpandedChange: ((Boolean) -> Unit)? = null,
+    scrollState: LazyListState = rememberLazyListState(),
 ) {
-    var localExpanded by remember { mutableStateOf(false) }
+    var localExpanded by remember { mutableStateOf(defaultExpanded) }
     val expanded = expandedOverride ?: localExpanded
     val toggleExpanded: (Boolean) -> Unit = { next ->
         if (onExpandedChange != null) onExpandedChange(next) else localExpanded = next
     }
+    val latestToggleExpanded by rememberUpdatedState(toggleExpanded)
     // 存绝对起始时间戳而非累加
     // 毫秒数，切页返回或气泡滚出视口重挂载后显示的仍是真实时长；起始戳连同已见文本的长度与
     // 指纹一起进 saveable，恢复时文本若不是同一轮的延续（期间已换轮）则重新计时。
@@ -757,22 +771,34 @@ internal fun ReasoningBubble(
                 Spacer(Modifier.height(Spacing.sm))
                 // 展开态用懒渲染（LazyMarkdownSuccess）：超长思考只组合可见块，不再一次性
                 // 组合全部节点把 Compose ChangeList 撑爆（OOM 根因）。高度上限交给内层 LazyColumn 自行滚动。
-                MarkdownContent(
-                    text = renderText,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    cache = cache,
-                    compact = true,
-                    lazyScroll = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = ReasoningWindowMaxHeight)
-                        .nestedScroll(rememberBoundNestedScrollConnection())
-                        .pointerInput(text) {
-                            detectTapGestures(
-                                onDoubleTap = { toggleExpanded(false) }
-                            )
-                        }
-                )
+                // 外层 SelectionContainer 负责长按选区：选中块会被 LazyColumn 钉住不回收，
+                // 复制只包含已组合的可见内容，与聊天正文的选区行为一致。
+                SelectionContainer {
+                    CompositionLocalProvider(
+                        LocalTextSelectionColors provides TextSelectionColors(
+                            handleColor = MaterialTheme.colorScheme.primary,
+                            backgroundColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.32f),
+                        )
+                    ) {
+                        MarkdownContent(
+                            text = renderText,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            cache = cache,
+                            compact = true,
+                            lazyScroll = true,
+                            lazyListState = scrollState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = ReasoningWindowMaxHeight)
+                                .nestedScroll(rememberBoundNestedScrollConnection())
+                                .pointerInput(Unit) {
+                                    detectTapGestures(
+                                        onDoubleTap = { latestToggleExpanded(false) }
+                                    )
+                                }
+                        )
+                    }
+                }
             }
         }
     }

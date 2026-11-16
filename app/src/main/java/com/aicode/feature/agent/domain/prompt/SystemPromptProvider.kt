@@ -3,6 +3,7 @@ package com.aicode.feature.agent.domain.prompt
 import android.content.Context
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.container.ContainerInstaller
+import com.aicode.feature.agent.domain.container.RemoteSshConnection
 import com.aicode.feature.agent.domain.memory.MemoryRepository
 import com.aicode.feature.agent.domain.memory.MemoryScope
 import com.aicode.feature.agent.domain.model.AgentContext
@@ -16,6 +17,7 @@ import com.aicode.feature.settings.data.repository.ExecutionMode
 import com.aicode.feature.settings.data.repository.ExecutionModeHolder
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -40,7 +42,8 @@ class SystemPromptProvider @Inject constructor(
     private val containerInstaller: ContainerInstaller,
     private val agentDefinitionRepository: AgentDefinitionRepository,
     private val executionModeHolder: ExecutionModeHolder,
-    private val roleRepository: com.aicode.feature.agent.domain.role.RoleRepository
+    private val roleRepository: com.aicode.feature.agent.domain.role.RoleRepository,
+    private val remoteSshConnection: RemoteSshConnection
 ) {
     // 抽象独立的 Source
     interface PromptSource {
@@ -67,10 +70,13 @@ class SystemPromptProvider @Inject constructor(
         private val cachedByKey = ConcurrentHashMap<SourceCacheKey, String>()
 
         override fun build(ctx: AgentContext): String? {
-            val key = SourceCacheKey(ctx.sessionId, ctx.projectRoot)
+            val key = SourceCacheKey(ctx.sessionId, ctx.projectRoot, environment = cacheEnvironment())
             val cached = cachedByKey[key]
             if (cached != null) return cached.ifEmpty { null }
-            val skills = try { skillRepository.listSkills() } catch (e: Exception) { return null }
+            val skills = try { skillRepository.listSkills() } catch (e: Exception) {
+                if (e is IOException) throw e
+                return null
+            }
             if (skills.isEmpty()) {
                 cachedByKey[key] = ""
                 return null
@@ -111,7 +117,8 @@ class SystemPromptProvider @Inject constructor(
                 ctx.sessionId,
                 ctx.projectRoot,
                 ctx.mode,
-                agentDefinitionRepository.definitionsVersion
+                agentDefinitionRepository.definitionsVersion,
+                cacheEnvironment()
             )
             val cached = cachedByKey[key]
             if (cached != null) return cached.ifEmpty { null }
@@ -119,6 +126,7 @@ class SystemPromptProvider @Inject constructor(
                 agentDefinitionRepository.listEnabled()
             } catch (e: Exception) {
                 FileLogger.w(TAG, "扫描子代理定义失败: ${e.message}", e)
+                if (e is IOException) throw e
                 return null
             }
             if (entries.isEmpty()) {
@@ -217,7 +225,7 @@ class SystemPromptProvider @Inject constructor(
         private val cachedByKey = ConcurrentHashMap<SourceCacheKey, MemoryLists>()
 
         fun build(ctx: AgentContext): MemoryLists {
-            val key = SourceCacheKey(ctx.sessionId, ctx.projectRoot)
+            val key = SourceCacheKey(ctx.sessionId, ctx.projectRoot, environment = cacheEnvironment())
             cachedByKey[key]?.let { return it }
             val memories = try { memoryRepository.listMemories(ctx.projectRoot) } catch (e: Exception) {
                 return MemoryLists(null, null)
@@ -249,8 +257,16 @@ class SystemPromptProvider @Inject constructor(
         val sessionId: String?,
         val projectRoot: String,
         val mode: AgentMode? = null,
-        val definitionVersion: Long = 0
+        val definitionVersion: Long = 0,
+        val environment: String
     )
+
+    private fun cacheEnvironment(): String {
+        if (executionModeHolder.currentMode() != ExecutionMode.REMOTE_SSH) return "local"
+        val config = remoteSshConnection.config ?: return "remote:disconnected"
+        return listOf(config.host, config.port.toString(), config.username, remoteSshConnection.remoteHome.orEmpty(), config.remoteWorkspacePath)
+            .joinToString("\u0000")
+    }
 
     private val staticRuleSource = StaticRuleSource()
     private val subAgentBaseSource = SubAgentBaseSource()

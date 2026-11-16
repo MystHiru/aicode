@@ -20,6 +20,14 @@ data class FileEntry(
     val permissions: String = "---"
 )
 
+enum class AgentConfigKind { SKILLS, AGENTS }
+
+data class AgentConfigSnapshot(
+    val identity: String,
+    val revision: String,
+    val files: Map<String, String>
+)
+
 /**
  * 文件读写后端抽象：把"在哪读写文件"从硬编码的本地 java.io.File 解耦。
  *
@@ -35,6 +43,12 @@ data class FileEntry(
  * [copyToLocal] 拿到本地临时文件再处理——远程模式下会 SFTP 下载到临时目录。
  */
 interface FileAccessProvider {
+
+    fun agentConfigSnapshot(path: String, kind: AgentConfigKind, forceRefresh: Boolean = false): AgentConfigSnapshot? = null
+
+    fun cachedAgentConfigSnapshot(path: String, kind: AgentConfigKind): AgentConfigSnapshot? = null
+
+    fun invalidateAgentConfigCache(path: String? = null) {}
 
     /**
      * 读取文件全文文本。文件不存在时抛 [NoSuchFileException]。
@@ -173,6 +187,12 @@ interface FileAccessProvider {
 
     /** 获取父目录路径（容器路径形式）。 */
     fun parentPath(path: String): String?
+
+    /**
+     * 访问 [path] 时应使用的后端。跨后端复制用它决定源/目标 provider；
+     * 单一实现直接返回自身，委托层按路径路由。
+     */
+    fun backendFor(path: String): FileAccessProvider = this
 
     /** 把内部真实路径还原为 AI 视角的容器路径（回显用）。 */
     fun toDisplayPath(path: String): String

@@ -4,7 +4,14 @@ import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.tool.explorer.shellQuote
 import com.aicode.feature.workspace.domain.remote.RemoteAuth
 import com.aicode.feature.credentials.domain.model.GitCredential
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -20,10 +27,17 @@ import kotlinx.coroutines.withContext
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.sftp.SFTPClient
+import net.schmizz.sshj.sftp.FileAttributes
+import net.schmizz.sshj.sftp.FileMode
+import net.schmizz.sshj.sftp.Response.StatusCode
+import net.schmizz.sshj.sftp.SFTPException
 import net.schmizz.sshj.sftp.OpenMode
 import net.schmizz.sshj.sftp.RenameFlags
+import net.schmizz.sshj.sftp.RemoteFile
+import java.security.MessageDigest
 import java.util.EnumSet
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import net.schmizz.sshj.transport.DisconnectListener
 import net.schmizz.sshj.userauth.UserAuthException
 import com.hierynomus.sshj.common.KeyDecryptionFailedException
@@ -66,6 +80,7 @@ class RemoteSshConnection @Inject constructor(
     private val mutex = Mutex()
     private val sftpLock = Mutex()
     private val credentialSyncMutex = Mutex()
+    private val docsSyncMutex = Mutex()
     internal val sftpOperationMutex = Mutex()
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
@@ -84,6 +99,15 @@ class RemoteSshConnection @Inject constructor(
     /** 当前连接配置快照，供重连与路径映射使用。 */
     @Volatile
     var config: RemoteConnectionConfig? = null
+        private set
+
+    @Volatile
+    var connectionGeneration: Long = 0L
+        private set
+
+    /** 已注入凭证的工作区根（真实路径）；null 表示未注入，远程命令不附加凭证配置。 */
+    @Volatile
+    var gitCredentialWorkspaceRoot: String? = null
         private set
 
     suspend fun connect(config: RemoteConnectionConfig) = mutex.withLock {
@@ -133,9 +157,12 @@ class RemoteSshConnection @Inject constructor(
     }
 
     private fun disconnectInternal() {
+        connectionGeneration++
         closeSftpInternal()
         runCatching { sshClient?.disconnect() }
         sshClient = null
+        remoteHome = null
+        gitCredentialWorkspaceRoot = null
         _connectionState.value = ConnectionState.DISCONNECTED
     }
 
@@ -147,24 +174,33 @@ class RemoteSshConnection @Inject constructor(
         sftpSshClient = null
     }
 
-    /** 建立一条 SSH transport 并完成认证与保活（exec 与 SFTP 各建一条）。 */
-    private fun newSshClient(config: RemoteConnectionConfig): SSHClient = SSHClient().apply {
-        addHostKeyVerifier(hostKeyVerifier)
-        connect(config.host, config.port)
-        when (val auth = config.auth) {
-            is RemoteAuth.Password -> authPassword(config.username, auth.password)
-            is RemoteAuth.PrivateKey -> {
-                val pem = privateKeyStore.readPem(auth.privateKeyPath)
-                val passwordFinder = auth.passphrase?.let { PasswordUtils.createOneOff(it.toCharArray()) }
-                authPublickey(config.username, loadKeys(pem, null, passwordFinder))
+    /** 建立一条 SSH transport 并完成认证与保活（exec、SFTP、端口转发各建一条）。 */
+    internal fun newSshClient(
+        config: RemoteConnectionConfig,
+        onCreated: (SSHClient) -> Unit = {}
+    ): SSHClient = SSHClient().apply {
+        try {
+            onCreated(this)
+            addHostKeyVerifier(hostKeyVerifier)
+            connect(config.host, config.port)
+            when (val auth = config.auth) {
+                is RemoteAuth.Password -> authPassword(config.username, auth.password)
+                is RemoteAuth.PrivateKey -> {
+                    val pem = privateKeyStore.readPem(auth.privateKeyPath)
+                    val passwordFinder = auth.passphrase?.let { PasswordUtils.createOneOff(it.toCharArray()) }
+                    authPublickey(config.username, loadKeys(pem, null, passwordFinder))
+                }
             }
-        }
-        // 启用 SSH 心跳保活，防止空闲超时断连
-        runCatching {
-            connection.keepAlive?.let {
-                it.setKeepAliveInterval(30)
-                it.start()
+            // 启用 SSH 心跳保活，防止空闲超时断连
+            runCatching {
+                connection.keepAlive?.let {
+                    it.setKeepAliveInterval(30)
+                    it.start()
+                }
             }
+        } catch (error: Throwable) {
+            runCatching { close() }
+            throw error
         }
     }
 
@@ -297,34 +333,259 @@ class RemoteSshConnection @Inject constructor(
         }
     }
 
-    /**
-     * 把内置文档同步到远程 ~/.aicode/docs/，让远程模式下 AI 也能像本地模式一样
-     * 查阅 ~/.aicode/docs/ 下的设置说明文档。每次连接/重连后全量覆盖，使 App 升级后
-     * 远程文档随之更新。正文通过 SFTP 写入并替换。
-     *
-     * @param docs 相对 docs/ 的路径（可含子目录，如 guide/terminal.md）→ 文件内容。
-     */
-    suspend fun uploadDocs(docs: Map<String, String>) {
-        if (docs.isEmpty()) return
-        val client = sshClient ?: return
-        val home = remoteHome ?: return
-        val destDir = home.trimEnd('/') + "/.aicode/docs"
+    internal class DocsSyncTarget internal constructor(
+        internal val config: RemoteConnectionConfig,
+        internal val execClient: SSHClient,
+        internal val home: String,
+        internal val generation: Long
+    ) {
+        fun sameConnection(other: DocsSyncTarget): Boolean =
+            generation == other.generation && execClient === other.execClient && config == other.config && home == other.home
+    }
+
+    internal fun captureDocsSyncTarget(): DocsSyncTarget? {
+        val generation = connectionGeneration
+        val client = sshClient ?: return null
+        val cfg = config ?: return null
+        val home = remoteHome ?: return null
+        val target = DocsSyncTarget(cfg, client, home, generation)
+        return target.takeIf { isCurrentDocsTarget(it) }
+    }
+
+    private fun isCurrentDocsTarget(target: DocsSyncTarget): Boolean =
+        connectionGeneration == target.generation && sshClient === target.execClient &&
+            config == target.config && remoteHome == target.home &&
+            _connectionState.value == ConnectionState.CONNECTED && isConnected()
+
+    internal suspend fun uploadDocs(docs: BuiltinDocsSync.Snapshot, target: DocsSyncTarget) =
         withContext(Dispatchers.IO) {
-            runCatching {
-                // 先建全部子目录并清掉旧 .md：版本间调整文档分类会改变路径，只覆盖不清理会让旧文件残留
-                val subDirs = docs.keys.mapNotNull { key ->
-                    key.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }
-                }.distinct()
-                val mkdirArgs = (listOf(destDir) + subDirs.map { "$destDir/$it" }).joinToString(" ") { "'$it'" }
-                val prepSession = client.startSession()
-                prepSession.exec("mkdir -p $mkdirArgs; find '$destDir' -type f -name '*.md' -delete").join()
-                prepSession.close()
-                for ((name, content) in docs) {
-                    val dest = "$destDir/$name"
-                    writeRemoteFile(dest, content.toByteArray(Charsets.UTF_8))
+            docsSyncMutex.withLock {
+                coroutineScope {
+                    val context = currentCoroutineContext()
+                    val checkActive = {
+                        context.ensureActive()
+                        if (!isCurrentDocsTarget(target)) {
+                            throw CancellationException("SSH docs sync target changed")
+                        }
+                    }
+                    checkActive()
+                    val client = AtomicReference<SSHClient?>()
+                    var sftp: SFTPClient? = null
+                    // sshj 的阻塞读不响应协程取消；取消时关闭任务专属 transport 以唤醒它。
+                    val cancellationCloser = launch(Dispatchers.IO, start = CoroutineStart.UNDISPATCHED) {
+                        try {
+                            awaitCancellation()
+                        } finally {
+                            runCatching { client.get()?.close() }
+                        }
+                    }
+                    try {
+                        val connection = newSshClient(target.config) {
+                            client.set(it)
+                            it.connectTimeout = 15_000
+                            it.timeout = 15_000
+                            checkActive()
+                        }
+                        checkActive()
+                        val channel = connection.newSFTPClient()
+                        sftp = channel
+                        checkActive()
+                        BuiltinDocsSync(DocsSftpBackend(channel, target.home, checkActive), checkActive)
+                            .sync(docs).also {
+                                if (it.changed) {
+                                    FileLogger.i(TAG, "内置文档增量同步完成：上传 ${it.uploaded}，删除 ${it.deleted}")
+                                }
+                            }
+                    } finally {
+                        withContext(NonCancellable) {
+                            runCatching { sftp?.close() }
+                            cancellationCloser.cancelAndJoin()
+                            runCatching { client.get()?.close() }
+                        }
+                    }
                 }
-                FileLogger.i(TAG, "已同步 ${docs.size} 个文档到远程 $destDir")
-            }.onFailure { FileLogger.w(TAG, "同步文档到远程失败", it) }
+            }
+        }
+
+    private class DocsSftpBackend(
+        private val client: SFTPClient,
+        home: String,
+        private val checkActive: () -> Unit
+    ) : BuiltinDocsSync.Backend {
+        private val root = home.trimEnd('/') + "/.aicode/docs"
+
+        init {
+            require(root.startsWith('/') && root.drop(1).split('/').all {
+                it.isNotEmpty() && it != "." && it != ".." && it.none { char -> char <= '\u001f' }
+            }) { "Invalid SSH home path" }
+        }
+
+        override fun type(path: String): BuiltinDocsSync.EntryType? =
+            checkedPath(path)?.let { lstat(it) }?.let {
+                when (it.type) {
+                    FileMode.Type.REGULAR -> BuiltinDocsSync.EntryType.FILE
+                    FileMode.Type.DIRECTORY -> BuiltinDocsSync.EntryType.DIRECTORY
+                    FileMode.Type.SYMLINK -> BuiltinDocsSync.EntryType.SYMLINK
+                    else -> BuiltinDocsSync.EntryType.OTHER
+                }
+            }
+
+        override fun readFile(path: String): ByteArray {
+            val remote = checkNotNull(checkedPath(path))
+            val attrs = checkNotNull(lstat(remote))
+            check(attrs.type == FileMode.Type.REGULAR && attrs.size in 0..BuiltinDocsSync.MAX_STATE_BYTES.toLong()) {
+                "Unsafe built-in docs state file"
+            }
+            checkActive()
+            return client.open(remote, EnumSet.of(OpenMode.READ)).use { file ->
+                val bytes = ByteArray(attrs.size.toInt())
+                var offset = 0
+                while (offset < bytes.size) {
+                    checkActive()
+                    val count = file.read(offset.toLong(), bytes, offset, minOf(32 * 1024, bytes.size - offset))
+                    check(count > 0) { "Incomplete built-in docs state" }
+                    offset += count
+                }
+                checkActive()
+                check(file.read(offset.toLong(), ByteArray(1), 0, 1) == -1) { "Built-in docs state changed" }
+                bytes
+            }
+        }
+
+        override fun fileHash(path: String): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            readChunks(path) { bytes, count -> digest.update(bytes, 0, count) }
+            return BuiltinDocsSync.hexDigest(digest.digest())
+        }
+
+        private fun readChunks(path: String, consume: (ByteArray, Int) -> Unit) {
+            val remote = checkNotNull(checkedPath(path))
+            check(lstat(remote)?.type == FileMode.Type.REGULAR) { "Unsafe built-in docs source" }
+            checkActive()
+            client.open(remote, EnumSet.of(OpenMode.READ)).use { file ->
+                val bytes = ByteArray(32 * 1024)
+                var offset = 0L
+                while (true) {
+                    checkActive()
+                    val count = file.read(offset, bytes, 0, bytes.size)
+                    if (count == -1) break
+                    check(count > 0) { "Incomplete built-in docs source" }
+                    consume(bytes, count)
+                    offset += count
+                }
+            }
+        }
+
+        override fun createDirectory(path: String) {
+            val remote = checkNotNull(checkedPath(path, createParents = true))
+            checkActive()
+            client.mkdir(remote)
+            if (path == BuiltinDocsSync.BACKUP_DIR || path.startsWith("${BuiltinDocsSync.BACKUP_DIR}/")) {
+                checkActive()
+                client.chmod(remote, 448)
+            }
+        }
+
+        override fun replaceAtomically(path: String, bytes: ByteArray) = replace(path, path) { file ->
+            var offset = 0
+            while (offset < bytes.size) {
+                checkActive()
+                val count = minOf(32 * 1024, bytes.size - offset)
+                file.write(offset.toLong(), bytes, offset, count)
+                offset += count
+            }
+        }
+
+        override fun backupFile(path: String, backupPath: String, expectedHash: String) = replace(backupPath, path) { file ->
+            val digest = MessageDigest.getInstance("SHA-256")
+            var offset = 0L
+            readChunks(path) { bytes, count ->
+                digest.update(bytes, 0, count)
+                checkActive()
+                file.write(offset, bytes, 0, count)
+                offset += count
+            }
+            check(BuiltinDocsSync.hexDigest(digest.digest()) == expectedHash) { "Built-in docs source changed during backup" }
+        }
+
+        override fun cleanupTemporary(path: String) {
+            val temporary = checkedPath(BuiltinDocsSync.temporaryPath(path)) ?: return
+            val attrs = lstat(temporary) ?: return
+            check(attrs.type == FileMode.Type.REGULAR) { "Unsafe built-in docs staging file" }
+            checkActive()
+            client.rm(temporary)
+        }
+
+        private fun replace(path: String, temporaryOwner: String, write: (RemoteFile) -> Unit) {
+            val remote = checkNotNull(checkedPath(path))
+            check(lstat(remote).let { it == null || it.type == FileMode.Type.REGULAR }) {
+                "Unsafe built-in docs destination"
+            }
+            cleanupTemporary(temporaryOwner)
+            val staging = checkNotNull(checkedPath(BuiltinDocsSync.STAGING_DIR))
+            if (lstat(staging) == null) {
+                checkActive()
+                client.mkdir(staging)
+            }
+            check(lstat(staging)?.type == FileMode.Type.DIRECTORY) { "Unsafe built-in docs staging directory" }
+            checkActive()
+            client.chmod(staging, 448)
+            val temporary = checkNotNull(checkedPath(BuiltinDocsSync.temporaryPath(temporaryOwner)))
+            try {
+                checkActive()
+                client.open(temporary, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.EXCL)).use { file ->
+                    checkActive()
+                    client.chmod(temporary, 384)
+                    write(file)
+                }
+                checkNotNull(checkedPath(path))
+                check(lstat(remote).let { it == null || it.type == FileMode.Type.REGULAR }) {
+                    "Unsafe built-in docs destination"
+                }
+                checkActive()
+                client.rename(temporary, remote, EnumSet.of(RenameFlags.ATOMIC, RenameFlags.OVERWRITE))
+            } finally {
+                runCatching { cleanupTemporary(temporaryOwner) }
+            }
+        }
+
+        override fun deleteFile(path: String) {
+            val remote = checkedPath(path) ?: return
+            val attrs = lstat(remote) ?: return
+            check(attrs.type == FileMode.Type.REGULAR) { "Unsafe built-in docs removal path" }
+            checkActive()
+            client.rm(remote)
+        }
+
+        private fun checkedPath(path: String, createParents: Boolean = false): String? {
+            require(path.isEmpty() || path.split('/').all {
+                it.isNotEmpty() && it != "." && it != ".." && it.none { char -> char <= '\u001f' || char == '\\' }
+            }) { "Invalid built-in docs path" }
+            val remote = if (path.isEmpty()) root else "$root/$path"
+            var parent = ""
+            for (part in remote.drop(1).split('/').dropLast(1)) {
+                parent += "/$part"
+                val attrs = lstat(parent)
+                if (attrs == null) {
+                    if (!createParents) return null
+                    checkActive()
+                    client.mkdir(parent)
+                    check(lstat(parent)?.type == FileMode.Type.DIRECTORY) { "Unsafe built-in docs parent" }
+                } else {
+                    check(attrs.type == FileMode.Type.DIRECTORY) { "Unsafe built-in docs parent" }
+                }
+            }
+            return remote
+        }
+
+        private fun lstat(path: String): FileAttributes? {
+            checkActive()
+            return try {
+                client.lstat(path)
+            } catch (error: SFTPException) {
+                if (error.statusCode != StatusCode.NO_SUCH_FILE && error.statusCode != StatusCode.NO_SUCH_PATH) throw error
+                null
+            }
         }
     }
 
@@ -358,11 +619,12 @@ class RemoteSshConnection @Inject constructor(
 
     /**
      * 把 App 的 git 凭据注入远程服务器（仅当用户开启「自动注入」时调用）：
-     * 写 `~/.aicode/git-credentials`（store 格式）+ `~/.aicode/gitconfig` + `~/.aicode/gitconfig.credential`。
+     * 写 `~/.aicode/git-credentials`（store 格式）+ `~/.aicode/gitconfig.credential`。
      *
-     * 生效机制：[RemoteSshEngine] 执行命令时注入 `GIT_CONFIG_GLOBAL=$HOME/.aicode/gitconfig`，其中
-     * `[include] path=~/.gitconfig` 保留服务器用户自己的全局配置（署名等），`[includeIf "gitdir:<工作区根>/"]`
-     * 限定只有工作区根目录下的仓库才加载 store helper——不影响用户在服务器上手动 git，也不影响其它目录的仓库。
+     * 生效机制：[RemoteSshEngine] 执行命令时用 `GIT_CONFIG_*` 环境变量指向 credential 文件，
+     * 并经 `includeIf "gitdir:<工作区根>/"` 限定只有工作区根目录下的仓库才加载 store helper。
+     * 不接管 `GIT_CONFIG_GLOBAL`——服务器用户自己的全局配置（署名、代理等）照常生效，
+     * App 里的 `git config --global` 也仍写用户自己的配置，不会被后续注入覆盖。
      *
      * @param credentials 要注入的凭据列表（每 host 一条）。
      * @param workspaceRoot 远程工作区根路径（AI 的 ~/workspace 映射目录），限定注入范围。
@@ -393,28 +655,21 @@ class RemoteSshConnection @Inject constructor(
                 writeRemoteFile("$aicodeDir/git-credential-aicode", remoteHelperScript.toByteArray(Charsets.UTF_8), executable = true)
                 writeRemoteFile("$aicodeDir/git-credentials", encodeCreds(creds).toByteArray(Charsets.UTF_8))
 
-
-                val gitconfig = buildString {
-                    append("[include]\n")
-                    append("    path = ~/.gitconfig\n")
-                    append("[includeIf \"gitdir:${gitConfigValue(wsRoot)}/\"]\n")
-                    append("    path = ~/.aicode/gitconfig.credential\n")
-                }
-                writeRemoteFile("$aicodeDir/gitconfig", gitconfig.toByteArray(Charsets.UTF_8))
-
                 val credentialConfig = buildString {
                     append("[credential]\n")
                     append("    helper = !AICODE_CRED_NO_PROMPT=1 $aicodeDir/git-credential-aicode\n")
                 }
                 writeRemoteFile("$aicodeDir/gitconfig.credential", credentialConfig.toByteArray(Charsets.UTF_8))
+                gitCredentialWorkspaceRoot = wsRoot
                 FileLogger.i(TAG, "已注入 git 凭据到远程 $aicodeDir（限定 $wsRoot/）")
             }.onFailure { FileLogger.w(TAG, "注入 git 凭据到远程失败", it) }
         }
     }
 
     /**
-     * 撤销远程注入：删除 App 管理的三个配置/凭据文件。
-     * `GIT_CONFIG_GLOBAL` 指向不存在的文件时 git 静默跳过，注入即失效，服务器用户配置不受影响。
+     * 撤销远程注入：删除 App 管理的凭据与 helper 文件，命令不再附加凭证配置。
+     * `~/.aicode/gitconfig` 是旧版实现生成的文件，旧版期间写入其中的用户配置可能只存在于该文件，
+     * 这里不作删除。
      */
     suspend fun removeGitCredentialConfig() = credentialSyncMutex.withLock {
         val client = sshClient ?: return@withLock
@@ -424,11 +679,12 @@ class RemoteSshConnection @Inject constructor(
             runCatching {
                 sftpOperationMutex.withLock {
                     val sftp = sftp()
-                    listOf("gitconfig", "gitconfig.credential", "git-credentials", "git-credential-aicode").forEach { name ->
+                    listOf("gitconfig.credential", "git-credentials", "git-credential-aicode").forEach { name ->
                         val path = "$aicodeDir/$name"
                         if (sftp.statExistence(path) != null) sftp.rm(path)
                     }
                 }
+                gitCredentialWorkspaceRoot = null
                 FileLogger.i(TAG, "已撤销远程 git 凭据注入")
             }.onFailure { FileLogger.w(TAG, "撤销远程 git 凭据注入失败", it) }
         }
@@ -462,10 +718,6 @@ class RemoteSshConnection @Inject constructor(
             runCatching { client.rm(temporary) }
         }
     }
-
-    /** gitconfig 值转义：转义反斜杠与双引号并去换行，避免工作区路径注入结构性配置项。 */
-    private fun gitConfigValue(value: String): String =
-        value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "").replace("\r", "")
 
     private fun enc(part: String): String = java.net.URLEncoder.encode(part, "UTF-8")
 
