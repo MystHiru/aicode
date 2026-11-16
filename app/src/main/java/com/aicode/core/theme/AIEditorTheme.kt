@@ -15,6 +15,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -31,21 +33,21 @@ object Spacing {
 }
 
 /**
- * 圆角 token。取值随 [AppStyle] 变化：业务代码一律引用 `Radius.md` 这类名字，
+ * 圆角 token。取值随 [UiStyle] 变化：业务代码一律引用 `Radius.md` 这类名字，
  * 切换风格档时数值整体调大，不需要改任何调用点。
  *
  * 用可变字段而不是 CompositionLocal：这些值也在非 Composable 上下文被引用，
  * 且风格只在设置里切换一次，AIEditorTheme 重组时读到的就是新值。
  */
 object Radius {
-    internal var style: AppStyle = AppStyle.CLASSIC
+    internal var style: UiStyle = UiStyle.STANDARD
 
-    val xs: Dp get() = if (style == AppStyle.MUSE) 6.dp else 4.dp
-    val sm: Dp get() = if (style == AppStyle.MUSE) 10.dp else 8.dp
-    val md: Dp get() = if (style == AppStyle.MUSE) 12.dp else 10.dp
-    val mdLarge: Dp get() = if (style == AppStyle.MUSE) 14.dp else 12.dp
-    val lg: Dp get() = if (style == AppStyle.MUSE) 18.dp else 14.dp
-    val xl: Dp get() = if (style == AppStyle.MUSE) 20.dp else 16.dp
+    val xs: Dp get() = if (style == UiStyle.MIUIX) 6.dp else 4.dp
+    val sm: Dp get() = if (style == UiStyle.MIUIX) 10.dp else 8.dp
+    val md: Dp get() = if (style == UiStyle.MIUIX) 12.dp else 10.dp
+    val mdLarge: Dp get() = if (style == UiStyle.MIUIX) 14.dp else 12.dp
+    val lg: Dp get() = if (style == UiStyle.MIUIX) 18.dp else 14.dp
+    val xl: Dp get() = if (style == UiStyle.MIUIX) 20.dp else 16.dp
     val pill: Dp get() = 999.dp
 }
 
@@ -277,147 +279,33 @@ internal val LightColorScheme = lightColorScheme(
  * 只在这一档启用，避免影响经典档已有用户的观感；语义色也一并替换，
  * 这样成功/警告/差异色与主色是一套调性。
  */
-private val MuseLightSemanticColors = AppSemanticColors(
-    success = Color(0xFF00B34A),
-    onSuccess = Color(0xFFFFFFFF),
-    successContainer = Color(0xFFE6F7ED),
-    onSuccessContainer = Color(0xFF0A7F38),
-    warning = Color(0xFFFF8A00),
-    onWarning = Color(0xFFFFFFFF),
-    warningContainer = Color(0xFFFFF3E0),
-    onWarningContainer = Color(0xFF8A4B00),
-    info = Color(0xFF3482FF),
-    onInfo = Color(0xFFFFFFFF),
-    infoContainer = Color(0xFFE8F1FF),
-    onInfoContainer = Color(0xFF0B4FD8),
-    diffAdd = Color(0xFF00B34A),
-    diffAddBg = Color(0x1F00B34A),
-    diffRemove = Color(0xFFE54545),
-    diffRemoveBg = Color(0x1FE54545),
-    subtleText = Color(0xFF9A9A9E),
-    subtleBorder = Color(0xFFECECEE),
-    cardSurface = Color(0xFFFFFFFF),
-    pageBackground = Color(0xFFF5F5F6),
-    mutedSurface = Color(0xFFF2F2F3),
-    capsuleSurface = Color(0xFFF0F0F2),
-    buttonMutedBg = Color(0xFFF0F0F2)
-)
-
-private val MuseDarkSemanticColors = AppSemanticColors(
-    success = Color(0xFF32D74B),
-    onSuccess = Color(0xFF052E16),
-    successContainer = Color(0x3D32D74B),
-    onSuccessContainer = Color(0xFFA8E6B8),
-    warning = Color(0xFFFFB340),
-    onWarning = Color(0xFF3D2600),
-    warningContainer = Color(0x3DFFB340),
-    onWarningContainer = Color(0xFFFFD79A),
-    info = Color(0xFF4A8DFF),
-    onInfo = Color(0xFF04102B),
-    infoContainer = Color(0x3D4A8DFF),
-    onInfoContainer = Color(0xFFB7D2FF),
-    diffAdd = Color(0xFF32D74B),
-    diffAddBg = Color(0x3332D74B),
-    diffRemove = Color(0xFFFF6B6B),
-    diffRemoveBg = Color(0x33FF6B6B),
-    subtleText = Color(0xFF8E8E93),
-    subtleBorder = Color(0xFF2C2C30),
-    cardSurface = Color(0xFF1A1A1D),
-    pageBackground = Color(0xFF000000),
-    mutedSurface = Color(0xFF232326),
-    capsuleSurface = Color(0xFF2A2A2E),
-    buttonMutedBg = Color(0xFF252528)
-)
-
-private val MuseLightColorScheme = lightColorScheme(
-    primary = Color(0xFF3482FF),
-    onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFE8F1FF),
-    onPrimaryContainer = Color(0xFF0B4FD8),
-    secondary = Color(0xFF5B8DEF),
-    onSecondary = Color(0xFFFFFFFF),
-    secondaryContainer = Color(0xFFEDF3FF),
-    onSecondaryContainer = Color(0xFF1B4FA8),
-    tertiary = Color(0xFF00B34A),
-    tertiaryContainer = Color(0xFFE6F7ED),
-    onTertiaryContainer = Color(0xFF0A7F38),
-    background = Color(0xFFF5F5F6),
-    onBackground = Color(0xFF0D0D0D),
-    surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF0D0D0D),
-    surfaceVariant = Color(0xFFF2F2F3),
-    onSurfaceVariant = Color(0xFF7A7A7E),
-    surfaceTint = Color.White,
-    surfaceContainerLowest = Color(0xFFFFFFFF),
-    surfaceContainerLow = Color(0xFFFBFBFC),
-    surfaceContainer = Color(0xFFF5F5F6),
-    surfaceContainerHigh = Color(0xFFF0F0F2),
-    surfaceContainerHighest = Color(0xFFEAEAEC),
-    surfaceBright = Color(0xFFFFFFFF),
-    surfaceDim = Color(0xFFEDEDEF),
-    outline = Color(0xFFD9D9DB),
-    outlineVariant = Color(0xFFEBEBED),
-    error = Color(0xFFE54545),
-    onError = Color(0xFFFFFFFF),
-    errorContainer = Color(0xFFFDECEC),
-    onErrorContainer = Color(0xFF8A1F1F)
-)
-
-private val MuseDarkColorScheme = darkColorScheme(
-    primary = Color(0xFF4A8DFF),
-    onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFF14305C),
-    onPrimaryContainer = Color(0xFFD6E5FF),
-    secondary = Color(0xFF7EB2FF),
-    onSecondary = Color(0xFF04102B),
-    secondaryContainer = Color(0xFF1B3B66),
-    onSecondaryContainer = Color(0xFFCFE0FF),
-    tertiary = Color(0xFF32D74B),
-    tertiaryContainer = Color(0xFF10361C),
-    onTertiaryContainer = Color(0xFFB7EEBE),
-    background = Color(0xFF000000),
-    onBackground = Color(0xFFF2F2F3),
-    surface = Color(0xFF17171A),
-    onSurface = Color(0xFFF2F2F3),
-    surfaceVariant = Color(0xFF232326),
-    onSurfaceVariant = Color(0xFFA0A0A5),
-    surfaceTint = Color.Transparent,
-    surfaceContainerLowest = Color(0xFF000000),
-    surfaceContainerLow = Color(0xFF0E0E10),
-    surfaceContainer = Color(0xFF17171A),
-    surfaceContainerHigh = Color(0xFF1F1F22),
-    surfaceContainerHighest = Color(0xFF2A2A2E),
-    surfaceBright = Color(0xFF33333A),
-    surfaceDim = Color(0xFF000000),
-    outline = Color(0xFF48484D),
-    outlineVariant = Color(0xFF2C2C30),
-    error = Color(0xFFFF6B6B),
-    onError = Color(0xFF3D0000),
-    errorContainer = Color(0xFF5C1010),
-    onErrorContainer = Color(0xFFFFC9C9)
-)
-
-/** Muse 风格档的完整配色（colorScheme + 语义色）。 */
-private fun museThemeColors(darkTheme: Boolean): AppThemeColors =
-    if (darkTheme) {
-        AppThemeColors(MuseDarkColorScheme, MuseDarkSemanticColors)
-    } else {
-        AppThemeColors(MuseLightColorScheme, MuseLightSemanticColors)
-    }
-
-/** 界面风格：经典沿用默认圆角，Muse 用更大的圆角贴近 MIUIX 观感。 */
-enum class AppStyle { CLASSIC, MUSE }
-
-private fun appShapes(style: AppStyle): androidx.compose.material3.Shapes = when (style) {
-    AppStyle.CLASSIC -> androidx.compose.material3.Shapes()
-    AppStyle.MUSE -> androidx.compose.material3.Shapes(
-        extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-        small = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-        medium = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-        large = androidx.compose.foundation.shape.RoundedCornerShape(22.dp),
-        extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)
+/** Miuix 版式：标题更粗、正文更大，配合大圆角形成与标准样式明显的观感差异。 */
+private fun miuixTypography(base: Typography): Typography = base.run {
+    copy(
+        headlineSmall = headlineSmall.copy(fontWeight = FontWeight.Bold),
+        titleLarge = titleLarge.copy(fontWeight = FontWeight.Bold, fontSize = 23.sp),
+        titleMedium = titleMedium.copy(fontWeight = FontWeight.Bold),
+        titleSmall = titleSmall.copy(fontWeight = FontWeight.SemiBold),
+        bodyLarge = bodyLarge.copy(fontSize = 17.sp, lineHeight = 25.sp),
+        bodyMedium = bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp),
+        labelLarge = labelLarge.copy(fontWeight = FontWeight.SemiBold)
     )
 }
+
+/** Miuix 形状：更大圆角，接近 Miui 卡片观感；只改形状不改色板。 */
+private val MiuixShapes = androidx.compose.material3.Shapes(
+    extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+    small = androidx.compose.foundation.shape.RoundedCornerShape(50),
+    medium = androidx.compose.foundation.shape.RoundedCornerShape(18.dp),
+    large = androidx.compose.foundation.shape.RoundedCornerShape(22.dp),
+    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)
+)
+
+/**
+ * 背景遮罩色：始终是「不透明的页面底色」。
+ * 有自定义背景时 colorScheme.background 会被让成透明，这里保留原始底色给遮罩用。
+ */
+val LocalBackgroundScrimColor = staticCompositionLocalOf { Color(0xFFF8F8F8) }
 
 private val AppTypography = Typography().run {
     copy(
@@ -433,37 +321,105 @@ private val AppTypography = Typography().run {
 /**
  * @param preset 用户选定的配色主题。
  * @param dynamicColor 是否启用系统莫奈取色；低于 Android 12 时自动回退到 [preset]。
+ * @param appearance 外观选项：强调色、色彩风格、界面样式、纯黑、界面缩放。
+ * @param backgroundActive 正在显示自定义背景。为 true 时页面底色让成透明、卡片面半透明，
+ *   背景才能从内容下方真正透出来；否则设置页 / 顶栏这些自带不透明底色的组件会把背景挡住。
  */
 @Composable
 fun AIEditorTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     preset: AppThemePreset = AppThemePreset.DEFAULT,
     dynamicColor: Boolean = false,
-    style: AppStyle = AppStyle.CLASSIC,
+    appearance: AppearanceOptions = AppearanceOptions(),
+    backgroundActive: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
-    // 先落圆角 token：下面的页面组合时会直接读 Radius.*，必须在此之前更新。
-    Radius.style = style
-    val themeColors = remember(darkTheme, preset, dynamicColor, style, context) {
-        when {
-            style == AppStyle.MUSE -> museThemeColors(darkTheme)
-            dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-                val dynamicScheme =
-                    if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-                deriveDynamicThemeColors(dynamicScheme, darkTheme)
-            }
-            darkTheme -> preset.dark
-            else -> preset.light
+    // 圆角 token 跟随界面样式：业务代码里的 Radius.* 才能跟着一起变大。
+    Radius.style = appearance.uiStyle
+    val themeColors = remember(darkTheme, preset, dynamicColor, context) {
+        if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val dynamicScheme =
+                if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            deriveDynamicThemeColors(dynamicScheme, darkTheme)
+        } else if (darkTheme) {
+            preset.dark
+        } else {
+            preset.light
         }
     }
 
-    CompositionLocalProvider(LocalAppSemanticColors provides themeColors.semanticColors) {
-        MaterialTheme(
-            colorScheme = themeColors.colorScheme,
-            typography = AppTypography,
-            shapes = appShapes(style),
-            content = content
+    // 外观变换：强调色与色彩风格作用在基础配色之上，纯黑只影响深色模式。
+    // Miuix 只改结构与版式，颜色一律跟随配色方案 / 强调色 / 莫奈，避免切配色时底色不跟着变。
+    val scheme = remember(themeColors, darkTheme, appearance) {
+        buildAppearanceColorScheme(themeColors.colorScheme, darkTheme, appearance)
+    }
+    // 有背景时把页面底色让成透明、卡片面改成半透明，所有用 colorScheme / 语义色的组件一起透出背景。
+    val layeredScheme = remember(scheme, backgroundActive) {
+        if (!backgroundActive) {
+            scheme
+        } else {
+            scheme.copy(
+                background = scheme.background.copy(alpha = 0f),
+                surface = scheme.surface.copy(alpha = 0.62f),
+                surfaceVariant = scheme.surfaceVariant.copy(alpha = 0.52f),
+                surfaceContainer = scheme.surfaceContainer.copy(alpha = 0.62f),
+                surfaceContainerLow = scheme.surfaceContainerLow.copy(alpha = 0.56f),
+                surfaceContainerLowest = scheme.surfaceContainerLowest.copy(alpha = 0.50f),
+                // 弹窗 / 底部面板保留较高不透明度，否则文字压在背景上不可读。
+                surfaceContainerHigh = scheme.surfaceContainerHigh.copy(alpha = 0.92f),
+                surfaceContainerHighest = scheme.surfaceContainerHighest.copy(alpha = 0.94f)
+            )
+        }
+    }
+
+    val shapes = remember(appearance.uiStyle) {
+        if (appearance.uiStyle == UiStyle.MIUIX) MiuixShapes else androidx.compose.material3.Shapes()
+    }
+    val density = LocalDensity.current
+    val scaledDensity = remember(density, appearance.interfaceScale) {
+        Density(density.density, density.fontScale * appearance.interfaceScale)
+    }
+
+    // 页面底色与卡片面用的是语义色而不是 colorScheme，所以纯黑与背景透明要同步到这里。
+    val semanticColors = remember(themeColors, darkTheme, appearance, layeredScheme, backgroundActive) {
+        val derived = themeColors.semanticColors.copy(
+            pageBackground = if (backgroundActive) layeredScheme.background else themeColors.semanticColors.pageBackground,
+            cardSurface = if (backgroundActive) layeredScheme.surface else themeColors.semanticColors.cardSurface,
+            mutedSurface = layeredScheme.surfaceVariant,
+            capsuleSurface = scheme.surfaceVariant.copy(alpha = if (backgroundActive) 0.42f else 1f),
+            buttonMutedBg = scheme.surfaceVariant.copy(alpha = if (backgroundActive) 0.42f else 1f),
+            subtleBorder = layeredScheme.outlineVariant,
+            subtleText = layeredScheme.onSurfaceVariant,
+            info = layeredScheme.primary,
+            infoContainer = layeredScheme.primaryContainer,
+            onInfo = layeredScheme.onPrimary,
+            onInfoContainer = layeredScheme.onPrimaryContainer
         )
+        if (appearance.pureBlack && darkTheme && !backgroundActive) {
+            derived.copy(
+                pageBackground = Color.Black,
+                cardSurface = Color(0xFF141414),
+                mutedSurface = Color(0xFF0A0A0A),
+                subtleBorder = Color(0xFF242424)
+            )
+        } else {
+            derived
+        }
+    }
+
+    CompositionLocalProvider(
+        LocalAppSemanticColors provides semanticColors,
+        LocalUiStyle provides appearance.uiStyle,
+        LocalBackgroundScrimColor provides themeColors.colorScheme.background
+    ) {
+        CompositionLocalProvider(LocalDensity provides scaledDensity) {
+            MaterialTheme(
+                colorScheme = layeredScheme,
+                typography = if (appearance.uiStyle == UiStyle.MIUIX) miuixTypography(AppTypography) else AppTypography,
+                shapes = shapes,
+                content = content
+            )
+        }
     }
 }

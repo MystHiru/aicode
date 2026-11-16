@@ -622,8 +622,19 @@ class SettingsViewModel @Inject constructor(
     private val _dynamicColorEnabled = MutableStateFlow(false)
     val dynamicColorEnabled: StateFlow<Boolean> = _dynamicColorEnabled.asStateFlow()
 
-    private val _appStyle = MutableStateFlow("CLASSIC")
-    val appStyle: StateFlow<String> = _appStyle.asStateFlow()
+    private val _appearance = MutableStateFlow(com.aicode.core.theme.AppearanceOptions())
+    val appearance: StateFlow<com.aicode.core.theme.AppearanceOptions> = _appearance.asStateFlow()
+
+    val accentColor: StateFlow<com.aicode.core.theme.AccentColor> =
+        _appearance.map { it.accent }.stateIn(viewModelScope, SharingStarted.Eagerly, com.aicode.core.theme.AccentColor.SYSTEM)
+    val paletteStyle: StateFlow<com.aicode.core.theme.PaletteStyle> =
+        _appearance.map { it.paletteStyle }.stateIn(viewModelScope, SharingStarted.Eagerly, com.aicode.core.theme.PaletteStyle.TONAL_SPOT)
+    val uiStyle: StateFlow<com.aicode.core.theme.UiStyle> =
+        _appearance.map { it.uiStyle }.stateIn(viewModelScope, SharingStarted.Eagerly, com.aicode.core.theme.UiStyle.STANDARD)
+    val pureBlack: StateFlow<Boolean> =
+        _appearance.map { it.pureBlack }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val interfaceScale: StateFlow<Float> =
+        _appearance.map { it.interfaceScale }.stateIn(viewModelScope, SharingStarted.Eagerly, com.aicode.core.theme.AppearanceOptions.DEFAULT_SCALE)
 
     private val _petOverlayEnabled = MutableStateFlow(false)
     val petOverlayEnabled: StateFlow<Boolean> = _petOverlayEnabled.asStateFlow()
@@ -1090,8 +1101,19 @@ class SettingsViewModel @Inject constructor(
             }
 
             launch {
-                themeSettingsRepository.appStyleFlow.collectLatest {
-                    _appStyle.value = it
+                combine(
+                    themeSettingsRepository.accentColorFlow,
+                    themeSettingsRepository.paletteStyleFlow,
+                    themeSettingsRepository.uiStyleFlow,
+                    themeSettingsRepository.pureBlackFlow
+                ) { accent, palette, uiStyle, pureBlack ->
+                    com.aicode.core.theme.AppearanceOptions(accent, palette, uiStyle, pureBlack, _appearance.value.interfaceScale)
+                }.collectLatest { _appearance.value = it }
+            }
+
+            launch {
+                themeSettingsRepository.interfaceScaleFlow.collectLatest { scale ->
+                    _appearance.value = _appearance.value.copy(interfaceScale = scale)
                 }
             }
 
@@ -2286,8 +2308,24 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun setAppStyle(style: String) {
-        viewModelScope.launch { themeSettingsRepository.setAppStyle(style) }
+    fun setAccentColor(value: com.aicode.core.theme.AccentColor) {
+        viewModelScope.launch { themeSettingsRepository.setAccentColor(value) }
+    }
+
+    fun setPaletteStyle(value: com.aicode.core.theme.PaletteStyle) {
+        viewModelScope.launch { themeSettingsRepository.setPaletteStyle(value) }
+    }
+
+    fun setUiStyle(value: com.aicode.core.theme.UiStyle) {
+        viewModelScope.launch { themeSettingsRepository.setUiStyle(value) }
+    }
+
+    fun setPureBlack(enabled: Boolean) {
+        viewModelScope.launch { themeSettingsRepository.setPureBlack(enabled) }
+    }
+
+    fun setInterfaceScale(value: Float) {
+        viewModelScope.launch { themeSettingsRepository.setInterfaceScale(value) }
     }
 
     /** 开关悬浮窗：开启前需已有「在其他应用上层显示」权限，否则引导去授权。 */

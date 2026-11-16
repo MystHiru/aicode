@@ -174,6 +174,12 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var petOverlaySettings: com.aicode.feature.pet.data.PetOverlaySettingsRepository
 
+    /** MP4 / 动态照片背景：挂在 window 层的 TextureView 与播放器。 */
+    private var wallpaperView: android.view.TextureView? = null
+    private var wallpaperSurface: android.view.Surface? = null
+    private var wallpaperPlayer: android.media.MediaPlayer? = null
+    private var wallpaperPath: String? = null
+
     /** 屏幕常亮开关：只在 App 前台约束屏幕，切后台由系统自动失效。 */
     @Inject
     lateinit var screenOnSettings: ScreenOnSettingsRepository
@@ -273,7 +279,36 @@ class MainActivity : ComponentActivity() {
             val themeMode by themeSettings.themeModeFlow.collectAsStateWithLifecycle(initialValue = AppThemeMode.AUTO)
             val themePresetId by themeSettings.themePresetIdFlow.collectAsStateWithLifecycle(initialValue = null)
             val dynamicColor by themeSettings.dynamicColorFlow.collectAsStateWithLifecycle(initialValue = false)
-            val appStyleName by themeSettings.appStyleFlow.collectAsStateWithLifecycle(initialValue = "CLASSIC")
+            val accentColor by themeSettings.accentColorFlow.collectAsStateWithLifecycle(
+                initialValue = com.aicode.core.theme.AccentColor.SYSTEM
+            )
+            val paletteStyle by themeSettings.paletteStyleFlow.collectAsStateWithLifecycle(
+                initialValue = com.aicode.core.theme.PaletteStyle.TONAL_SPOT
+            )
+            val uiStyle by themeSettings.uiStyleFlow.collectAsStateWithLifecycle(
+                initialValue = com.aicode.core.theme.UiStyle.STANDARD
+            )
+            val pureBlack by themeSettings.pureBlackFlow.collectAsStateWithLifecycle(initialValue = false)
+            val interfaceScale by themeSettings.interfaceScaleFlow.collectAsStateWithLifecycle(
+                initialValue = com.aicode.core.theme.AppearanceOptions.DEFAULT_SCALE
+            )
+            val bgPath by backgroundSettings.imagePathFlow.collectAsStateWithLifecycle(initialValue = null)
+            val bgAlpha by backgroundSettings.alphaFlow.collectAsStateWithLifecycle(initialValue = BackgroundSettingsRepository.DEFAULT_ALPHA)
+            val bgKind by backgroundSettings.kindFlow.collectAsStateWithLifecycle(initialValue = BackgroundSettingsRepository.Kind.IMAGE)
+            val bgActive = bgPath != null && bgAlpha > 0f
+
+            // MP4 与动态照片由 window 层 TextureView 播放；动态照片要先从 JPEG 容器里提取出 MP4。
+            LaunchedEffect(bgActive, bgKind, bgPath, bgAlpha) {
+                val videoPath = when {
+                    !bgActive -> null
+                    bgKind == BackgroundSettingsRepository.Kind.MP4 -> bgPath
+                    bgKind == BackgroundSettingsRepository.Kind.MOTION_PHOTO -> withContext(Dispatchers.IO) {
+                        BackgroundSettingsRepository.extractMotionPhotoVideo(java.io.File(bgPath!!), cacheDir)
+                    }?.absolutePath
+                    else -> null
+                }
+                setWallpaperVideo(videoPath, bgAlpha)
+            }
             val systemDarkTheme = isSystemInDarkTheme()
             val darkTheme = when (themeMode) {
                 AppThemeMode.AUTO -> systemDarkTheme
@@ -295,17 +330,20 @@ class MainActivity : ComponentActivity() {
                 darkTheme = darkTheme,
                 preset = AppThemePreset.findById(themePresetId),
                 dynamicColor = dynamicColor,
-                style = runCatching { com.aicode.core.theme.AppStyle.valueOf(appStyleName) }
-                    .getOrDefault(com.aicode.core.theme.AppStyle.CLASSIC)
+                appearance = com.aicode.core.theme.AppearanceOptions(
+                    accent = accentColor,
+                    paletteStyle = paletteStyle,
+                    uiStyle = uiStyle,
+                    pureBlack = pureBlack,
+                    interfaceScale = interfaceScale
+                ),
+                backgroundActive = bgActive
             ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    // 全局自定义背景图：垫在所有页面内容之下（壁纸效果），透明度可调。
-                    // 页面表面色半透明时透出壁纸；弹窗（Dialog 独立窗口）不受层级影响。
-                    val bgPath by backgroundSettings.imagePathFlow.collectAsStateWithLifecycle(initialValue = null)
-                    val bgAlpha by backgroundSettings.alphaFlow.collectAsStateWithLifecycle(initialValue = BackgroundSettingsRepository.DEFAULT_ALPHA)
+                    // 全局自定义背景：垫在所有页面内容之下，页面底色与卡片面由主题让成半透明后透出。
                     Box(modifier = Modifier.fillMaxSize()) {
                         AgreementGate(repository = agreementRepository) { agreementAccepted ->
                             AppNavigation(
@@ -319,7 +357,14 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                         }
-                        BackgroundImageOverlay(path = bgPath, imageAlpha = bgAlpha)
+                        if (bgActive && bgKind == BackgroundSettingsRepository.Kind.GIF) {
+                            com.aicode.feature.settings.presentation.component.GifBackgroundView(
+                                path = bgPath!!,
+                                alpha = bgAlpha
+                            )
+                        } else if (bgActive && bgKind == BackgroundSettingsRepository.Kind.IMAGE) {
+                            BackgroundImageOverlay(path = bgPath, imageAlpha = bgAlpha)
+                        }
                         // beta 包全局水印，置于最上层，不拦截触摸。
                         BetaWatermark()
                     }
@@ -355,7 +400,109 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         browserManager.detachHiddenHost()
         PluginWebViewCache.clear()
+        releaseWallpaper()
         super.onDestroy()
+    }
+
+    /**
+     * 把 MP4 背景挂到 window 层最上层。
+     *
+     * 不用 Compose 的 AndroidView：它内部建立命中区域，盖在界面上会抢走点击。
+     * 这里用 [WallpaperTextureView] 在 dispatchTouchEvent 阶段直接返回 false，
+     * 事件原封不动交给下层界面，于是背景盖在最上层也不影响操作。
+     */
+    private fun setWallpaperVideo(path: String?, alpha: Float) {
+        if (path == null) {
+            if (wallpaperPath != null || wallpaperView != null) releaseWallpaper()
+            return
+        }
+        wallpaperView?.alpha = alpha
+        if (path == wallpaperPath && wallpaperView != null) return
+        wallpaperPath = path
+        val content = findViewById<android.view.ViewGroup>(android.R.id.content) ?: return
+        val view = wallpaperView ?: WallpaperTextureView(this).also { tv ->
+            tv.isOpaque = false
+            tv.isClickable = false
+            tv.isFocusable = false
+            tv.isFocusableInTouchMode = false
+            tv.surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
+                override fun onSurfaceTextureAvailable(
+                    surfaceTexture: android.graphics.SurfaceTexture,
+                    width: Int,
+                    height: Int
+                ) {
+                    wallpaperSurface?.release()
+                    wallpaperSurface = android.view.Surface(surfaceTexture)
+                    startWallpaperPlayer()
+                }
+
+                override fun onSurfaceTextureSizeChanged(
+                    surfaceTexture: android.graphics.SurfaceTexture,
+                    width: Int,
+                    height: Int
+                ) = Unit
+
+                // 返回 false 表示自己持有 SurfaceTexture：抽屉开关等重建时画面不会断。
+                override fun onSurfaceTextureDestroyed(surfaceTexture: android.graphics.SurfaceTexture): Boolean = false
+
+                override fun onSurfaceTextureUpdated(surfaceTexture: android.graphics.SurfaceTexture) = Unit
+            }
+            wallpaperView = tv
+            content.addView(
+                tv,
+                android.widget.FrameLayout.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+        view.alpha = alpha
+        if (view.isAvailable) startWallpaperPlayer()
+    }
+
+    private fun startWallpaperPlayer() {
+        val path = wallpaperPath ?: return
+        val surface = wallpaperSurface ?: return
+        releaseWallpaperPlayerOnly()
+        val player = android.media.MediaPlayer()
+        wallpaperPlayer = player
+        runCatching {
+            player.setDataSource(path)
+            player.setSurface(surface)
+            player.isLooping = true
+            player.setVolume(0f, 0f)
+            player.setOnPreparedListener { it.start() }
+            // 背景播放失败不该弹任何提示，静默失败即可。
+            player.setOnErrorListener { _, _, _ -> true }
+            player.prepareAsync()
+        }
+    }
+
+    private fun releaseWallpaperPlayerOnly() {
+        wallpaperPlayer?.let { player ->
+            runCatching {
+                player.stop()
+                player.release()
+            }
+        }
+        wallpaperPlayer = null
+    }
+
+    private fun releaseWallpaper() {
+        releaseWallpaperPlayerOnly()
+        wallpaperSurface?.release()
+        wallpaperSurface = null
+        wallpaperView?.let { view ->
+            runCatching { view.surfaceTexture?.release() }
+            (view.parent as? android.view.ViewGroup)?.removeView(view)
+        }
+        wallpaperView = null
+        wallpaperPath = null
+    }
+
+    /** 背景专用 TextureView：在分发阶段直接拒绝触摸，避免盖住界面时整屏失去响应。 */
+    private class WallpaperTextureView(context: android.content.Context) : android.view.TextureView(context) {
+        override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean = false
     }
 
 }

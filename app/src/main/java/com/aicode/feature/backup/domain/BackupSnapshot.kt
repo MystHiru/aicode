@@ -28,8 +28,8 @@ data class BackupSnapshot(
     val themeMode: String? = null,
     val themePresetId: String? = null,
     val dynamicColorEnabled: Boolean = false,
-    /** 界面风格（CLASSIC / MUSE）；null 表示旧备份，导入时保持现状。 */
-    val appStyle: String? = null,
+    /** 外观选项；null 表示旧备份，导入时保持现状。 */
+    val appearance: AppearanceSnapshot? = null,
     /** 悬浮窗开关；null 表示旧备份，导入时保持现状。 */
     val petOverlayEnabled: Boolean? = null,
     val keepaliveEnabled: Boolean = false,
@@ -71,8 +71,8 @@ data class BackupMetadata(
     val themeMode: String? = null,
     val themePresetId: String? = null,
     val dynamicColorEnabled: Boolean = false,
-    /** 界面风格（CLASSIC / MUSE）；null 表示旧备份，导入时保持现状。 */
-    val appStyle: String? = null,
+    /** 外观选项；null 表示旧备份，导入时保持现状。 */
+    val appearance: AppearanceSnapshot? = null,
     /** 悬浮窗开关；null 表示旧备份，导入时保持现状。 */
     val petOverlayEnabled: Boolean? = null,
     val keepaliveEnabled: Boolean = false,
@@ -118,7 +118,7 @@ fun BackupSnapshot.toMetadata() = BackupMetadata(
     themeMode = themeMode,
     themePresetId = themePresetId,
     dynamicColorEnabled = dynamicColorEnabled,
-    appStyle = appStyle,
+    appearance = appearance,
     petOverlayEnabled = petOverlayEnabled,
     keepaliveEnabled = keepaliveEnabled,
     liveNotificationEnabled = liveNotificationEnabled,
@@ -256,4 +256,19 @@ data class TodoItemDto(
     val order: Int = 0,
     val createdAt: Long,
     val updatedAt: Long
+)
+
+/**
+ * 备份里的外观选项。
+ *
+ * 用字符串 id 而不是 [com.aicode.core.theme.AppearanceOptions]：后者含 Compose 的 Color，
+ * 无法直接序列化；id 也能让旧备份在新版本里加新选项时平滑回退。
+ */
+@Serializable
+data class AppearanceSnapshot(
+    val accent: String = "system",
+    val paletteStyle: String = "tonal_spot",
+    val uiStyle: String = "standard",
+    val pureBlack: Boolean = false,
+    val interfaceScale: Float = 1f
 )

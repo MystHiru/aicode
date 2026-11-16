@@ -373,7 +373,7 @@ class BackupManagerImpl @Inject constructor(
         themeMode = if (options.appSettings) themeSettingsRepository.snapshot() else null,
         themePresetId = if (options.appSettings) themeSettingsRepository.presetSnapshot() else null,
         dynamicColorEnabled = if (options.appSettings) themeSettingsRepository.dynamicColorSnapshot() else false,
-        appStyle = if (options.appSettings) themeSettingsRepository.appStyleSnapshot() else null,
+        appearance = if (options.appSettings) themeSettingsRepository.appearanceSnapshot() else null,
         petOverlayEnabled = if (options.appSettings) petOverlaySettingsRepository.enabledSnapshot() else null,
         keepaliveEnabled = if (options.appSettings) keepaliveSettingsRepository.snapshot() else false,
         liveNotificationEnabled = if (options.appSettings) liveNotificationSettingsRepository.snapshot() else false,
@@ -738,7 +738,7 @@ class BackupManagerImpl @Inject constructor(
         if (meta.includesAppSettings) {
             meta.themeMode?.let { themeSettingsRepository.restore(it) }
             themeSettingsRepository.restoreColors(meta.themePresetId, meta.dynamicColorEnabled)
-            meta.appStyle?.let { themeSettingsRepository.setAppStyle(it) }
+            themeSettingsRepository.restoreAppearance(meta.appearance)
             meta.petOverlayEnabled?.let { petOverlaySettingsRepository.setEnabled(it) }
             keepaliveSettingsRepository.restore(meta.keepaliveEnabled)
             liveNotificationSettingsRepository.restore(meta.liveNotificationEnabled)

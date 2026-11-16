@@ -4,6 +4,7 @@ import android.content.Context
 import com.aicode.R
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.aicode.core.datastore.preferencesCorruptionHandler
@@ -39,7 +40,13 @@ class ThemeSettingsRepository @Inject constructor(
         val DARK_THEME_KEY = booleanPreferencesKey("dark_theme_enabled")
         val THEME_PRESET_KEY = stringPreferencesKey("theme_preset_id")
         val DYNAMIC_COLOR_KEY = booleanPreferencesKey("dynamic_color_enabled")
+        /** 旧版「界面风格」键：只用于把 CLASSIC/MUSE 迁到新外观项，新代码不再写入。 */
         val APP_STYLE_KEY = stringPreferencesKey("app_style")
+        val ACCENT_COLOR_KEY = stringPreferencesKey("appearance_accent_color")
+        val PALETTE_STYLE_KEY = stringPreferencesKey("appearance_palette_style")
+        val UI_STYLE_KEY = stringPreferencesKey("appearance_ui_style")
+        val PURE_BLACK_KEY = booleanPreferencesKey("appearance_pure_black")
+        val INTERFACE_SCALE_KEY = floatPreferencesKey("appearance_interface_scale")
     }
 
     val themeModeFlow: Flow<AppThemeMode> = context.themeDataStore.data.map { prefs ->
@@ -67,12 +74,54 @@ class ThemeSettingsRepository @Inject constructor(
         context.themeDataStore.edit { it[DYNAMIC_COLOR_KEY] = enabled }
     }
 
-    /** 界面风格（经典 / Muse），未设置时为经典。 */
-    val appStyleFlow: Flow<String> =
-        context.themeDataStore.data.map { it[APP_STYLE_KEY] ?: "CLASSIC" }
+    /** 强调色（强色调）。 */
+    val accentColorFlow: Flow<com.aicode.core.theme.AccentColor> =
+        context.themeDataStore.data.map { com.aicode.core.theme.AccentColor.fromId(it[ACCENT_COLOR_KEY]) }
 
-    suspend fun setAppStyle(style: String) {
-        context.themeDataStore.edit { it[APP_STYLE_KEY] = style }
+    /** 色彩风格。 */
+    val paletteStyleFlow: Flow<com.aicode.core.theme.PaletteStyle> =
+        context.themeDataStore.data.map { com.aicode.core.theme.PaletteStyle.fromId(it[PALETTE_STYLE_KEY]) }
+
+    /**
+     * 界面样式（标准 / Miuix）。
+     * 旧版的 `app_style`（CLASSIC / MUSE）在这里做一次兼容映射，用户之前的选样不会丢。
+     */
+    val uiStyleFlow: Flow<com.aicode.core.theme.UiStyle> = context.themeDataStore.data.map { prefs ->
+        prefs[UI_STYLE_KEY]?.let { com.aicode.core.theme.UiStyle.fromId(it) }
+            ?: if (prefs[APP_STYLE_KEY] == "MUSE") com.aicode.core.theme.UiStyle.MIUIX
+            else com.aicode.core.theme.UiStyle.STANDARD
+    }
+
+    /** 纯黑背景（仅深色模式生效）。 */
+    val pureBlackFlow: Flow<Boolean> = context.themeDataStore.data.map { it[PURE_BLACK_KEY] == true }
+
+    /** 界面缩放（0.85~1.15）。 */
+    val interfaceScaleFlow: Flow<Float> = context.themeDataStore.data.map {
+        com.aicode.core.theme.AppearanceOptions.normalizeScale(
+            it[INTERFACE_SCALE_KEY] ?: com.aicode.core.theme.AppearanceOptions.DEFAULT_SCALE
+        )
+    }
+
+    suspend fun setAccentColor(value: com.aicode.core.theme.AccentColor) {
+        context.themeDataStore.edit { it[ACCENT_COLOR_KEY] = value.id }
+    }
+
+    suspend fun setPaletteStyle(value: com.aicode.core.theme.PaletteStyle) {
+        context.themeDataStore.edit { it[PALETTE_STYLE_KEY] = value.id }
+    }
+
+    suspend fun setUiStyle(value: com.aicode.core.theme.UiStyle) {
+        context.themeDataStore.edit { it[UI_STYLE_KEY] = value.id }
+    }
+
+    suspend fun setPureBlack(enabled: Boolean) {
+        context.themeDataStore.edit { it[PURE_BLACK_KEY] = enabled }
+    }
+
+    suspend fun setInterfaceScale(value: Float) {
+        context.themeDataStore.edit {
+            it[INTERFACE_SCALE_KEY] = com.aicode.core.theme.AppearanceOptions.normalizeScale(value)
+        }
     }
 
     /** 备份快照：返回当前持久化的主题模式名（未设置时为 null，导入时回退默认）。 */
@@ -91,7 +140,26 @@ class ThemeSettingsRepository @Inject constructor(
     /** 备份快照：莫奈取色开关。 */
     suspend fun dynamicColorSnapshot(): Boolean = dynamicColorFlow.first()
 
-    suspend fun appStyleSnapshot(): String = appStyleFlow.first()
+    /** 备份快照：外观选项，导入时整体还原。 */
+    suspend fun appearanceSnapshot(): com.aicode.feature.backup.domain.AppearanceSnapshot =
+        com.aicode.feature.backup.domain.AppearanceSnapshot(
+            accent = accentColorFlow.first().id,
+            paletteStyle = paletteStyleFlow.first().id,
+            uiStyle = uiStyleFlow.first().id,
+            pureBlack = pureBlackFlow.first(),
+            interfaceScale = interfaceScaleFlow.first()
+        )
+
+    suspend fun restoreAppearance(value: com.aicode.feature.backup.domain.AppearanceSnapshot?) {
+        if (value == null) return
+        context.themeDataStore.edit {
+            it[ACCENT_COLOR_KEY] = value.accent
+            it[PALETTE_STYLE_KEY] = value.paletteStyle
+            it[UI_STYLE_KEY] = value.uiStyle
+            it[PURE_BLACK_KEY] = value.pureBlack
+            it[INTERFACE_SCALE_KEY] = com.aicode.core.theme.AppearanceOptions.normalizeScale(value.interfaceScale)
+        }
+    }
 
     /** 从备份还原配色主题与莫奈开关；id 为 null 时清除键回退默认。 */
     suspend fun restoreColors(presetId: String?, dynamicColor: Boolean) {

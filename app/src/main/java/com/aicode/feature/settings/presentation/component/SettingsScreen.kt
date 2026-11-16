@@ -184,6 +184,7 @@ private val PluginPackageMimeTypes = arrayOf("application/zip", "application/x-z
 internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     Menu(R.string.settings_title),
     General(R.string.settings_general),
+    Appearance(R.string.appearance_title),
     Providers(R.string.settings_providers),
     ProviderEditor(R.string.settings_provider_editor),
     DefaultModels(R.string.settings_default_models),
@@ -295,7 +296,7 @@ fun SettingsScreen(
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val themePresetId by viewModel.themePresetId.collectAsStateWithLifecycle()
     val dynamicColorEnabled by viewModel.dynamicColorEnabled.collectAsStateWithLifecycle()
-    val appStyle by viewModel.appStyle.collectAsStateWithLifecycle()
+    val appearance by viewModel.appearance.collectAsStateWithLifecycle()
     val petOverlayEnabled by viewModel.petOverlayEnabled.collectAsStateWithLifecycle()
     val petOverlaySizeDp by viewModel.petOverlaySizeDp.collectAsStateWithLifecycle()
     val backgroundImagePath by viewModel.backgroundImagePath.collectAsStateWithLifecycle()
@@ -669,10 +670,8 @@ fun SettingsScreen(
             themeMode = themeMode,
             themePresetId = themePresetId,
             dynamicColorEnabled = dynamicColorEnabled,
-            appStyle = appStyle,
-            onToggleAppStyle = {
-                viewModel.setAppStyle(if (appStyle == "MUSE") "CLASSIC" else "MUSE")
-            },
+            appearance = appearance,
+            onOpenAppearance = { section = SettingsSection.Appearance },
             terminalSettings = terminalSettings,
             currentLanguageDisplayName = currentLanguageDisplayName,
             backgroundImagePath = backgroundImagePath,
@@ -1437,6 +1436,7 @@ fun SettingsScreen(
                     onClearFilter = { viewModel.refreshLogs(filterServerName = null) },
                     onRefresh = { viewModel.refreshLogs(silent = true) }
                 )
+                SettingsSection.Appearance -> AppearanceSettingsSection(viewModel = viewModel)
                 SettingsSection.Permissions -> PermissionsSection(
                     projectName = currentProjectName,
                     projectRules = projectRules,
@@ -2070,8 +2070,8 @@ internal fun SettingsMenu(
     themeMode: AppThemeMode,
     themePresetId: String?,
     dynamicColorEnabled: Boolean,
-    appStyle: String,
-    onToggleAppStyle: () -> Unit,
+    appearance: com.aicode.core.theme.AppearanceOptions,
+    onOpenAppearance: () -> Unit,
     terminalSettings: TerminalSettings,
     currentLanguageDisplayName: String,
     backgroundImagePath: String?,
@@ -2127,14 +2127,14 @@ internal fun SettingsMenu(
             SettingsDivider()
             SettingsRow(
                 icon = FeatherIcons.Sliders,
-                title = stringResource(R.string.settings_app_style),
-                subtitle = stringResource(R.string.settings_app_style_desc),
-                onClick = onToggleAppStyle,
+                title = stringResource(R.string.appearance_title),
+                subtitle = stringResource(R.string.appearance_entry_desc),
+                onClick = onOpenAppearance,
                 trailing = {
                     Text(
                         text = stringResource(
-                            if (appStyle == "MUSE") R.string.settings_app_style_muse
-                            else R.string.settings_app_style_classic
+                            if (appearance.uiStyle == com.aicode.core.theme.UiStyle.MIUIX) R.string.appearance_ui_style_miuix
+                            else R.string.appearance_ui_style_standard
                         ),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.semanticColors.subtleText
