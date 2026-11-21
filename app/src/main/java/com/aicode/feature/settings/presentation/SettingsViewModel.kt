@@ -83,6 +83,7 @@ import com.aicode.feature.settings.data.repository.SubagentTierSettingsRepositor
 import com.aicode.feature.settings.data.repository.ExecutionModeHolder
 import com.aicode.feature.settings.data.repository.ExecutionModeRepository
 import com.aicode.feature.settings.data.repository.GeneralSettingsRepository
+import com.aicode.feature.settings.data.repository.DEFAULT_SFTP_CHANNEL_LIMIT
 import com.aicode.feature.settings.data.repository.AgentSoundSettingsRepository
 import com.aicode.feature.settings.data.repository.KeepaliveSettingsRepository
 import com.aicode.feature.settings.data.repository.LiveNotificationSettingsRepository
@@ -628,6 +629,9 @@ class SettingsViewModel @Inject constructor(
     private val _maxNetworkRetries = MutableStateFlow(6)
     val maxNetworkRetries: StateFlow<Int> = _maxNetworkRetries.asStateFlow()
 
+    private val _sftpChannelLimit = MutableStateFlow(DEFAULT_SFTP_CHANNEL_LIMIT)
+    val sftpChannelLimit: StateFlow<Int> = _sftpChannelLimit.asStateFlow()
+
     private val _enterToSend = MutableStateFlow(false)
     val enterToSend: StateFlow<Boolean> = _enterToSend.asStateFlow()
 
@@ -1086,6 +1090,12 @@ class SettingsViewModel @Inject constructor(
             launch {
                 generalSettingsRepository.maxNetworkRetriesFlow.collectLatest {
                     _maxNetworkRetries.value = it
+                }
+            }
+
+            launch {
+                generalSettingsRepository.sftpChannelLimitFlow.collectLatest {
+                    _sftpChannelLimit.value = it
                 }
             }
 
@@ -2703,6 +2713,13 @@ class SettingsViewModel @Inject constructor(
     fun setMaxNetworkRetries(count: Int) {
         viewModelScope.launch {
             generalSettingsRepository.setMaxNetworkRetries(count)
+        }
+    }
+
+    /** 远程模式下并发的 SFTP 通道上限。 */
+    fun setSftpChannelLimit(limit: Int) {
+        viewModelScope.launch {
+            generalSettingsRepository.setSftpChannelLimit(limit)
         }
     }
 
