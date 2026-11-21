@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="chat_perm_plugin_source">插件请求：%1$s（%2$s）</string>
     <string name="app_name">AiCode</string>
     <string name="common_tool_missing_argument">缺少参数：%1$s。</string>
     <string name="plan_mode_invalid_action">无效的 action：%1$s。支持 enter 或 exit。</string>
@@ -153,6 +154,7 @@
     <string name="settings_root_hint_unavailable">未检测到 su。点击重新检测；无 root 时可改用 Shizuku</string>
     <string name="settings_root_hint_ready">已授权，AI 可通过 su 以 root 身份执行命令。点击重新检测</string>
     <string name="settings_backup">备份与还原</string>
+    <string name="settings_sponsor">赞助</string>
     <string name="settings_about">关于</string>
     <string name="settings_language">语言</string>
     <string name="settings_token_stats_title">Token 统计</string>
@@ -463,6 +465,52 @@
     <string name="log_copy_with_stack">复制本条及堆栈</string>
     <string name="log_copy_message">复制消息内容</string>
     <string name="log_follow_latest">实时滚动</string>
+    <string name="log_source_app">应用日志</string>
+    <string name="log_source_ai">AI 请求</string>
+    <string name="log_source_crash">崩溃追踪</string>
+    <string name="log_filter_all">全部</string>
+    <string name="log_filter_error">Error</string>
+    <string name="log_filter_warn_plus">Warn+</string>
+    <string name="log_filter_info_plus">Info+</string>
+    <string name="log_filter_errors_only">仅失败</string>
+    <string name="log_tag_prefix">Tag: %1$s</string>
+    <string name="log_filter_this_tag">仅看 [%1$s] 日志</string>
+    <string name="log_view_detail">查看完整详情</string>
+    <string name="log_detail_title">日志详情</string>
+    <string name="log_load_earlier">加载更早</string>
+    <string name="log_wrap_lines">折行</string>
+    <string name="log_search_mode_filter">过滤</string>
+    <string name="log_search_mode_find">定位</string>
+    <string name="log_find_counter">%1$d/%2$d</string>
+    <string name="log_find_no_match">0/0</string>
+    <string name="log_ai_calls_count">共 %1$d 次调用</string>
+    <string name="log_ai_tail_truncated">文件较大，仅解析末尾 4MB；完整内容请点击右上角分享查看</string>
+    <string name="log_ai_request_body">请求体</string>
+    <string name="log_ai_response_body">响应内容</string>
+    <string name="log_ai_error_body">错误详情</string>
+    <string name="log_ai_stream_badge">SSE</string>
+    <string name="log_ai_empty_body">(空)</string>
+    <string name="log_share">分享日志</string>
+    <string name="log_share_current">分享当前文件</string>
+    <string name="log_share_all_zip">打包全部诊断日志 (.zip)</string>
+    <string name="log_share_chooser">分享日志</string>
+    <string name="log_share_failed">分享日志失败：%1$s</string>
+    <string name="log_more_actions">更多日志操作</string>
+    <string name="log_clear_current">清空当前分类日志</string>
+    <string name="log_clear_all">清空全部日志</string>
+    <string name="log_clear_current_confirm">确定要删除当前分类下的所有日志文件吗？此操作不可恢复。</string>
+    <string name="log_clear_all_confirm">确定要删除全部应用日志、AI 请求日志和崩溃追踪文件吗？此操作不可恢复。</string>
+    <string name="log_cleared">已清空日志</string>
+    <string name="log_delete_file">删除此文件</string>
+    <string name="log_delete_file_confirm">确认删除？</string>
+    <string name="log_scroll_top">回到顶部</string>
+    <string name="log_scroll_bottom">回到底部</string>
+    <string name="log_path_info">日志存储路径</string>
+    <string name="log_path_info_body">应用日志：Android/data/%1$s/files/logs/\nAI 请求日志：Android/data/%1$s/files/ai-logs/\n崩溃追踪：Android/data/%1$s/files/logs/crash-traces/</string>
+    <string name="log_crash_empty">暂无崩溃追踪记录</string>
+    <string name="log_ai_empty">暂无 AI 请求日志</string>
+    <string name="log_stack_lines">%1$d 行堆栈</string>
+    <string name="log_ai_level_hint">仅 DEBUG 或 VERBOSE 等级下记录新的 AI 请求（当前为 %1$s）</string>
 
     <!-- ? -->
     <string name="sync_unknown_connection">未知连接</string>
@@ -502,7 +550,6 @@
     <string name="chat_reasoning_cannot_disable">该模型无法关闭思考，已改用最低档</string>
     <string name="chat_reasoning_endpoint_weak">当前端点可能忽略「关闭」，改用该厂商的新版端点（Responses）才能真关闭</string>
     <string name="provider_model_section_reasoning">思考档位</string>
-    <string name="provider_model_reasoning_hint">只勾选该模型真实支持的档位；全部不勾则由内置能力表自动判断</string>
     <string name="provider_model_reasoning_can_disable">可以关闭思考</string>
     <string name="chat_open_file_missing">文件不存在或已被移动</string>
     <string name="chat_open_file_unshareable">文件所在位置无法分享给其它应用</string>
@@ -534,6 +581,8 @@
     <!-- About -->
     <string name="about_version">版本</string>
     <string name="about_github_repo">GitHub 仓库</string>
+    <string name="about_star_prompt">支持 AiCode</string>
+    <string name="about_star_prompt_desc">在 GitHub 为项目点亮 Star</string>
     <string name="about_license">开源许可证</string>
     <string name="about_description">Android 上的通用 AI Coding Agent · Linux 开发环境 · 支持本地与远程 SSH</string>
     <string name="about_check_update">检查更新</string>
@@ -563,6 +612,26 @@
     <string name="about_update_mirror_invalid">地址需以 http:// 或 https:// 开头</string>
     <string name="about_update_mirror_default">恢复默认</string>
     <string name="about_update_download_install">下载并安装</string>
+
+    <!-- Sponsor -->
+    <string name="sponsor_methods_header">赞助方式</string>
+    <string name="sponsor_users_header">赞助用户</string>
+    <string name="sponsor_method_afdian">爱发电</string>
+    <string name="sponsor_method_wechat">微信赞助</string>
+    <string name="sponsor_refresh">刷新赞助名单</string>
+    <string name="sponsor_refresh_failed">刷新失败：%1$s</string>
+    <string name="sponsor_refresh_failed_short">刷新失败，请稍后重试</string>
+    <string name="sponsor_users_empty_title">暂无赞助用户</string>
+    <string name="sponsor_users_empty_hint">名单会定期从仓库同步，点击下方可手动刷新</string>
+    <string name="sponsor_qr_load_failed">二维码加载失败，请稍后重试</string>
+    <string name="sponsor_open_link">打开链接</string>
+
+    <!-- Star Prompt -->
+    <string name="star_prompt_title">喜欢 AiCode 吗？</string>
+    <string name="star_prompt_message">AiCode 完全开源免费。如果它帮到了你的日常开发，欢迎去 GitHub 点个 Star 支持，让更多开发者看到这个项目。</string>
+    <string name="star_prompt_action_star">前往 GitHub 点 Star</string>
+    <string name="star_prompt_action_later">下次一定</string>
+    <string name="star_prompt_action_dismiss">不再提示</string>
     <string name="about_update_install">安装</string>
     <string name="about_update_browser">浏览器下载</string>
     <string name="about_update_background">后台继续</string>
@@ -716,6 +785,47 @@
     <string name="chat_batch_delete_title">删除所选会话</string>
     <string name="chat_batch_delete_confirm">确定删除选中的 %1$d 个会话？包含的所有消息都将被清除，且无法恢复。</string>
     <string name="chat_sessions_selected_count">已选 %1$d 个会话</string>
+    <string name="chat_drawer_current_workspace_badge">当前</string>
+    <string name="chat_move_to_workspace">移动到工作区</string>
+    <string name="chat_batch_move">移动</string>
+    <string name="chat_move_workspace_sheet_title">选择目标工作区</string>
+    <string name="chat_move_running_blocked">请先停止正在运行的会话后再移动</string>
+    <string name="chat_move_done_single">已移至「%1$s」</string>
+    <string name="chat_move_done_multiple">已移动 %1$d 个会话至「%2$s」</string>
+    <string name="chat_move_done_followed">已移至「%1$s」并切换工作区</string>
+    <string name="chat_move_done_partial">已移动 %1$d 个会话至「%2$s」，跳过 %3$d 个运行中的会话</string>
+
+    <!-- Settings Session Management -->
+    <string name="settings_session_management">会话管理</string>
+    <string name="settings_session_detail">会话内容</string>
+    <string name="session_mgmt_search_hint">搜索会话标题、路径或消息内容</string>
+    <string name="session_mgmt_filter_all">全部</string>
+    <string name="session_mgmt_filter_current_env">当前环境</string>
+    <string name="session_mgmt_filter_remote_offline">远程/离线</string>
+    <string name="session_mgmt_empty">暂无可管理的会话</string>
+    <string name="session_mgmt_message_hits_header">消息内容命中</string>
+    <string name="session_mgmt_tag_remote_connected">远程·已连接</string>
+    <string name="session_mgmt_tag_external">本机目录</string>
+    <string name="session_mgmt_tag_local">本地</string>
+    <string name="session_mgmt_tag_local_offline">本地·其他环境</string>
+    <string name="session_mgmt_tag_external_offline">外部目录·离线</string>
+    <string name="session_mgmt_tag_remote_offline">远程/离线</string>
+    <string name="session_mgmt_msg_count">%1$d 条消息</string>
+    <string name="session_mgmt_subagent_count">%1$d 个子代理</string>
+    <string name="session_mgmt_running_tag">运行中</string>
+    <string name="session_mgmt_view_content">查看会话内容</string>
+    <string name="session_mgmt_open_in_chat">在聊天中打开</string>
+    <string name="session_mgmt_cross_env_title">跨环境移动会话</string>
+    <string name="session_mgmt_cross_env_confirm">目标路径不属于当前可用环境，移动 %1$d 个会话仅变更本地记录所属工作区「%2$s」，不会搬运磁盘文件。确定继续吗？</string>
+    <string name="session_mgmt_not_found">会话不存在或已被删除</string>
+    <string name="session_mgmt_offline_readonly_hint">该工作区当前离线或属于其他执行环境，仅可只读查看或调整所属工作区。</string>
+    <string name="session_mgmt_empty_messages">暂无消息内容</string>
+    <string name="session_mgmt_role_user">用户</string>
+    <string name="session_mgmt_role_assistant">助手</string>
+    <string name="session_mgmt_role_tool">工具</string>
+    <string name="session_mgmt_role_system">系统</string>
+    <string name="session_mgmt_hide_reasoning">收起思考过程</string>
+    <string name="session_mgmt_show_reasoning">展开思考过程</string>
 
     <!-- Subagent -->
     <string name="subagent_tab_sessions">会话</string>
@@ -911,7 +1021,12 @@
     <string name="container_rootfs_will_be_cleared">其 rootfs 目录会被一并清除。</string>
     <string name="container_builtin_restorable">内置镜像删除后可在空列表恢复。</string>
     <string name="container_switch_image">切换容器与镜像</string>
+    <string name="container_switch_backend_title">切换执行后端</string>
     <string name="container_switch_confirm">切换到「%1$s」后，当前正在运行的 AI 会话将被停止、终端标签将被关闭。是否继续切换？</string>
+    <string name="container_plugin_backends">插件执行后端</string>
+    <string name="container_plugin_backend_local">本地环境</string>
+    <string name="container_plugin_backend_remote">远程环境</string>
+    <string name="container_plugin_backend_subtitle">%1$s · 插件 %2$s</string>
     <string name="container_reset_title">重置容器</string>
     <string name="container_resetting_title">正在清理容器数据</string>
     <string name="container_resetting_message">正在删除「%1$s」的数据…\n已清理 %2$s 项</string>
@@ -1741,6 +1856,7 @@
     <string name="terminal_title">终端</string>
     <string name="terminal_prepare_error_unknown">未知错误</string>
     <string name="terminal_start_failed">无法启动终端：\n%1$s</string>
+    <string name="terminal_backend_unsupported">当前执行后端「%1$s」不支持终端</string>
     <string name="terminal_retry">重试</string>
     <string name="terminal_no_open_tabs">没有打开的终端标签</string>
     <string name="terminal_close_tab">关闭标签</string>
@@ -1930,6 +2046,9 @@
     <string name="provider_multi_key_add">添加 Key</string>
     <string name="provider_multi_key_weight">调度权重</string>
     <string name="provider_multi_key_weight_hint">默认 1 · ≤ 0 时不参与 · 最大 1,000,000</string>
+    <string name="provider_multi_key_base_url">自定义 Base URL</string>
+    <string name="provider_multi_key_base_url_placeholder">留空则用提供商地址</string>
+    <string name="provider_multi_key_base_url_hint">填了就只用该地址发请求，适合不同 Key 走不同中转或反代</string>
     <string name="provider_multi_key_strategy">取用策略</string>
     <string name="provider_multi_key_strategy_sequential">顺序</string>
     <string name="provider_multi_key_strategy_sequential_desc">始终用靠前的 Key，失败达阈值才切下一个</string>
@@ -2042,6 +2161,18 @@
     <!-- 插件 -->
     <string name="settings_plugins">插件</string>
     <string name="plugins_more_in_drawer">更多插件</string>
+    <string name="plugin_sessions_title">插件会话</string>
+    <string name="plugin_sessions_refresh">刷新</string>
+    <string name="plugin_sessions_empty">没有可用的插件会话</string>
+    <string name="plugin_sessions_no_messages">暂无消息</string>
+    <string name="plugin_sessions_load_more">加载更早消息</string>
+    <string name="plugin_sessions_count">%1$d 个远端会话</string>
+    <string name="plugin_sessions_status_running">运行中</string>
+    <string name="plugin_sessions_status_failed">失败</string>
+    <string name="plugin_sessions_status_needs_input">待输入</string>
+    <string name="plugin_sessions_status_idle">空闲</string>
+    <string name="plugin_sessions_retry">重试</string>
+    <string name="plugin_sessions_readonly_hint">只读会话 · 消息由插件提供</string>
     <string name="plugins_entry_action">动作</string>
     <string name="plugins_action_confirm_title">执行插件动作</string>
     <string name="plugins_action_confirm_message">要执行「%1$s」吗？</string>
@@ -2176,6 +2307,18 @@
     <string name="plugins_content_settings_page">设置页 · %1$s</string>
     <string name="plugins_mcp_transport_http">HTTP</string>
     <string name="plugins_mcp_transport_stdio">stdio</string>
+    <string name="plugins_backend_cap_fs">文件访问</string>
+    <string name="plugins_backend_cap_command">命令执行</string>
+    <string name="plugins_backend_cap_terminal">终端会话</string>
+    <string name="plugins_workflow_cap_streaming">流式输出</string>
+    <string name="plugins_workflow_cap_tools">工具调用</string>
+    <string name="plugins_workflow_cap_compaction">上下文压缩</string>
+    <string name="plugins_workflow_cap_title_gen">标题生成</string>
+    <string name="plugins_session_cap_read">消息读取</string>
+    <string name="plugins_session_cap_create">新建会话</string>
+    <string name="plugins_session_cap_rename">重命名</string>
+    <string name="plugins_session_cap_pin">置顶</string>
+    <string name="plugins_session_cap_delete">删除</string>
     <string name="plugins_ext_entry_subtitle">插件 %1$s</string>
     <string name="settings_plugin_page_title">插件页面</string>
     <string name="plugin_web_page_failed">页面加载失败</string>

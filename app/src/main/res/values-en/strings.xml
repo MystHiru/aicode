@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="chat_perm_plugin_source">Plugin request: %1$s (%2$s)</string>
     <string name="app_name">AiCode</string>
     <string name="common_tool_missing_argument">Missing parameter: %1$s.</string>
     <string name="plan_mode_invalid_action">Invalid action: %1$s. Supported values: enter or exit.</string>
@@ -153,6 +154,7 @@
     <string name="settings_root_hint_unavailable">No su found. Tap to recheck; use Shizuku instead when the device is not rooted</string>
     <string name="settings_root_hint_ready">Authorized — AI can run commands as root via su. Tap to recheck</string>
     <string name="settings_backup">Backup &amp; Restore</string>
+    <string name="settings_sponsor">Sponsor</string>
     <string name="settings_about">About</string>
     <string name="settings_language">Language</string>
     <string name="settings_token_stats_title">Token Stats</string>
@@ -463,6 +465,52 @@
     <string name="log_copy_with_stack">Copy with stack trace</string>
     <string name="log_copy_message">Copy message</string>
     <string name="log_follow_latest">Live</string>
+    <string name="log_source_app">App Logs</string>
+    <string name="log_source_ai">AI Requests</string>
+    <string name="log_source_crash">Crash Traces</string>
+    <string name="log_filter_all">All</string>
+    <string name="log_filter_error">Error</string>
+    <string name="log_filter_warn_plus">Warn+</string>
+    <string name="log_filter_info_plus">Info+</string>
+    <string name="log_filter_errors_only">Errors Only</string>
+    <string name="log_tag_prefix">Tag: %1$s</string>
+    <string name="log_filter_this_tag">Filter by [%1$s]</string>
+    <string name="log_view_detail">View Full Details</string>
+    <string name="log_detail_title">Log Details</string>
+    <string name="log_load_earlier">Load Earlier</string>
+    <string name="log_wrap_lines">Wrap</string>
+    <string name="log_search_mode_filter">Filter</string>
+    <string name="log_search_mode_find">Find</string>
+    <string name="log_find_counter">%1$d/%2$d</string>
+    <string name="log_find_no_match">0/0</string>
+    <string name="log_ai_calls_count">%1$d calls</string>
+    <string name="log_ai_tail_truncated">Large file: showing last 4MB only. Share via top bar for full content.</string>
+    <string name="log_ai_request_body">Request Body</string>
+    <string name="log_ai_response_body">Response</string>
+    <string name="log_ai_error_body">Error Details</string>
+    <string name="log_ai_stream_badge">SSE</string>
+    <string name="log_ai_empty_body">(empty)</string>
+    <string name="log_share">Share Logs</string>
+    <string name="log_share_current">Share Current File</string>
+    <string name="log_share_all_zip">Export All Logs (.zip)</string>
+    <string name="log_share_chooser">Share Logs</string>
+    <string name="log_share_failed">Failed to share logs: %1$s</string>
+    <string name="log_more_actions">More Log Actions</string>
+    <string name="log_clear_current">Clear Current Category</string>
+    <string name="log_clear_all">Clear All Logs</string>
+    <string name="log_clear_current_confirm">Delete all log files in the current category? This cannot be undone.</string>
+    <string name="log_clear_all_confirm">Delete all app logs, AI request logs, and crash traces? This cannot be undone.</string>
+    <string name="log_cleared">Logs cleared</string>
+    <string name="log_delete_file">Delete file</string>
+    <string name="log_delete_file_confirm">Confirm?</string>
+    <string name="log_scroll_top">Scroll to top</string>
+    <string name="log_scroll_bottom">Scroll to bottom</string>
+    <string name="log_path_info">Log Storage Paths</string>
+    <string name="log_path_info_body">App logs: Android/data/%1$s/files/logs/\nAI requests: Android/data/%1$s/files/ai-logs/\nCrash traces: Android/data/%1$s/files/logs/crash-traces/</string>
+    <string name="log_crash_empty">No crash traces recorded</string>
+    <string name="log_ai_empty">No AI request logs yet</string>
+    <string name="log_stack_lines">%1$d stack lines</string>
+    <string name="log_ai_level_hint">AI requests are only logged at DEBUG or VERBOSE (current: %1$s)</string>
 
     <!-- ? -->
     <string name="sync_unknown_connection">Unknown connection</string>
@@ -502,7 +550,6 @@
     <string name="chat_reasoning_cannot_disable">This model always thinks; the lowest level is used instead</string>
     <string name="chat_reasoning_endpoint_weak">This endpoint may ignore &quot;None&quot;; switch to the provider\'s Responses endpoint to fully disable thinking</string>
     <string name="provider_model_section_reasoning">Reasoning levels</string>
-    <string name="provider_model_reasoning_hint">Tick only the levels this model really accepts; leave all unticked to use the built-in capability table</string>
     <string name="provider_model_reasoning_can_disable">Thinking can be turned off</string>
     <string name="chat_open_file_missing">File not found or has been moved</string>
     <string name="chat_open_file_unshareable">This file\'s location cannot be shared with other apps</string>
@@ -534,6 +581,8 @@
     <!-- About -->
     <string name="about_version">Version</string>
     <string name="about_github_repo">GitHub Repository</string>
+    <string name="about_star_prompt">Support AiCode</string>
+    <string name="about_star_prompt_desc">Star the project on GitHub</string>
     <string name="about_license">Open Source License</string>
     <string name="about_description">Universal AI Coding Agent for Android · Linux dev environment · Local &amp; remote SSH</string>
     <string name="about_check_update">Check for updates</string>
@@ -563,6 +612,26 @@
     <string name="about_update_mirror_invalid">Address must start with http:// or https://</string>
     <string name="about_update_mirror_default">Restore default</string>
     <string name="about_update_download_install">Download &amp; install</string>
+
+    <!-- Sponsor -->
+    <string name="sponsor_methods_header">Sponsor methods</string>
+    <string name="sponsor_users_header">Sponsors</string>
+    <string name="sponsor_method_afdian">Afdian</string>
+    <string name="sponsor_method_wechat">WeChat Sponsor</string>
+    <string name="sponsor_refresh">Refresh sponsors</string>
+    <string name="sponsor_refresh_failed">Refresh failed: %1$s</string>
+    <string name="sponsor_refresh_failed_short">Refresh failed, please try again later</string>
+    <string name="sponsor_users_empty_title">No sponsors yet</string>
+    <string name="sponsor_users_empty_hint">The list syncs from the repository periodically; tap below to refresh manually</string>
+    <string name="sponsor_qr_load_failed">Failed to load QR code, please try again later</string>
+    <string name="sponsor_open_link">Open link</string>
+
+    <!-- Star Prompt -->
+    <string name="star_prompt_title">Enjoying AiCode?</string>
+    <string name="star_prompt_message">AiCode is free and open source. If it has been helpful in your workflow, please consider giving it a Star on GitHub so more developers can discover it.</string>
+    <string name="star_prompt_action_star">Star on GitHub</string>
+    <string name="star_prompt_action_later">Maybe later</string>
+    <string name="star_prompt_action_dismiss">Don\'t ask again</string>
     <string name="about_update_install">Install</string>
     <string name="about_update_browser">Download in browser</string>
     <string name="about_update_background">Continue in background</string>
@@ -716,6 +785,47 @@
     <string name="chat_batch_delete_title">Delete Selected Sessions</string>
     <string name="chat_batch_delete_confirm">Delete the selected %1$d sessions? All messages in these sessions will be cleared and cannot be undone.</string>
     <string name="chat_sessions_selected_count">%1$d sessions selected</string>
+    <string name="chat_drawer_current_workspace_badge">Current</string>
+    <string name="chat_move_to_workspace">Move to Workspace</string>
+    <string name="chat_batch_move">Move</string>
+    <string name="chat_move_workspace_sheet_title">Choose Target Workspace</string>
+    <string name="chat_move_running_blocked">Stop the running session before moving it</string>
+    <string name="chat_move_done_single">Moved to \"%1$s\"</string>
+    <string name="chat_move_done_multiple">Moved %1$d sessions to \"%2$s\"</string>
+    <string name="chat_move_done_followed">Moved to \"%1$s\" and switched workspace</string>
+    <string name="chat_move_done_partial">Moved %1$d sessions to \"%2$s\", skipped %3$d active</string>
+
+    <!-- Settings Session Management -->
+    <string name="settings_session_management">Session Management</string>
+    <string name="settings_session_detail">Session Messages</string>
+    <string name="session_mgmt_search_hint">Search titles, paths, or messages</string>
+    <string name="session_mgmt_filter_all">All</string>
+    <string name="session_mgmt_filter_current_env">Current Env</string>
+    <string name="session_mgmt_filter_remote_offline">Remote / Offline</string>
+    <string name="session_mgmt_empty">No sessions found</string>
+    <string name="session_mgmt_message_hits_header">Message Matches</string>
+    <string name="session_mgmt_tag_remote_connected">Remote · Connected</string>
+    <string name="session_mgmt_tag_external">External Folder</string>
+    <string name="session_mgmt_tag_local">Local</string>
+    <string name="session_mgmt_tag_local_offline">Local · Other Env</string>
+    <string name="session_mgmt_tag_external_offline">External · Offline</string>
+    <string name="session_mgmt_tag_remote_offline">Remote / Offline</string>
+    <string name="session_mgmt_msg_count">%1$d msgs</string>
+    <string name="session_mgmt_subagent_count">%1$d subagents</string>
+    <string name="session_mgmt_running_tag">Running</string>
+    <string name="session_mgmt_view_content">View Messages</string>
+    <string name="session_mgmt_open_in_chat">Open in Chat</string>
+    <string name="session_mgmt_cross_env_title">Move Across Environments</string>
+    <string name="session_mgmt_cross_env_confirm">The target path is outside the active environment. Moving %1$d session(s) only updates their workspace link to \"%2$s\" in local history without moving disk files. Continue?</string>
+    <string name="session_mgmt_not_found">Session not found or deleted</string>
+    <string name="session_mgmt_offline_readonly_hint">This workspace is offline or belongs to another environment. Messages are read-only here until you connect to it.</string>
+    <string name="session_mgmt_empty_messages">No messages yet</string>
+    <string name="session_mgmt_role_user">User</string>
+    <string name="session_mgmt_role_assistant">Assistant</string>
+    <string name="session_mgmt_role_tool">Tool</string>
+    <string name="session_mgmt_role_system">System</string>
+    <string name="session_mgmt_hide_reasoning">Hide reasoning</string>
+    <string name="session_mgmt_show_reasoning">Show reasoning</string>
     <string name="chat_rename_session">Rename Session</string>
     <string name="chat_session_name">Session name</string>
     <string name="chat_export_session">Export Session</string>
@@ -911,7 +1021,12 @@
     <string name="container_rootfs_will_be_cleared">Its rootfs directory will also be removed.</string>
     <string name="container_builtin_restorable">Built-in images can be restored from the empty list.</string>
     <string name="container_switch_image">Switch Container &amp; Images</string>
+    <string name="container_switch_backend_title">Switch Execution Backend</string>
     <string name="container_switch_confirm">After switching to "%1$s", the currently running AI sessions will be stopped and terminal tabs will be closed. Continue?</string>
+    <string name="container_plugin_backends">Plugin Execution Backends</string>
+    <string name="container_plugin_backend_local">Local</string>
+    <string name="container_plugin_backend_remote">Remote</string>
+    <string name="container_plugin_backend_subtitle">%1$s · Plugin %2$s</string>
     <string name="container_reset_title">Reset Container</string>
     <string name="container_resetting_title">Cleaning Container Data</string>
     <string name="container_resetting_message">Deleting data for "%1$s"…\n%2$s items removed</string>
@@ -1742,6 +1857,7 @@
     <string name="terminal_title">Terminal</string>
     <string name="terminal_prepare_error_unknown">Unknown error</string>
     <string name="terminal_start_failed">Cannot start terminal:\n%1$s</string>
+    <string name="terminal_backend_unsupported">Terminal is not supported by execution backend "%1$s"</string>
     <string name="terminal_retry">Retry</string>
     <string name="terminal_no_open_tabs">No open terminal tabs</string>
     <string name="terminal_close_tab">Close Tab</string>
@@ -1931,6 +2047,9 @@
     <string name="provider_multi_key_add">Add key</string>
     <string name="provider_multi_key_weight">Scheduling weight</string>
     <string name="provider_multi_key_weight_hint">Default 1 · ≤ 0 excluded · Max 1,000,000</string>
+    <string name="provider_multi_key_base_url">Custom Base URL</string>
+    <string name="provider_multi_key_base_url_placeholder">Leave blank to use the provider URL</string>
+    <string name="provider_multi_key_base_url_hint">When set, requests for this key go to this address only — handy for per-key proxies</string>
     <string name="provider_multi_key_strategy">Selection Strategy</string>
     <string name="provider_multi_key_strategy_sequential">Sequential</string>
     <string name="provider_multi_key_strategy_sequential_desc">Always use the earliest key; move on only after the failure threshold</string>
@@ -2043,6 +2162,18 @@
     <!-- Plugins -->
     <string name="settings_plugins">Plugins</string>
     <string name="plugins_more_in_drawer">More plugins</string>
+    <string name="plugin_sessions_title">Plugin sessions</string>
+    <string name="plugin_sessions_refresh">Refresh</string>
+    <string name="plugin_sessions_empty">No plugin sessions available</string>
+    <string name="plugin_sessions_no_messages">No messages</string>
+    <string name="plugin_sessions_load_more">Load earlier messages</string>
+    <string name="plugin_sessions_count">%1$d remote sessions</string>
+    <string name="plugin_sessions_status_running">Running</string>
+    <string name="plugin_sessions_status_failed">Failed</string>
+    <string name="plugin_sessions_status_needs_input">Needs input</string>
+    <string name="plugin_sessions_status_idle">Idle</string>
+    <string name="plugin_sessions_retry">Retry</string>
+    <string name="plugin_sessions_readonly_hint">Read-only session · messages provided by plugin</string>
     <string name="plugins_entry_action">Action</string>
     <string name="plugins_action_confirm_title">Run plugin action</string>
     <string name="plugins_action_confirm_message">Run “%1$s”?</string>
@@ -2177,6 +2308,18 @@
     <string name="plugins_content_settings_page">Settings page · %1$s</string>
     <string name="plugins_mcp_transport_http">HTTP</string>
     <string name="plugins_mcp_transport_stdio">stdio</string>
+    <string name="plugins_backend_cap_fs">Filesystem</string>
+    <string name="plugins_backend_cap_command">Command execution</string>
+    <string name="plugins_backend_cap_terminal">Terminal session</string>
+    <string name="plugins_workflow_cap_streaming">Streaming</string>
+    <string name="plugins_workflow_cap_tools">Tools</string>
+    <string name="plugins_workflow_cap_compaction">Compaction</string>
+    <string name="plugins_workflow_cap_title_gen">Title generation</string>
+    <string name="plugins_session_cap_read">Read messages</string>
+    <string name="plugins_session_cap_create">Create</string>
+    <string name="plugins_session_cap_rename">Rename</string>
+    <string name="plugins_session_cap_pin">Pin</string>
+    <string name="plugins_session_cap_delete">Delete</string>
     <string name="plugins_ext_entry_subtitle">Plugin %1$s</string>
     <string name="settings_plugin_page_title">Plugin page</string>
     <string name="plugin_web_page_failed">Page failed to load</string>

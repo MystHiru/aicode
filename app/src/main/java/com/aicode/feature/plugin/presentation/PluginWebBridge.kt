@@ -71,24 +71,13 @@ class PluginWebBridge(
     private val languageTag: String,
     private val fileAccess: FileAccessProvider,
     private val homeResolver: PathHomeResolver,
-    private val commandEngine: CommandEngine,
     private val workspacePath: () -> String,
     private val eventBus: PluginEventBus,
     private val pluginManager: PluginManager,
     private val pluginRuntimeManager: PluginRuntimeManager,
-    private val terminalRunner: PluginTerminalRunner,
-    private val shizukuRunner: PluginShizukuRunner,
-    private val tipManager: PluginTipManager,
-    private val overlayManager: PluginOverlayManager,
-    private val chatService: PluginChatService,
     private val modelService: PluginModelService,
-    private val providerService: PluginProviderService,
     private val agentRunStateStore: AgentRunStateStore,
-    private val secretStore: PluginSecretStore,
-    private val systemService: PluginSystemService,
-    private val introspectionService: PluginIntrospectionService,
-    private val toolService: PluginToolService,
-    private val httpService: PluginHttpService,
+    private val hostApiDispatcher: com.aicode.feature.plugin.runtime.PluginHostApiDispatcher,
     private val environment: PluginPageEnvironment,
     @Volatile private var theme: () -> String,
     @Volatile private var onClosePage: () -> Unit,
@@ -111,6 +100,11 @@ class PluginWebBridge(
     @Volatile private var visible = false
     @Volatile private var closed = false
     @Volatile private var contextKey = environment.contextKey()
+    private data class QueuedEvent(val script: String, val contextKey: String?, val reply: Boolean)
+    private val eventLock = Any()
+    private val queuedEvents = ArrayDeque<QueuedEvent>()
+    private var eventFlushScheduled = false
+    private val eventFlush = Runnable { flushEvents() }
     private val fileSubscriptions = PluginFileSubscriptions(
         scope = scope,
         watch = { path, recursive -> environment.watch(hostPaths, path, recursive) },
@@ -164,12 +158,12 @@ class PluginWebBridge(
 
     @JavascriptInterface
     fun postMessage(payload: String) {
-        val root = runCatching { Json.parseToJsonElement(payload) as? JsonObject }.getOrNull() ?: return
-        val id = (root["id"] as? JsonPrimitive)?.contentOrNull ?: return
-        val method = (root["method"] as? JsonPrimitive)?.contentOrNull ?: return
-        val params = root["params"] as? JsonObject ?: JsonObject(emptyMap())
         val requestContext = environment.contextKey()
         scope.launch {
+            val root = runCatching { Json.parseToJsonElement(payload) as? JsonObject }.getOrNull() ?: return@launch
+            val id = (root["id"] as? JsonPrimitive)?.contentOrNull ?: return@launch
+            val method = (root["method"] as? JsonPrimitive)?.contentOrNull ?: return@launch
+            val params = root["params"] as? JsonObject ?: JsonObject(emptyMap())
             val reply = try {
                 if (method.startsWith("fs.") && method != "fs.unwatch") {
                     val expected = (params["contextKey"] as? JsonPrimitive)?.contentOrNull
@@ -206,6 +200,11 @@ class PluginWebBridge(
         if (closed) return
         closed = true
         visible = false
+        synchronized(eventLock) {
+            queuedEvents.clear()
+            eventFlushScheduled = false
+            mainHandler.removeCallbacks(eventFlush)
+        }
         modelService.closeOrigin("page:${page.cacheKey}")
         fileSubscriptions.close()
         updateOverlay(false, null)
@@ -251,15 +250,53 @@ class PluginWebBridge(
     }
 
     private fun postEvent(event: JsonObject) {
+        if (closed) return
         val payload = event["payload"] as? JsonObject
-        val key = (payload?.get("contextKey") as? JsonPrimitive)?.contentOrNull
         val contextual = (event["name"] as? JsonPrimitive)?.contentOrNull in setOf("fs.changed", "ui.lifecycle")
-        val script = "window.__aicodeEvent(${jsString(event.toString())})"
-        mainHandler.post {
-            if (isAuthorized() && (!contextual || key == null || key == environment.contextKey())) {
-                runCatching { post(script) }
+        val key = if (contextual) (payload?.get("contextKey") as? JsonPrimitive)?.contentOrNull else null
+        enqueueScript("try{window.__aicodeEvent(${jsString(event.toString())})}catch(e){}", key)
+    }
+
+    private fun enqueueScript(script: String, contextKey: String? = null, immediate: Boolean = false) {
+        synchronized(eventLock) {
+            if (closed) return
+            queuedEvents.addLast(QueuedEvent(script, contextKey, reply = immediate))
+            if (immediate) {
+                mainHandler.removeCallbacks(eventFlush)
+                eventFlushScheduled = true
+                mainHandler.post(eventFlush)
+            } else if (!eventFlushScheduled) {
+                eventFlushScheduled = true
+                mainHandler.postDelayed(eventFlush, EVENT_BATCH_WINDOW_MS)
             }
         }
+    }
+
+    private fun flushEvents() {
+        val batch = synchronized(eventLock) {
+            val events = ArrayList<QueuedEvent>()
+            var chars = 0
+            while (queuedEvents.isNotEmpty() && events.size < MAX_EVENT_BATCH_SIZE) {
+                val next = queuedEvents.first()
+                // Promise 回复单独执行，保留其微任务先于后续事件处理的顺序。
+                if (events.isNotEmpty() && (events.first().reply || next.reply ||
+                        chars + next.script.length > MAX_EVENT_BATCH_CHARS)) break
+                events += queuedEvents.removeFirst()
+                chars += next.script.length
+            }
+            if (queuedEvents.isEmpty()) {
+                eventFlushScheduled = false
+            } else {
+                mainHandler.post(eventFlush)
+            }
+            events
+        }
+        if (batch.isEmpty() || !isAuthorized()) return
+        val key = environment.contextKey()
+        val script = batch.asSequence()
+            .filter { it.contextKey == null || it.contextKey == key }
+            .joinToString(";\n") { it.script }
+        if (script.isNotEmpty()) runCatching { post(script) }
     }
 
     /**
@@ -298,179 +335,67 @@ class PluginWebBridge(
             throw PluginHostException("PLUGIN_INACTIVE", "plugin page is no longer active: ${page.pluginId}")
         }
         return when (method) {
-        "context" -> buildJsonObject {
-            put("pluginId", page.pluginId)
-            put("pageId", page.localId)
-            page.slot?.let { put("slot", it) }
-            val ctx = pageContext()
-            ctx.sessionId?.let { put("sessionId", it) }
-            ctx.path?.let { put("path", it) }
-            ctx.isDirectory?.let { put("isDirectory", it) }
-            ctx.selection?.let { put("selection", it) }
-            ctx.language?.let { put("language", it) }
-            ctx.lineStart?.let { put("lineStart", it) }
-            ctx.lineEnd?.let { put("lineEnd", it) }
-            put("version", pluginVersion)
-            put("languageTag", languageTag)
-            put("theme", theme())
-            put("workspaceName", environment.workspaceName())
-            put("contextKey", environment.contextKey())
-            put("visible", visible)
-            put("home", homeResolver.home())
-            put("workspace", environment.workspaceRoot())
-            put("dataDir", dataDirPath())
-        }
-
-        "app.isForeground" -> JsonPrimitive(overlayManager.isAppForeground())
-
-        "toast" -> {
-            val message = PluginHostPaths.requireString(params, "message")
-            mainHandler.post { Toast.makeText(context, message, Toast.LENGTH_SHORT).show() }
-            buildJsonObject { put("ok", true) }
-        }
-
-        "ui.close" -> {
-            mainHandler.post { onClosePage() }
-            buildJsonObject { put("ok", true) }
-        }
-
-        "ui.overlay" -> {
-            val visible = (params["visible"] as? JsonPrimitive)?.booleanOrNull
-                ?: throw PluginHostException("PARAM_INVALID", "visible required")
-            val rect = (params["rect"] as? JsonObject)?.let { readOverlayRect(it) }
-            updateOverlay(visible, rect)
-            buildJsonObject { put("ok", true) }
-        }
-
-        "fs.read" -> hostPaths.read(PluginHostPaths.requireString(params, "path"))
-        "fs.write" -> hostPaths.write(
-            PluginHostPaths.requireString(params, "path"),
-            PluginHostPaths.requireString(params, "content")
-        )
-        "fs.list" -> hostPaths.list(PluginHostPaths.requireString(params, "path"))
-        "fs.delete" -> hostPaths.delete(PluginHostPaths.requireString(params, "path"))
-        "fs.stat" -> hostPaths.stat(PluginHostPaths.requireString(params, "path"))
-        "fs.mkdir" -> hostPaths.mkdir(PluginHostPaths.requireString(params, "path"))
-        "fs.rename" -> hostPaths.rename(
-            PluginHostPaths.requireString(params, "from"),
-            PluginHostPaths.requireString(params, "to")
-        )
-        "fs.copy" -> hostPaths.copy(
-            PluginHostPaths.requireString(params, "from"),
-            PluginHostPaths.requireString(params, "to"),
-            (params["overwrite"] as? JsonPrimitive)?.booleanOrNull ?: false
-        )
-        "fs.append" -> hostPaths.append(
-            PluginHostPaths.requireString(params, "path"),
-            PluginHostPaths.requireString(params, "content")
-        )
-        "fs.readBinary" -> hostPaths.readBinary(PluginHostPaths.requireString(params, "path"))
-        "fs.writeBinary" -> hostPaths.writeBinary(
-            PluginHostPaths.requireString(params, "path"),
-            PluginHostPaths.requireString(params, "base64")
-        )
-        "fs.watch" -> {
-            val id = PluginHostPaths.requireString(params, "subscriptionId")
-            val path = PluginHostPaths.requireString(params, "path")
-            val recursive = params["recursive"]?.let {
-                (it as? JsonPrimitive)?.booleanOrNull
-                    ?: throw PluginHostException("PARAM_INVALID", "recursive must be a boolean")
-            } ?: false
-            fileSubscriptions.add(id, path, recursive)
-            buildJsonObject { put("subscriptionId", id) }
-        }
-        "fs.unwatch" -> {
-            fileSubscriptions.remove(PluginHostPaths.requireString(params, "subscriptionId"))
-            buildJsonObject { put("ok", true) }
-        }
-        "bash" -> bash(params)
-        "shizuku.exec" -> shizukuExec(params)
-        "overlay.create" -> overlayCreate(params)
-        "overlay.update" -> overlayUpdate(params)
-        "overlay.close" -> overlayClose(params)
-        "overlay.postMessage" -> overlayPostMessage(params)
-        "tip" -> tip(params)
-        "plugin.invoke" -> invokePlugin(params)
-        "terminal.run" -> terminalRun(params)
-        "terminal.poll" -> terminalPoll(params)
-        "terminal.stop" -> terminalStop(params)
-        "terminal.close" -> terminalClose(params)
-        "terminal.write" -> terminalWrite(params)
-        "terminal.list" -> terminalRunner.list(page.pluginId)
-        "chat.listSessions" -> chatService.listSessions(page.pluginId, params)
-        "chat.createSession" -> chatService.createSession(page.pluginId, params)
-        "chat.listMessages" -> chatService.listMessages(page.pluginId, params)
-        "chat.sendMessage" -> chatService.sendMessage(page.pluginId, params)
-        "chat.setDraft" -> chatService.setDraft(page.pluginId, params)
-        "chat.stop" -> chatService.stop(page.pluginId, params)
-        "chat.openSession" -> chatService.openSession(page.pluginId, params)
-        "chat.getSession" -> chatService.getSession(page.pluginId, params)
-        "chat.renameSession" -> chatService.renameSession(page.pluginId, params)
-        "chat.pinSession" -> chatService.pinSession(page.pluginId, params)
-        "chat.deleteSession" -> chatService.deleteSession(page.pluginId, params)
-        "chat.getRunState" -> chatService.getRunState(page.pluginId, params)
-        "chat.waitForRun" -> chatService.waitForRun(page.pluginId, params)
-        "chat.listApprovals" -> chatService.listApprovals(page.pluginId, params)
-        "chat.resolveToolApproval" -> chatService.resolveToolApproval(page.pluginId, params)
-        "chat.resolveQuestion" -> chatService.resolveQuestion(page.pluginId, params)
-        "chat.resolvePlanApproval" -> chatService.resolvePlanApproval(page.pluginId, params)
-        "model.listProviders" -> modelService.listProviders(page.pluginId)
-        "model.listModels" -> modelService.listModels(page.pluginId, params)
-        "model.create" -> modelService.create(page.pluginId, params)
-        "model.close" -> modelService.close(page.pluginId, params)
-        "model.start" -> modelService.start(page.pluginId, params, "page:${page.cacheKey}")
-        "model.read" -> modelService.read(page.pluginId, params)
-        "model.cancel" -> modelService.cancel(page.pluginId, params)
-        "providers.listModels" -> providerService.listModels(page.pluginId, params)
-        "providers.addModel" -> providerService.addModel(page.pluginId, params)
-        "providers.deleteModel" -> providerService.deleteModel(page.pluginId, params)
-        "providers.setModelContext" -> providerService.setModelContext(page.pluginId, params)
-        "providers.setApiKey" -> providerService.setApiKey(page.pluginId, params)
-        "clipboard.read" -> systemService.clipboardRead(page.pluginId)
-        "clipboard.write" -> systemService.clipboardWrite(
-            page.pluginId,
-            PluginHostPaths.requireString(params, "text")
-        )
-        "share.text" -> systemService.shareText(
-            page.pluginId,
-            PluginHostPaths.requireString(params, "text"),
-            (params["title"] as? JsonPrimitive)?.contentOrNull
-        )
-        "ui.openUrl" -> systemService.openUrl(
-            page.pluginId,
-            PluginHostPaths.requireString(params, "url")
-        )
-        "app.info" -> systemService.appInfo(page.pluginId)
-        "log.write" -> systemService.log(
-            page.pluginId,
-            PluginHostPaths.requireString(params, "level"),
-            PluginHostPaths.requireString(params, "message"),
-            (params["tag"] as? JsonPrimitive)?.contentOrNull
-        )
-        "secrets.get" -> secretStore.get(
-            page.pluginId,
-            PluginHostPaths.requireString(params, "key")
-        )
-        "secrets.set" -> secretStore.set(
-            page.pluginId,
-            PluginHostPaths.requireString(params, "key"),
-            PluginHostPaths.requireString(params, "value")
-        )
-        "secrets.delete" -> secretStore.delete(
-            page.pluginId,
-            PluginHostPaths.requireString(params, "key")
-        )
-        "secrets.list" -> secretStore.list(page.pluginId)
-        "tools.list" -> introspectionService.listTools(
-            page.pluginId,
-            includeSchema = (params["includeSchema"] as? JsonPrimitive)?.booleanOrNull ?: false
-        )
-        "tools.execute" -> toolService.execute(page.pluginId, params)
-        "tools.pending" -> toolService.pending(page.pluginId, params)
-        "tools.resolve" -> toolService.resolve(page.pluginId, params)
-        "mcp.status" -> introspectionService.mcpStatus(page.pluginId)
-        "http.request" -> httpService.request(page.pluginId, params)
-        else -> throw PluginHostException("METHOD_UNKNOWN", "unknown method: $method")
+            "context" -> buildJsonObject {
+                put("pluginId", page.pluginId)
+                put("pageId", page.localId)
+                page.slot?.let { put("slot", it) }
+                val ctx = pageContext()
+                ctx.sessionId?.let { put("sessionId", it) }
+                ctx.path?.let { put("path", it) }
+                ctx.isDirectory?.let { put("isDirectory", it) }
+                ctx.selection?.let { put("selection", it) }
+                ctx.language?.let { put("language", it) }
+                ctx.lineStart?.let { put("lineStart", it) }
+                ctx.lineEnd?.let { put("lineEnd", it) }
+                put("version", pluginVersion)
+                put("languageTag", languageTag)
+                put("theme", theme())
+                put("workspaceName", environment.workspaceName())
+                put("contextKey", environment.contextKey())
+                put("visible", visible)
+                put("home", homeResolver.home())
+                put("workspace", environment.workspaceRoot())
+                put("dataDir", dataDirPath())
+            }
+            "toast" -> {
+                val message = PluginHostPaths.requireString(params, "message")
+                mainHandler.post { Toast.makeText(context, message, Toast.LENGTH_SHORT).show() }
+                buildJsonObject { put("ok", true) }
+            }
+            "ui.close" -> {
+                mainHandler.post { onClosePage() }
+                buildJsonObject { put("ok", true) }
+            }
+            "ui.overlay" -> {
+                val visible = (params["visible"] as? JsonPrimitive)?.booleanOrNull
+                    ?: throw PluginHostException("PARAM_INVALID", "visible required")
+                val rect = (params["rect"] as? JsonObject)?.let { readOverlayRect(it) }
+                updateOverlay(visible, rect)
+                buildJsonObject { put("ok", true) }
+            }
+            "fs.watch" -> {
+                val id = PluginHostPaths.requireString(params, "subscriptionId")
+                val path = PluginHostPaths.requireString(params, "path")
+                val recursive = params["recursive"]?.let {
+                    (it as? JsonPrimitive)?.booleanOrNull
+                        ?: throw PluginHostException("PARAM_INVALID", "recursive must be a boolean")
+                } ?: false
+                fileSubscriptions.add(id, path, recursive)
+                buildJsonObject { put("subscriptionId", id) }
+            }
+            "fs.unwatch" -> {
+                fileSubscriptions.remove(PluginHostPaths.requireString(params, "subscriptionId"))
+                buildJsonObject { put("ok", true) }
+            }
+            "plugin.invoke" -> invokePlugin(params)
+            else -> hostApiDispatcher.dispatch(
+                pluginId = page.pluginId,
+                method = method,
+                params = params,
+                origin = com.aicode.feature.plugin.runtime.PluginHostApiOrigin.PAGE,
+                workspaceRoot = workspacePath,
+                modelOrigin = "page:${page.cacheKey}"
+            )
         }
     }
 
@@ -504,138 +429,7 @@ class PluginWebBridge(
         }
     }
 
-    /** 从设置页创建宿主托管的系统浮层；权限与页面声明由 OverlayManager 校验。 */
-    private suspend fun overlayCreate(params: JsonObject): JsonElement = try {
-        val surface = (params["surface"] as? JsonPrimitive)?.contentOrNull
-        overlayManager.create(page.pluginId, surface, params)
-    } catch (e: PluginOverlayException) {
-        throw PluginHostException(e.code, e.message.orEmpty())
-    }
 
-    private fun overlayClose(params: JsonObject): JsonElement = try {
-        val overlayId = PluginHostPaths.requireString(params, "overlayId")
-        overlayManager.close(page.pluginId, overlayId)
-    } catch (e: PluginOverlayException) {
-        throw PluginHostException(e.code, e.message.orEmpty())
-    }
-
-    private fun overlayUpdate(params: JsonObject): JsonElement = try {
-        val overlayId = PluginHostPaths.requireString(params, "overlayId")
-        overlayManager.update(page.pluginId, overlayId, params)
-    } catch (e: PluginOverlayException) {
-        throw PluginHostException(e.code, e.message.orEmpty())
-    }
-
-    private fun overlayPostMessage(params: JsonObject): JsonElement = try {
-        val overlayId = PluginHostPaths.requireString(params, "overlayId")
-        val payload = params["payload"] ?: JsonNull
-        overlayManager.postMessage(page.pluginId, overlayId, payload)
-    } catch (e: PluginOverlayException) {
-        throw PluginHostException(e.code, e.message.orEmpty())
-    }
-
-    /** 页面请求一条对话内提示；动作按钮会回调页面所属插件的 handler。 */
-    private fun tip(params: JsonObject): JsonElement = try {
-        tipManager.show(page.pluginId, params)
-    } catch (e: PluginTipException) {
-        throw PluginHostException(e.code, e.message.orEmpty())
-    }
-
-    /** 通过 Shizuku 在宿主 Android 系统上执行命令；范围由插件的清单声明限制。 */    private suspend fun shizukuExec(params: JsonObject): JsonElement {
-        val command = PluginHostPaths.requireString(params, "command")
-        val timeoutSeconds = (params["timeout"] as? JsonPrimitive)?.longOrNull
-            ?: DEFAULT_SHIZUKU_TIMEOUT_SECONDS
-        return try {
-            val result = shizukuRunner.exec(page.pluginId, command, timeoutSeconds)
-            buildJsonObject {
-                put("output", result.output)
-                put("exitCode", result.exitCode)
-                put("truncated", result.truncated)
-            }
-        } catch (e: PluginShizukuException) {
-            throw PluginHostException(e.code, e.message.orEmpty())
-        }
-    }
-
-    /** 新建共享终端标签；后续通过 terminal.poll 读取输出。 */    private suspend fun terminalRun(params: JsonObject): JsonElement {
-        val command = PluginHostPaths.requireString(params, "command").trim()
-        val title = (params["title"] as? JsonPrimitive)?.contentOrNull
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-            ?.take(MAX_TERMINAL_TITLE_CHARS)
-        return try {
-            val tabId = terminalRunner.start(page.pluginId, command, title)
-            buildJsonObject {
-                put("tabId", tabId)
-                put("state", "running")
-            }
-        } catch (e: PluginTerminalException) {
-            throw PluginHostException(e.code, e.message)
-        }
-    }
-
-    private suspend fun terminalPoll(params: JsonObject): JsonElement {
-        val tabId = PluginHostPaths.requireString(params, "tabId")
-        val offset = (params["offset"] as? JsonPrimitive)?.longOrNull ?: 0L
-        return try {
-            val poll = terminalRunner.poll(page.pluginId, tabId, offset)
-            buildJsonObject {
-                put("output", poll.output)
-                put("offset", poll.offset)
-                put("state", poll.state)
-                poll.exitCode?.let { put("exitCode", it) }
-                put("truncated", poll.truncated)
-            }
-        } catch (e: PluginTerminalException) {
-            throw PluginHostException(e.code, e.message)
-        }
-    }
-
-    private suspend fun terminalStop(params: JsonObject): JsonElement {
-        val tabId = PluginHostPaths.requireString(params, "tabId")
-        withTerminalErrors { terminalRunner.stop(page.pluginId, tabId) }
-        return buildJsonObject { put("ok", true) }
-    }
-
-    private suspend fun terminalClose(params: JsonObject): JsonElement {
-        val tabId = PluginHostPaths.requireString(params, "tabId")
-        withTerminalErrors { terminalRunner.close(page.pluginId, tabId) }
-        return buildJsonObject { put("ok", true) }
-    }
-
-    private suspend fun terminalWrite(params: JsonObject): JsonElement {
-        val tabId = PluginHostPaths.requireString(params, "tabId")
-        val text = PluginHostPaths.requireString(params, "text")
-        val appendNewline = (params["appendNewline"] as? JsonPrimitive)?.booleanOrNull ?: true
-        val written = withTerminalErrors {
-            terminalRunner.write(page.pluginId, tabId, text, appendNewline)
-        }
-        return buildJsonObject { put("ok", written) }
-    }
-
-    private suspend fun <T> withTerminalErrors(block: suspend () -> T): T = try {
-        block()
-    } catch (e: PluginTerminalException) {
-        throw PluginHostException(e.code, e.message)
-    }
-
-    /** 一次性 Shell 命令：在插件页面所属工作区执行，输出与退出码原样返回。 */
-    private suspend fun bash(params: JsonObject): JsonElement {
-        val command = PluginHostPaths.requireString(params, "command")
-        if (command.isBlank()) throw PluginHostException("PARAM_INVALID", "empty command")
-        if (command.length > PluginHostPaths.MAX_COMMAND_CHARS) {
-            throw PluginHostException("PARAM_INVALID", "command too long")
-        }
-        val timeoutSeconds = (params["timeout"] as? JsonPrimitive)?.longOrNull
-            ?: PluginHostPaths.DEFAULT_BASH_TIMEOUT_SECONDS
-        val timeoutMs = timeoutSeconds.coerceIn(1L, PluginHostPaths.MAX_BASH_TIMEOUT_SECONDS) * 1000L
-        val result = commandEngine.runCommandSyncWithExit(command, workspacePath(), timeoutMs)
-        return buildJsonObject {
-            put("output", result.output)
-            put("exitCode", result.exitCode)
-            put("truncated", result.outputTruncated)
-        }
-    }
 
     /** 页面弹层开关与位置；多个页面同时打开时由控制器逐个挖洞。 */
     @Synchronized
@@ -672,9 +466,9 @@ class PluginWebBridge(
     }
 
     private fun deliver(id: String, payload: JsonObject) {
-        val script = "window.__aicodeResolve(${jsString(id)}, ${jsString(payload.toString())})"
-        // 预热时 WebView 还没 attach，View.post 会一直排队；直接走主线程 Handler，不依赖窗口。
-        mainHandler.post { if (isAuthorized()) post(script) }
+        val script = "try{window.__aicodeResolve(${jsString(id)}, ${jsString(payload.toString())})}catch(e){}"
+        // 回复不能越过已经排队的事件；不依赖 View.post，以兼容尚未 attach 的缓存实例。
+        enqueueScript(script, immediate = true)
     }
 
     private fun jsString(value: String): String = buildString {
@@ -700,6 +494,9 @@ class PluginWebBridge(
 
     private companion object {
         const val TAG = "PluginWebBridge"
+        const val EVENT_BATCH_WINDOW_MS = 16L
+        const val MAX_EVENT_BATCH_SIZE = 32
+        const val MAX_EVENT_BATCH_CHARS = 64 * 1024
         const val UI_INVOKE_TIMEOUT_MS = 60_000L
         const val MAX_INVOKE_ARGS_CHARS = 256 * 1024
         const val MAX_TERMINAL_TITLE_CHARS = 120

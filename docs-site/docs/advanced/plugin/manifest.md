@@ -2,10 +2,15 @@
 
 `plugin.json` 是插件的唯一入口声明。宿主仅加载清单中列出的内容；无法识别的字段和贡献类型将直接拒绝安装，不会静默忽略。
 
+清单有配套的 JSON Schema（`plugins/schema/plugin.schema.json`）：在编辑器里给 `plugin.json` 加上 `"$schema": "…/plugin.schema.json"`（相对路径指向该文件）后，字段名写错或类型不对会直接红线，还有字段补全与枚举提示。`$schema` 只给编辑器用，宿主会忽略它的内容。
+
+独立项目不在本仓库里，相对路径指不到那份 schema，可以把它复制进自己的仓库，或改成仓库的 raw 地址（`https://raw.githubusercontent.com/jieapi/AiCode/main/plugins/schema/plugin.schema.json`）；使用 `plugins/template` 开始的项目默认已指向仓库内路径，搬出去时改这一行即可。
+
 ## 顶层字段
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
+| `$schema` | 否 | JSON Schema 地址，仅编辑器使用；宿主忽略 |
 | `manifestVersion` | 是 | 固定为整数 `1` |
 | `id` | 是 | 稳定插件标识，格式 `发布者.插件名` |
 | `name` | 是 | 展示名称，字符串或按语言的对象，最多 80 字符，不能换行 |
@@ -51,7 +56,7 @@
 
 ### 版本范围
 
-`engines.pluginApi` 支持 `^1.0.0`、`~1.0.0`、`>=1.0.0 <2.0.0`、精确版本 `1.0.0`。不支持 `1.x`、`*`、`||` 和区间简写。宿主当前提供 `1.0.0`，范围必须包含该版本。
+`engines.pluginApi` 支持 `^1.0.0`、`~1.0.0`、`>=1.0.0 <2.0.0`、精确版本 `1.0.0`。不支持 `1.x`、`*`、`||` 和区间简写。宿主插件 API 为 `1.0.0`，范围必须包含该版本。
 
 ## runtime
 
@@ -74,7 +79,7 @@
 | `dependencies` | 否 | 依赖输入：`tool` 为 `npm` 或 `pip`，`file` 分别为 `.json`（如 `package.json`）或 `.txt`（如 `requirements.txt`） |
 | `resident` | 否 | 为 `true` 时进程不参与 10 分钟空闲回收，首次启动后常驻；停用、卸载、版本替换或 App 进程结束仍会关闭 |
 
-存在 `contributes.tools`、`contributes.hooks` 或使用 `handler` 的 `uiEntries` 时必须提供 `runtime`。TypeScript 源码构建见[运行时与 SDK](/advanced/plugin/source-build#运行时与-sdk)。
+存在 `contributes.tools`、`contributes.hooks`、`contributes.executionBackends`、`contributes.workflows`、`contributes.sessions` 或使用 `handler` 的 `uiEntries` 时必须提供 `runtime`。TypeScript 源码构建见[运行时与 SDK](/advanced/plugin/source-build#运行时与-sdk)。
 
 ## contributes
 
@@ -89,6 +94,9 @@
 | `modelAccess` | 对象 | 声明调用使用者已配置的 AI 供应商 |
 | `mcp` | 数组 | MCP 服务器配置 |
 | `providers` | 数组 | OpenAI 兼容提供商 |
+| `executionBackends` | 数组 | 自定义执行后端（文件、命令、终端与工作区），最多 32 项 |
+| `workflows` | 数组 | 自定义 Agent 工作流，最多 32 项 |
+| `sessions` | 数组 | 外部会话源（增量同步与历史分页），最多 32 项 |
 | `workspaceTools` | 数组 | 右侧项目工具抽屉中的页面 |
 | `uiEntries` | 数组 | 挂载到宿主槽位的页面入口 |
 | `shizuku` | 对象 | 声明使用 Shizuku |
@@ -212,7 +220,182 @@
 | `format` | 是 | 目前仅支持 `openai` |
 | `baseUrl` | 是 | `http`/`https` 绝对地址，不能包含账号、查询参数或片段，最长 2048 字符 |
 
-宿主按此声明注册提供商；服务启动、模型与凭据维护见[插件提供商](/advanced/plugin/shizuku-providers#插件提供商)。
+宿主按此声明注册提供商；服务启动、模型与凭据维护见[插件提供商](/advanced/plugin/shizuku-providers#插件提供商)。插件 provider 的请求会自动携带 `X-AiCode-Session-Id` 请求头，值为当前 App 会话 ID，插件网关可用它把请求路由到对应会话。
+
+### executionBackends
+
+`executionBackends` 最多声明 32 项，由插件提供全局执行后端，启用后使用者可在工作区/执行环境中切换，使文件树、代码编辑器、Git、终端与内置工具通过插件读写目标环境。必须提供 `runtime`。
+
+```json
+{
+  "executionBackends": [
+    {
+      "id": "cloud-box",
+      "title": {"default": "Cloud Sandbox", "zh-CN": "云沙盒"},
+      "description": "在远端沙盒中执行命令与读写文件",
+      "capabilities": {
+        "filesystem": true,
+        "command": true,
+        "terminal": true,
+        "fileWatch": false,
+        "portForward": false,
+        "isRemoteEnvironment": true,
+        "workspaceDiscovery": "hybrid",
+        "projectConfigLocation": "appPrivateDir"
+      },
+      "handlers": {
+        "fs": "backend.fs",
+        "exec": "backend.exec",
+        "execStream": "backend.execStream",
+        "execHealth": "backend.health",
+        "terminal": "backend.terminal",
+        "workspaceList": "backend.wsList",
+        "workspaceCreate": "backend.wsCreate",
+        "workspaceDelete": "backend.wsDelete",
+        "workspaceSelect": "backend.wsSelect"
+      }
+    }
+  ]
+}
+```
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `id` | 是 | 局部 ID，同一插件内唯一 |
+| `title` | 是 | 本地化展示名称，最多 80 字符 |
+| `description` | 否 | 本地化说明，最多 600 字符 |
+| `capabilities` | 否 | 后端能力声明与工作区行为；省略对象或子字段时采用下表默认值 |
+| `handlers` | 是 | runtime handler 映射，必须满足启用能力的要求；默认需要 `fs` 和 `exec` |
+
+`capabilities` 字段：
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `filesystem` | `true` | 是否支持文件访问；为 `true` 时必填 `handlers.fs` |
+| `command` | `true` | 是否支持命令执行；为 `true` 时必填 `handlers.exec` |
+| `terminal` | `false` | 是否支持终端 PTY；为 `true` 时必填 `handlers.terminal` |
+| `fileWatch` | `false` | 插件后端文件变更监听当前未开放，只能省略或为 `false` |
+| `portForward` | `false` | 插件后端端口转发当前未开放，只能省略或为 `false` |
+| `isRemoteEnvironment` | `true` | 是否属于远程环境（用于区分默认工作区类型与界面展示） |
+| `workspaceDiscovery` | `"scan"` | 工作区发现模式：`scan`（宿主拉取）、`register`（插件主动推送）或 `hybrid`（两者结合） |
+| `projectConfigLocation` | `"appPrivateDir"` | 项目级 `.aicode` 存储位置：`workspaceDir`（工作区目录）或 `appPrivateDir`（App 私有目录），只接受 camelCase；当前 `workspaceDir` 仅允许显式声明 `isRemoteEnvironment: false` 的后端使用 |
+
+`handlers` 支持以下可选键（按声明的能力提供）：`fs`、`exec`、`execStream`、`execHealth`、`terminal`、`workspaceList`、`workspaceCreate`、`workspaceDelete`、`workspaceSelect`。
+
+当 `workspaceDiscovery` 为 `register` 或 `hybrid` 时，插件可通过以下宿主方法增量维护该后端下的工作区列表：
+
+- `host.workspaces.upsert({ backendId, workspaces })`：按必填的 `id` 增量插入或更新工作区；
+- `host.workspaces.remove({ backendId, workspaceIds })`：按工作区 ID 移除条目；
+- `host.workspaces.set({ backendId, workspaces })`：全量替换该后端的工作区列表。
+
+工作区条目结构、参数限制与 [UDS 二进制通道](/advanced/plugin/tools-runtime#uds-二进制通道) 见[工作区与外部会话](/advanced/plugin/tools-runtime#工作区与外部会话)。
+
+### workflows
+
+`workflows` 声明由插件接管的 Agent 推理与工具循环工作流。用户新建或切换会话工作流后，每轮执行由宿主运行器统一调度，并将插件推送的流式事件映射为标准聊天消息与工具进度卡片。必须提供 `runtime`。
+
+```json
+{
+  "workflows": [
+    {
+      "id": "codex-loop",
+      "title": {"default": "Codex Loop", "zh-CN": "Codex 工作流"},
+      "description": "将单轮 Agent 推理托管给外部工作流引擎",
+      "capabilities": {
+        "streaming": true,
+        "tools": true,
+        "compaction": true,
+        "titleGeneration": false
+      },
+      "handlers": {
+        "startTurn": "wf.startTurn",
+        "cancelTurn": "wf.cancelTurn",
+        "compact": "wf.compact",
+        "generateTitle": "wf.title"
+      }
+    }
+  ]
+}
+```
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `id` | 是 | 局部 ID，注册后的完整工作流 ID 为 `<插件ID>:<id>` |
+| `title` | 是 | 本地化名称，最多 80 字符 |
+| `description` | 否 | 本地化说明，最多 600 字符 |
+| `capabilities` | 否 | 能力标记：`streaming`（默认 `true`）、`tools`（默认 `true`）、`compaction`（默认 `false`）、`titleGeneration`（默认 `false`） |
+| `handlers.startTurn` | 是 | 启动单轮执行的 handler |
+| `handlers.cancelTurn` | 是 | 中断指定 `turnId` 的 handler |
+| `handlers.compact` | 否 | 响应 `/compress` 上下文压缩的 handler |
+| `handlers.generateTitle` | 否 | 生成会话标题的 handler；未提供或返回空时回退宿主默认逻辑 |
+
+`startTurn` 建议通过 [UDS 二进制通道](/advanced/plugin/tools-runtime#uds-二进制通道) 的流式请求返回事件（未建连时自动回退至 NDJSON 事件推送），支持的事件 `type` 包括：`assistant.delta`、`reasoning.delta`、`assistant.message`、`tool.preparing`、`tool.started`、`tool.progress`、`tool.finished`、`retrying`、`keySwitched`、`contextUsage`、`compaction.started`、`compaction.finished`、`compaction.failed`、`modeChanged`、`completed`、`failed`。可在响应或结束事件中附带 `workflowState`，由宿主持久化并在下一轮原样回传。
+
+### sessions
+
+`sessions` 声明一个外部会话源，用于在侧栏展示由插件或远端系统托管的会话分组、分页读取历史消息，以及响应刷新与增删改置顶操作。必须提供 `runtime`。
+
+```json
+{
+  "sessions": [
+    {
+      "id": "harness",
+      "title": {"default": "Harness", "zh-CN": "外部会话"},
+      "description": "同步远端外部会话列表与历史消息",
+      "handlers": {
+        "refresh": "sessions.refresh",
+        "readMessages": "sessions.readMessages",
+        "createSession": "sessions.create",
+        "deleteSession": "sessions.delete",
+        "renameSession": "sessions.rename",
+        "pinSession": "sessions.pin"
+      }
+    }
+  ]
+}
+```
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `id` | 是 | 局部 ID，最多声明 32 项 |
+| `title` | 是 | 本地化分组标题，最多 80 字符 |
+| `description` | 否 | 本地化说明，最多 600 字符 |
+| `handlers.readMessages` | 是 | 分页读取指定外部会话历史消息的 handler |
+| `handlers.refresh` | 否 | 宿主触发列表刷新时调用的 handler |
+| `handlers.createSession` | 否 | 新建外部会话的 handler |
+| `handlers.deleteSession` | 否 | 删除外部会话的 handler |
+| `handlers.renameSession` | 否 | 重命名外部会话的 handler |
+| `handlers.pinSession` | 否 | 置顶或取消置顶外部会话的 handler |
+
+`sessions` 仅负责会话目录与历史读取，不再耦合消息发送通道；在外部会话中发送消息时，若会话绑定了 `workflowId`（或使用默认工作流），会由宿主运行器调度对应工作流执行并在内存中投影更新。
+
+插件侧可通过以下宿主方法增量维护外部会话分组：
+
+- `host.sessions.upsert`：按 `sessionId` 合并新增或更新会话摘要；
+- `host.sessions.remove`：移除指定 `sessionIds`；
+- `host.sessions.replaceAll`：全量对齐该会话源的会话列表；
+- `host.sessions.setLoading`、`host.sessions.setError`、`host.sessions.setThinking`：控制分组加载态、错误横幅与会话等待气泡。
+
+详细参数见[工作区与外部会话](/advanced/plugin/tools-runtime#工作区与外部会话)。
+
+### 主动授权请求
+
+插件需要用户授权时，可以使用原生授权卡片：
+
+```ts
+const result = await hostCall('host.permissions.request', {
+  sessionId: appSessionId,
+  requestId: remoteRequestId,
+  title: '执行远端命令',
+  description: '运行项目测试',
+  operation: {kind: 'command', command: 'npm test', workingDirectory: '/project'},
+});
+if (result.decision === 'allow') {
+  // 将本次决定回传给实际执行方。
+}
+```
+
+`sessionId` 必须是当前工作区会话 ID。返回 `allow` / `deny` / `cancel`，只批准本次请求，不产生永久授权，也不覆盖宿主工具的权限判断。超时、工作区切换、会话移除或插件停用时取消。可用 `host.permissions.cancel({requestId})` 撤回；页面对应 `aicode.permissions.request(options)` / `cancel(requestId)`。卡片由 App 固定标注插件来源。请求默认等待 2 分钟，可用 `timeoutMs` 设置 1 秒至 10 分钟。
 
 ### workspaceTools
 
@@ -400,7 +583,10 @@
 | `repository` 不是 https、包含账号或查询参数 | `FIELD_INVALID` |
 | 技能/子代理的 `file` 不是 `.md` | `FIELD_INVALID` |
 | 工具 `inputSchema` 不是 `.json` 或根不是 object | `FIELD_INVALID` / `CONTENT_INVALID` |
-| 存在 `tools` 或 `hooks` 但未声明 `runtime` | `FIELD_MISSING` |
+| 存在 `tools`、`hooks`、`executionBackends`、`workflows` 或 `sessions` 但未声明 `runtime` | `FIELD_MISSING` |
+| `executionBackends` 声明了能力但缺少对应 `handlers.fs` / `exec` / `terminal` | `FIELD_MISSING` |
+| `executionBackends` 的 `fileWatch` 或 `portForward` 为 `true`，或远端后端使用 `workspaceDir` | `FIELD_INVALID` |
+| `workflows` 缺少 `handlers.startTurn` / `cancelTurn` 或 `sessions` 缺少 `handlers.readMessages` | `FIELD_MISSING` |
 | hook 的 `event` 不在支持列表，或 `mode` 与事件不匹配 | `FIELD_INVALID` |
 | 同一类型内 `id` 重复 | `DUPLICATE_ID` |
 | `contributes` 为空或仅包含未支持的类型 | `FIELD_INVALID` |

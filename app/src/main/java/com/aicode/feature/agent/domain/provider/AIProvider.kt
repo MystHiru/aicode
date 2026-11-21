@@ -87,8 +87,14 @@ data class AIResponse(
 
 /**
  * 一次 Key 切换的结果：新 Key 与其在候选列表中的序号（1 起），供 adapter 改写凭据并通知 UI。
+ * [newBaseUrl] 为该 Key 自带的地址覆盖（未配置时为 null，沿用当前地址）。
  */
-data class KeySwitchOutcome(val newKey: String, val newIndex: Int, val total: Int)
+data class KeySwitchOutcome(
+    val newKey: String,
+    val newIndex: Int,
+    val total: Int,
+    val newBaseUrl: String? = null
+)
 
 /**
  * 所有候选 Key 都失败时抛出。文案已包含原始失败原因，交由上层原样展示。
@@ -103,9 +109,9 @@ class AllKeysFailedException(message: String, cause: Throwable? = null) : Except
  * [KeySwitched] 在多 Key 自动切换时推送，供 UI 提示本次请求已改用的 Key。
  */
 sealed class AIStreamChunk {
-    data class TextDelta(val text: String) : AIStreamChunk()
+    data class TextDelta(val text: String, val messageId: String? = null) : AIStreamChunk()
     /** 模型新吐出的一小段思考过程（增量，非累积）。仅用于 UI 实时展示，不进入上下文回放。 */
-    data class ReasoningDelta(val text: String) : AIStreamChunk()
+    data class ReasoningDelta(val text: String, val messageId: String? = null) : AIStreamChunk()
     /**
      * 模型刚开始产出一次工具调用、工具名已经确定（参数还在流式传输中）。
      *
@@ -285,12 +291,14 @@ fun fixedTemperature(modelId: String): Float? {
  */
 /**
  * 上报一次 Key 失败并切到下一个可用 Key。返回 null 表示 [keySwitcher] 未注入、判定为非 Key 故障、
- * 或没有可切换的候选；切换成功时改写 [AIProvider.apiKey] 并把新 Key 并入 [triedKeys]。
+ * 或没有可切换的候选；切换成功时改写 [AIProvider.apiKey]（新 Key 带地址覆盖时一并改写
+ * [AIProvider.baseUrl]）并把新 Key 并入 [triedKeys]。
  */
 suspend fun AIProvider.switchKeyOnFailure(error: Throwable, triedKeys: MutableSet<String>): KeySwitchOutcome? {
     val switcher = keySwitcher ?: return null
     val outcome = switcher(error, apiKey, triedKeys) ?: return null
     apiKey = outcome.newKey
+    outcome.newBaseUrl?.let { baseUrl = it }
     triedKeys += outcome.newKey
     return outcome
 }

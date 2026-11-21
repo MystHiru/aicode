@@ -12,12 +12,7 @@
 // 基础类型
 // ---------------------------------------------------------------------------
 
-export type JsonPrimitive = string | number | boolean | null;
-
-/** 可 JSON 序列化的值，对应宿主与插件进程之间的数据。 */
-export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
-
-export type JsonObject = { [key: string]: JsonValue };
+export type { JsonObject, JsonPrimitive, JsonValue } from './common';
 
 /** 宿主失败时 reject 的错误；`code` 为稳定错误码，例如 `FILE_EXISTS`、`STALE_CONTEXT`。 */
 export interface AicodeError extends Error {
@@ -75,6 +70,8 @@ export type AicodeErrorCode =
   | 'IMAGE_TOO_LARGE'
   | 'IMAGE_TYPE_UNSUPPORTED'
   | 'ALL_KEYS_FAILED'
+  // 终端
+  | 'CONTAINER_NOT_INITIALIZED'
   // 工具
   | 'TOOL_NOT_ALLOWED'
   | 'TOOL_NOT_FOUND'
@@ -371,6 +368,7 @@ export interface ChatRunStateResult {
 }
 
 export interface ChatWaitForRunResult {
+  sessionId: string;
   timedOut: boolean;
   run: ChatRun;
 }
@@ -739,7 +737,10 @@ export interface AicodeBridge {
 
   /** 在对话中显示可关闭提示条；按钮点击回调同插件进程的 handler。 */
   tip(options: { title?: string; text: string; action?: { label: string; handler: string } }): Promise<{
-    ok: boolean;
+    /** 提示条实例 ID。 */
+    tipId: string;
+    /** 是否已入队；宿主同一时刻只展示有限条提示。 */
+    queued: boolean;
   }>;
 
   app: {
@@ -948,6 +949,12 @@ export interface AicodeBridge {
     set(key: string, value: string): Promise<{ ok: boolean }>;
     delete(key: string): Promise<{ ok: boolean }>;
     list(): Promise<{ keys: string[] }>;
+  };
+
+  /** 仅本次用户决定；不会覆盖宿主权限策略或记忆授权。 */
+  permissions: {
+    request(options: import('./host').PermissionRequest): Promise<import('./host').PermissionDecision>;
+    cancel(requestId: string): Promise<{ cancelled: boolean }>;
   };
 
   /** 宿主工具目录与执行；只允许内置 / MCP 工具。 */

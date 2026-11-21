@@ -32,7 +32,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -208,6 +207,23 @@ internal fun reconcileStreamingAssistants(
     }
     if (current.messageId !in renderedIds) pending[current.messageId] = current
     return pending.values.toList()
+}
+
+internal fun canAcknowledgeStreamingAssistant(
+    current: StreamingAssistantMessage?,
+    previous: List<StreamingAssistantMessage>,
+    renderedMessages: List<AgentUIMessage>,
+    sessionId: String?,
+    messagesReady: Boolean,
+): Boolean {
+    if (!messagesReady || current == null || current.sessionId != sessionId ||
+        !current.settled || !current.persisted) return false
+    val renderedIds = renderedMessages.mapTo(HashSet()) { it.id }
+    if (previous.any { it.sessionId == sessionId && it.messageId != current.messageId && it.messageId !in renderedIds }) {
+        return false
+    }
+    return current.messageId in renderedIds ||
+        (!current.content.hasVisibleContent() && !current.reasoning.hasVisibleContent())
 }
 
 /** 工具调用分组头 item 的 contentType。 */
@@ -741,13 +757,15 @@ fun AIChatPanel(
     val retryState by viewModel.retryState.collectAsStateWithLifecycle()
     val keySwitchState by viewModel.keySwitchState.collectAsStateWithLifecycle()
     val streamingAssistant by viewModel.streamingAssistant.collectAsStateWithLifecycle()
+    val pluginThinkingLabel by viewModel.pluginThinkingLabel.collectAsStateWithLifecycle()
     val preparingTool by viewModel.preparingTool.collectAsStateWithLifecycle()
     // 等待模型或工具执行时的状态文案：
     // 1. 若当前有正在执行的工具（runningTool）或模型正在准备的工具（preparingTool，工具名先到参数还在流式），
     //    直接说清在做什么（「正在读取文件」、「正在编辑文件」等，见 toolRunningLabelRes）；
     // 2. 否则（如等待模型首字吐出、纯思考间隙）兜底显示「正在思考」。
     val activeToolName = runningTool.lastOrNull()?.toolName?.takeIf { it.isNotBlank() } ?: preparingTool
-    val thinkingLabel = activeToolName?.let { stringResource(toolRunningLabelRes(it)) }
+    val thinkingLabel = pluginThinkingLabel
+        ?: activeToolName?.let { stringResource(toolRunningLabelRes(it)) }
         ?: stringResource(R.string.chat_status_thinking)
     val pendingPermission by viewModel.pendingToolPermission.collectAsStateWithLifecycle()
     val pendingPermissionSessionTitle by viewModel.pendingToolPermissionSessionTitle.collectAsStateWithLifecycle()
@@ -793,7 +811,7 @@ fun AIChatPanel(
     LaunchedEffect(inputText) {
         if (inputText == "/") viewModel.refreshSlashCommands()
     }
-    var pendingAttachments by remember { mutableStateOf<List<PendingUploadAttachment>>(emptyList()) }
+    val pendingAttachments by viewModel.attachmentDraft.collectAsStateWithLifecycle()
     var showAppPicker by remember { mutableStateOf(false) }
     var uploadingCount by remember { mutableStateOf(0) }
     var messageForMenu by remember { mutableStateOf<AgentUIMessage?>(null) }
@@ -818,7 +836,7 @@ fun AIChatPanel(
         (if (floatingLayerHeightPx > 0) floatingLayerHeightPx + FLOATING_LAYER_GAP_DP.toPx()
         else inputBarBottomReserveDp.toPx()).toInt()
     }
-    val markdownCache = remember { MarkdownRenderCache() }
+    val markdownCache = remember(currentSessionId) { MarkdownRenderCache() }
     // 工具调用（分组头 / 单条工具行）的手动展开态：放在 ViewModel 里，切页、滚出视口回收后仍保留。
     // key = 分组 key（`toolgroup:<组内首条消息 id>`）或单条消息 id。
     val toolExpansionOverrides = viewModel.toolExpansionOverrides
@@ -1081,9 +1099,10 @@ fun AIChatPanel(
         }
         scope.launch {
             uploadingCount = pendingAttachments.size + 1
+            val targetSessionId = currentSessionId
             runCatching { uploadApkFile(app.apkPath, app.label, viewModel.fileAccess) }
                 .onSuccess { uploaded ->
-                    pendingAttachments = pendingAttachments + uploaded.toPendingAttachment()
+                    viewModel.addAttachmentDraft(uploaded.toPendingAttachment(), targetSessionId)
                 }
                 .onFailure { error ->
                     Toast.makeText(context, error.message ?: uploadFallbackError(context), Toast.LENGTH_LONG).show()
@@ -1093,7 +1112,7 @@ fun AIChatPanel(
     }
 
     fun removePendingAttachment(index: Int) {
-        pendingAttachments = pendingAttachments.filterIndexed { i, _ -> i != index }
+        viewModel.removeAttachmentDraft(index)
     }
 
     fun handlePickedAttachments(uris: List<Uri>, images: Boolean) {
@@ -1107,6 +1126,7 @@ fun AIChatPanel(
             return
         }
         val selected = selectedAttachments(uris, pendingAttachments.size)
+        val targetSessionId = currentSessionId
         scope.launch {
             var successCount = 0
             val failures = mutableListOf<String>()
@@ -1116,7 +1136,7 @@ fun AIChatPanel(
                     runCatching {
                         copyUriToWorkspace(context, uri, viewModel.fileAccess, includeImageData = images)
                     }.onSuccess { uploaded ->
-                        pendingAttachments = pendingAttachments + uploaded.toPendingAttachment()
+                        viewModel.addAttachmentDraft(uploaded.toPendingAttachment(), targetSessionId)
                         successCount += 1
                     }.onFailure { error ->
                         failures += (error.message ?: uploadFallbackError(context))
@@ -1179,6 +1199,14 @@ fun AIChatPanel(
         reconcileStreamingAssistants(retainedAssistants, streamingAssistant, renderedMessages, currentSessionId)
     }
     SideEffect { retainedAssistants = streamingAssistants }
+    LaunchedEffect(streamingAssistant, renderedMessages, currentSessionId, messagesReady, streamingAssistants) {
+        val assistant = streamingAssistant
+        if (assistant != null && canAcknowledgeStreamingAssistant(
+                assistant, streamingAssistants, renderedMessages, currentSessionId, messagesReady
+            )) {
+            viewModel.acknowledgeRenderedAssistant(assistant.sessionId, assistant.messageId)
+        }
+    }
     val lastStreamingAssistant = streamingAssistants.lastOrNull()
     val displayStreamingText = lastStreamingAssistant?.content
     val displayStreamingReasoning = lastStreamingAssistant?.reasoning
@@ -1412,7 +1440,6 @@ fun AIChatPanel(
                 inputAttachments = attachments.toAgentAttachments()
             )
             viewModel.clearInputDraft()
-            pendingAttachments = emptyList()
             followBottom = true
             scope.launch {
                 kotlinx.coroutines.delay(0)
@@ -1481,9 +1508,11 @@ fun AIChatPanel(
             }
     }
 
-    val executionMode = settingsViewModel?.executionMode?.collectAsStateWithLifecycle()?.value
+    val activeBackend = settingsViewModel?.activeBackend?.collectAsStateWithLifecycle()?.value
     val connectionState = settingsViewModel?.connectionState?.collectAsStateWithLifecycle()?.value
-    val isRemote = executionMode == com.aicode.feature.settings.data.repository.ExecutionMode.REMOTE_SSH
+    val isRemote = activeBackend?.capabilities?.isRemoteEnvironment == true
+    val isBuiltinRemoteSsh =
+        activeBackend?.id == com.aicode.feature.agent.domain.container.ExecutionBackendRegistry.BUILTIN_REMOTE_SSH_ID
 
     val markdownImageTransformer = remember(viewModel.fileAccess) {
         MarkdownImageTransformer(viewModel.fileAccess)
@@ -1530,7 +1559,7 @@ fun AIChatPanel(
                         viewModel.setReasoningExpanded(item.message.id, it)
                         onToolItemToggled()
                     },
-                    scrollState = viewModel.reasoningScrollStates.getOrPut(item.message.id) { LazyListState() },
+                    scrollState = viewModel.reasoningScrollStates.getOrPut(item.message.id) { newReasoningScrollState() },
                 )
             }
             group != null -> {
@@ -1606,7 +1635,7 @@ fun AIChatPanel(
                 onNavigateToGit = onNavigateToGit,
                 currentMode = currentMode,
                 onToggleMode = { viewModel.setSessionMode(it) },
-                connectionState = connectionState?.takeIf { isRemote },
+                connectionState = connectionState?.takeIf { isRemote && isBuiltinRemoteSsh },
                 showMenuButton = showMenuButton,
                 terminalActive = terminalActive,
                 gitActive = gitActive,
@@ -1634,7 +1663,7 @@ fun AIChatPanel(
             Box(modifier = Modifier.weight(1f)) {
                 if (!messagesReady) {
                     // 远程模式连接未就绪时显示连接状态占位，避免空白或旧工作区记录闪烁
-                    if (isRemote && connectionState != null && connectionState != com.aicode.feature.agent.domain.container.ConnectionState.CONNECTED) {
+                    if (isRemote && isBuiltinRemoteSsh && connectionState != null && connectionState != com.aicode.feature.agent.domain.container.ConnectionState.CONNECTED) {
                         RemoteConnectingPlaceholder(state = connectionState)
                     } else if (showMessagesLoading) {
                         // 本地模式读库偏慢时的占位：以前这里什么都不画，切会话会先闪一下空白。
@@ -1697,6 +1726,7 @@ fun AIChatPanel(
                                         },
                                         timerStartMs = assistant.reasoningStartMs,
                                         preRendered = true,
+                                        streamingCacheKey = "${assistant.messageId}:reasoning",
                                         sessionKey = assistant.messageId,
                                         live = reasoningLive,
                                         expandedOverride = reasoningOverrideSnapshot[assistant.messageId],
@@ -1705,7 +1735,7 @@ fun AIChatPanel(
                                             viewModel.setReasoningExpanded(assistant.messageId, expanded)
                                             onToolItemToggled()
                                         },
-                                        scrollState = viewModel.reasoningScrollStates.getOrPut(assistant.messageId) { LazyListState() },
+                                        scrollState = viewModel.reasoningScrollStates.getOrPut(assistant.messageId) { newReasoningScrollState() },
                                     )
                                 }
                             }
@@ -1714,6 +1744,7 @@ fun AIChatPanel(
                                     StreamingBubble(
                                         text = if (assistant == lastStreamingAssistant) typewriterRenderText else assistant.content,
                                         cache = markdownCache,
+                                        streamingCacheKey = "${assistant.messageId}:content",
                                     )
                                 }
                             }
@@ -1727,7 +1758,9 @@ fun AIChatPanel(
                             isCompacting = isCompacting,
                             awaitingUserInput = pendingPermission != null || pendingQuestion != null,
                         )
-                        val showThinking = !showReasoning && !showStreaming && !isCompacting && isBusy && pendingPermission == null && pendingQuestion == null
+                        val showThinking = !showReasoning && !showStreaming && !isCompacting &&
+                            (isBusy || pluginThinkingLabel != null) &&
+                            pendingPermission == null && pendingQuestion == null
                         val showRetrying = retryState != null && isBusy && !isCompacting && !showStreaming && !showReasoning
                         val showKeySwitched = keySwitchState != null && isBusy && !isCompacting && !showStreaming && !showReasoning
                         val tailKind = when {
@@ -1988,7 +2021,7 @@ fun AIChatPanel(
                     onOptionSelected = { option ->
                         viewModel.executeRewindOption(targetId, option) { text, attachments ->
                             viewModel.updateInputDraft(text)
-                            pendingAttachments = attachments.map { it.toPendingAttachment() }
+                            viewModel.updateAttachmentDraft(attachments.map { it.toPendingAttachment() })
                         }
                     },
                     onDismissRequest = { viewModel.dismissRewindMenu() }

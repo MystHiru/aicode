@@ -20,6 +20,7 @@ import com.aicode.feature.agent.data.remote.gemini.GeminiApi
 import com.aicode.feature.agent.data.remote.openai.OpenAIApi
 import com.aicode.feature.agent.domain.container.CommandEngine
 import com.aicode.feature.agent.domain.container.DelegatingCommandEngine
+import com.aicode.feature.agent.domain.container.ExecutionBackendRegistry
 import com.aicode.feature.agent.domain.container.LinuxContainerEngine
 import com.aicode.feature.agent.domain.container.RemoteSshConnection
 import com.aicode.feature.agent.domain.container.RemoteSshEngine
@@ -27,8 +28,6 @@ import com.aicode.feature.agent.domain.container.SharedPrefsSshHostKeyStore
 import com.aicode.feature.agent.domain.container.SharedPrefsSshLoginKeyStore
 import com.aicode.feature.agent.domain.container.SshHostKeyStore
 import com.aicode.feature.agent.domain.container.SshLoginKeyStore
-import com.aicode.feature.settings.data.repository.ExecutionMode
-import com.aicode.feature.settings.data.repository.ExecutionModeHolder
 import com.aicode.feature.agent.domain.tool.file.ReadFileTool
 import com.aicode.feature.agent.domain.tool.file.SendFileTool
 import com.aicode.feature.agent.domain.tool.file.GenerateImageTool
@@ -113,6 +112,8 @@ object AgentModule {
     @Provides
     @Singleton
     fun provideAgentDatabase(@ApplicationContext context: Context): AgentDatabase {
+        // 合并上游前本分支把 root_grants 建在 64 号上，旧库要先回退工号才能重放上游迁移。
+        com.aicode.core.db.LegacySchemaRepair.repairIfNeeded(context, AgentDatabase.DATABASE_NAME)
         return Room.databaseBuilder(
             context,
             AgentDatabase::class.java,
@@ -342,10 +343,10 @@ object AgentModule {
     @Provides
     @Singleton
     fun provideDelegatingTerminalSessionProvider(
-        modeHolder: ExecutionModeHolder,
-        local: TerminalSessionManager,
-        remote: RemoteTerminalSessionManager
-    ): DelegatingTerminalSessionProvider = DelegatingTerminalSessionProvider(modeHolder, local, remote)
+        executionBackendRegistry: ExecutionBackendRegistry,
+        local: TerminalSessionManager
+    ): DelegatingTerminalSessionProvider =
+        DelegatingTerminalSessionProvider(executionBackendRegistry, local)
 
     @Provides
     @Singleton

@@ -45,28 +45,33 @@ class StatefulAgentWorkflowTest {
     private val defaultSettings = mockk<DefaultModelSettingsRepository>()
     private val provider = mockk<AIProvider>(relaxed = true)
     private val context = AgentContext(null, null, "/workspace", null)
+    private val hooks = mockk<com.aicode.feature.plugin.runtime.PluginHookDispatcher>(relaxed = true)
+    private val checkpoints = mockk<com.aicode.feature.agent.domain.checkpoint.CheckpointManager>(relaxed = true)
+    private val outputStore = mockk<com.aicode.feature.agent.domain.tool.ToolOutputStore>(relaxed = true)
+    private val policy = mockk<com.aicode.feature.agent.domain.permission.ToolPermissionPolicyEngine>(relaxed = true)
+    private val sessions = mockk<com.aicode.feature.agent.domain.session.SessionUseCase>(relaxed = true)
     private val workflow = StatefulAgentWorkflow(
         toolRegistry = tools,
         aiProviderRepository = providers,
         providerFactory = factory,
         promptProvider = prompts,
         permissionManager = mockk(relaxed = true),
-        policyEngine = mockk(relaxed = true),
+        policyEngine = policy,
         contextCompactor = compactor,
         planApprovalManager = mockk(relaxed = true),
-        toolOutputStore = mockk(relaxed = true),
+        toolOutputStore = outputStore,
         modelMetadataService = metadata,
         compactionModelSettingsRepository = compactionSettings,
         titleModelSettingsRepository = mockk(relaxed = true),
         defaultModelSettingsRepository = defaultSettings,
-        sessionUseCase = mockk(relaxed = true),
+        sessionUseCase = sessions,
         messagePersistenceUseCase = mockk(relaxed = true),
-        checkpointManager = mockk(relaxed = true),
+        checkpointManager = checkpoints,
         llmCallRecordDao = mockk(relaxed = true),
         agentNotificationCenter = mockk(relaxed = true),
         eventInjector = mockk(relaxed = true),
         fileAccess = mockk(relaxed = true),
-        pluginHookDispatcher = mockk(relaxed = true),
+        pluginHookDispatcher = hooks,
         appContext = mockk(relaxed = true)
     )
 
@@ -98,9 +103,9 @@ class StatefulAgentWorkflowTest {
         unmockkStatic(SystemClock::class)
     }
 
-    private suspend fun collectEvents(): List<AgentEvent> {
+    private suspend fun collectEvents(runContext: AgentContext = context): List<AgentEvent> {
         val events = mutableListOf<AgentEvent>()
-        workflow.executeEvents("request", context, emptyList()).collect { event ->
+        workflow.executeEvents("request", runContext, emptyList()).collect { event ->
             events.add(event)
             when (event) {
                 is AgentEvent.AssistantText -> event.persisted?.complete(Unit)
@@ -109,6 +114,40 @@ class StatefulAgentWorkflowTest {
             }
         }
         return events
+    }
+
+    @Test
+    fun delegatedWriteUsesFinalPermissionsAndSkipsLocalExecutionAndCheckpoint() = runTest {
+        val tool = mockk<com.aicode.feature.agent.domain.tool.AgentTool>(relaxed = true)
+        every { tool.name } returns "writeFile"
+        every { tools.getTool("writeFile") } returns tool
+        coEvery { sessions.getSessionById(any()) } returns null
+        val finalArgs = kotlinx.serialization.json.JsonObject(mapOf("path" to kotlinx.serialization.json.JsonPrimitive("remote.txt")))
+        coEvery { hooks.beforeToolCall(any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+            com.aicode.feature.plugin.runtime.ToolBeforeHookResult(
+                arguments = finalArgs,
+                delegation = com.aicode.feature.plugin.runtime.ToolDelegation(
+                    mockk(relaxed = true), "1", "remote", arg(1), arg(2), "writeFile", "execution"
+                )
+            )
+        }
+        coEvery { policy.evaluate(tool, "writeFile", any(), any()) } returns
+            com.aicode.feature.agent.domain.permission.ToolPermissionPolicyEngine.EvalResult(
+                com.aicode.feature.agent.domain.permission.ToolPermissionPolicyEngine.Verdict.ALLOW, emptyList()
+            )
+        coEvery { hooks.executeDelegatedTool(any(), any(), any(), any(), any(), any()) } returns
+            com.aicode.feature.agent.domain.tool.ToolResult.Error("remote failed", "REMOTE_FAILED")
+        every { outputStore.process(any(), any(), any()) } answers { thirdArg() }
+        every { provider.completeStream(any(), any(), any(), any()) } returnsMany listOf(
+            flowOf(AIStreamChunk.Final(AIResponse("", toolCalls = listOf(ToolCall("call", "writeFile", emptyMap()))))),
+            flowOf(AIStreamChunk.Final(AIResponse("done")))
+        )
+        val events = collectEvents(context.copy(sessionId = "session"))
+        assertTrue(events.filterIsInstance<AgentEvent.ToolCallFinished>().single().isError)
+        io.mockk.coVerify(exactly = 1) { policy.evaluate(tool, "writeFile", finalArgs, any()) }
+        io.mockk.coVerify(exactly = 1) { hooks.executeDelegatedTool(any(), any(), "call", "writeFile", finalArgs, any()) }
+        io.mockk.coVerify(exactly = 0) { tool.executeWithContext(any(), any()) }
+        io.mockk.coVerify(exactly = 0) { checkpoints.beforeFileModified(any(), any()) }
     }
 
     @Test
@@ -191,6 +230,120 @@ class StatefulAgentWorkflowTest {
         assertEquals(response.messageId, events.filterIsInstance<AgentEvent.AssistantDelta>().single().messageId)
         assertEquals(response.messageId, events.filterIsInstance<AgentEvent.ReasoningDelta>().single().messageId)
         assertEquals(1, events.filterIsInstance<AgentEvent.Failed>().size)
+    }
+
+    @Test
+    fun accumulatorDoesNotMaterializeTextOrReasoningWithinTheThrottleWindow() = runTest {
+        var now = 1_000L
+        every { SystemClock.elapsedRealtime() } answers { now }
+        var materializations = 0
+        val events = mutableListOf<AgentEvent>()
+        val stream = StatefulAgentWorkflow.StreamAccumulator(
+            callStartElapsed = now,
+            responseMessageId = "response",
+            materialize = { materializations++; it.toString() }
+        ) { events.add(it) }
+
+        stream.onChunk(AIStreamChunk.TextDelta("a"))
+        stream.onChunk(AIStreamChunk.ReasoningDelta("r"))
+        assertEquals(2, materializations)
+        repeat(59) {
+            now++
+            stream.onChunk(AIStreamChunk.TextDelta("b"))
+            stream.onChunk(AIStreamChunk.ReasoningDelta("s"))
+        }
+        assertEquals(2, materializations)
+        assertEquals(2, events.size)
+
+        now = 1_060
+        stream.onChunk(AIStreamChunk.TextDelta("c"))
+        stream.onChunk(AIStreamChunk.ReasoningDelta("t"))
+        assertEquals(4, materializations)
+        assertEquals("a" + "b".repeat(59) + "c", events.filterIsInstance<AgentEvent.AssistantDelta>().last().accumulated)
+        assertEquals("r" + "s".repeat(59) + "t", events.filterIsInstance<AgentEvent.ReasoningDelta>().last().accumulated)
+        stream.flush()
+        assertEquals(4, materializations)
+    }
+
+    @Test
+    fun finalFlushMaterializesOnlyDirtyBuffersInTextThenReasoningOrder() = runTest {
+        var now = 1_000L
+        every { SystemClock.elapsedRealtime() } answers { now }
+        var materializations = 0
+        val events = mutableListOf<AgentEvent>()
+        val stream = StatefulAgentWorkflow.StreamAccumulator(
+            now, "response", materialize = { materializations++; it.toString() }
+        ) { events.add(it) }
+        stream.onChunk(AIStreamChunk.TextDelta("a"))
+        stream.onChunk(AIStreamChunk.ReasoningDelta("r"))
+        now++
+        stream.onChunk(AIStreamChunk.ReasoningDelta("s"))
+        stream.onChunk(AIStreamChunk.TextDelta("b"))
+        stream.onChunk(AIStreamChunk.Final(AIResponse("ab")))
+        assertEquals(2, materializations)
+        stream.flush()
+        assertEquals(4, materializations)
+        assertEquals(AgentEvent.AssistantDelta("ab", "response"), events[2])
+        assertEquals(AgentEvent.ReasoningDelta("rs", "response"), events[3])
+        stream.flush()
+        assertEquals(4, materializations)
+        assertEquals("ab", stream.finalResponse?.content)
+    }
+
+    @Test
+    fun retryAndKeySwitchDiscardDirtyBuffersWithoutMaterializingThem() = runTest {
+        var now = 1_000L
+        every { SystemClock.elapsedRealtime() } answers { now }
+        var materializations = 0
+        val events = mutableListOf<AgentEvent>()
+        val stream = StatefulAgentWorkflow.StreamAccumulator(
+            now, "response", materialize = { materializations++; it.toString() }
+        ) { events.add(it) }
+        stream.onChunk(AIStreamChunk.TextDelta("old"))
+        stream.onChunk(AIStreamChunk.ReasoningDelta("old reasoning"))
+        now++
+        stream.onChunk(AIStreamChunk.TextDelta(" discarded"))
+        stream.onChunk(AIStreamChunk.ReasoningDelta(" discarded"))
+        stream.onChunk(AIStreamChunk.Retrying(1, 3, RetryErrorInfo(RetryErrorKind.UNKNOWN)))
+        stream.flush()
+        assertEquals(2, materializations)
+        assertTrue(stream.text.isEmpty())
+        assertTrue(stream.reasoning.isEmpty())
+        stream.onChunk(AIStreamChunk.TextDelta("retry"))
+        stream.onChunk(AIStreamChunk.ReasoningDelta("retry reasoning"))
+        now++
+        stream.onChunk(AIStreamChunk.TextDelta(" discarded"))
+        stream.onChunk(AIStreamChunk.ReasoningDelta(" discarded"))
+        stream.onChunk(AIStreamChunk.KeySwitched(2, 2))
+        stream.flush()
+        assertEquals(4, materializations)
+        stream.onChunk(AIStreamChunk.TextDelta("final"))
+        stream.onChunk(AIStreamChunk.ReasoningDelta("final reasoning"))
+        stream.flush()
+        assertEquals(6, materializations)
+        assertEquals(listOf("old", "retry", "final"), events.filterIsInstance<AgentEvent.AssistantDelta>().map { it.accumulated })
+        assertEquals(listOf("old reasoning", "retry reasoning", "final reasoning"), events.filterIsInstance<AgentEvent.ReasoningDelta>().map { it.accumulated })
+        assertEquals(1, stream.retryAttempts)
+    }
+
+    @Test
+    fun interruptedResponseUsesDirtyWindowTextAndReasoningForPartialPersistence() = runTest {
+        var now = 1_000L
+        every { SystemClock.elapsedRealtime() } answers { now }
+        every { provider.completeStream(any(), any(), any(), any()) } returns flow {
+            emit(AIStreamChunk.ReasoningDelta("partial thinking"))
+            emit(AIStreamChunk.TextDelta("partial text"))
+            now++
+            emit(AIStreamChunk.ReasoningDelta(" tail"))
+            emit(AIStreamChunk.TextDelta(" tail"))
+            throw IllegalStateException("connection lost")
+        }
+        val events = collectEvents()
+        val partial = events.filterIsInstance<AgentEvent.AssistantText>().single()
+        assertEquals("partial text tail", partial.content)
+        assertEquals("partial thinking tail", partial.reasoning)
+        assertEquals("partial text", events.filterIsInstance<AgentEvent.AssistantDelta>().single().accumulated)
+        assertEquals("partial thinking", events.filterIsInstance<AgentEvent.ReasoningDelta>().single().accumulated)
     }
 
     @Test

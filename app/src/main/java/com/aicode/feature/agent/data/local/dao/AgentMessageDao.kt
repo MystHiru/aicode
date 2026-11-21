@@ -78,17 +78,50 @@ interface AgentMessageDao {
         resetLastInputTokens(sessionId)
     }
 
-    @Query("DELETE FROM agent_messages WHERE sessionId = :sessionId AND (isCompactionMarker = 1 OR isContextSummary = 1)")
-    suspend fun deleteCompactionMessages(sessionId: String)
+    /**
+     * 恢复「所有者摘要已不存在」的压缩行，含被更晚压缩吞掉的旧摘要与压缩标记。返回受影响行数。
+     * 回退点在压缩之前时，该压缩的摘要被删掉，它覆盖的历史才需要重新参与回放。
+     */
+    @Query(
+        """
+        UPDATE agent_messages SET isCompacted = 0, compactedBySummaryId = NULL
+        WHERE sessionId = :sessionId
+          AND isCompacted = 1
+          AND isContextExcluded = 0
+          AND compactedBySummaryId IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM agent_messages s WHERE s.id = agent_messages.compactedBySummaryId)
+        """
+    )
+    suspend fun restoreCompactedByMissingSummary(sessionId: String): Int
 
-    @Query("UPDATE agent_messages SET isCompacted = 0, compactedBySummaryId = NULL WHERE sessionId = :sessionId AND timestamp < :cutoff AND isCompacted = 1 AND isContextExcluded = 0 AND isContextSummary = 0 AND isCompactionMarker = 0")
-    suspend fun restoreCompactedMessagesBefore(sessionId: String, cutoff: Long)
+    /**
+     * 旧版压缩没有逐条摘要归属（[AgentMessageEntity.compactedBySummaryId] 为空）：
+     * 无法判断归属哪个摘要，只在会话已无存活摘要（压缩被整体撤销）时恢复。
+     */
+    @Query(
+        """
+        UPDATE agent_messages SET isCompacted = 0, compactedBySummaryId = NULL
+        WHERE sessionId = :sessionId
+          AND isCompacted = 1
+          AND isContextExcluded = 0
+          AND isContextSummary = 0
+          AND isCompactionMarker = 0
+          AND compactedBySummaryId IS NULL
+          AND NOT EXISTS (SELECT 1 FROM agent_messages s WHERE s.sessionId = :sessionId AND s.isContextSummary = 1 AND s.isCompacted = 0)
+        """
+    )
+    suspend fun restoreUnattributedCompactedWithoutSummary(sessionId: String): Int
 
     @Transaction
     suspend fun rewindConversation(sessionId: String, cutoff: Long) {
-        deleteCompactionMessages(sessionId)
-        restoreCompactedMessagesBefore(sessionId, cutoff)
+        // 先删回滚点及之后：落在该范围内的压缩摘要一并删除，留在库里的才是回退点之前已生效的摘要。
         deleteMessagesFromTimestamp(sessionId, cutoff)
+        // 压缩链逐层恢复：被删摘要吞掉的旧摘要本身也带 isCompacted 标记，需先恢复为存活，
+        // 它覆盖的历史才能继续留在压缩状态。每轮解开一层，直到没有归属失效的压缩行为止。
+        while (restoreCompactedByMissingSummary(sessionId) > 0) {
+            // 仅用于迭代至收敛，无循环体。
+        }
+        restoreUnattributedCompactedWithoutSummary(sessionId)
         resetLastInputTokens(sessionId)
     }
 
@@ -138,12 +171,15 @@ interface AgentMessageDao {
         SELECT m.id AS messageId,
                m.sessionId AS sessionId,
                s.title AS sessionTitle,
+               s.workspacePath AS workspacePath,
                m.role AS role,
                m.content AS content,
                m.timestamp AS timestamp
         FROM agent_messages m
         JOIN chat_sessions s ON s.id = m.sessionId
         WHERE s.workspacePath = :workspacePath
+          AND s.backendInstanceId IS NULL
+          AND s.workspaceId IS NULL
           AND m.isCompacted = 0
           AND m.isContextSummary = 0
           AND m.isCompactionMarker = 0
@@ -154,6 +190,70 @@ interface AgentMessageDao {
         """
     )
     suspend fun searchInWorkspace(workspacePath: String, escapedQuery: String, limit: Int): List<ChatSearchMatch>
+
+    /** 跨多个工作区搜索聊天记录，供「全部工作区」侧栏视图检索。 */
+    @Query(
+        """
+        SELECT m.id AS messageId,
+               m.sessionId AS sessionId,
+               s.title AS sessionTitle,
+               s.workspacePath AS workspacePath,
+               m.role AS role,
+               m.content AS content,
+               m.timestamp AS timestamp
+        FROM agent_messages m
+        JOIN chat_sessions s ON s.id = m.sessionId
+        WHERE s.workspacePath IN (:workspacePaths)
+          AND s.backendInstanceId IS NULL
+          AND s.workspaceId IS NULL
+          AND m.isCompacted = 0
+          AND m.isContextSummary = 0
+          AND m.isCompactionMarker = 0
+          AND m.role IN ('USER', 'ASSISTANT')
+          AND m.content LIKE '%' || :escapedQuery || '%' ESCAPE '!'
+        ORDER BY m.timestamp DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun searchInWorkspaces(workspacePaths: List<String>, escapedQuery: String, limit: Int): List<ChatSearchMatch>
+
+    /** 全库搜索所有工作区（含本地与离线远程历史）的聊天记录，供设置页「会话管理」使用。 */
+    @Query(
+        """
+        SELECT m.id AS messageId,
+               m.sessionId AS sessionId,
+               s.title AS sessionTitle,
+               s.workspacePath AS workspacePath,
+               m.role AS role,
+               m.content AS content,
+               m.timestamp AS timestamp
+        FROM agent_messages m
+        JOIN chat_sessions s ON s.id = m.sessionId
+        WHERE s.backendInstanceId IS NULL
+          AND s.workspaceId IS NULL
+          AND m.isCompacted = 0
+          AND m.isContextSummary = 0
+          AND m.isCompactionMarker = 0
+          AND m.role IN ('USER', 'ASSISTANT')
+          AND m.content LIKE '%' || :escapedQuery || '%' ESCAPE '!'
+        ORDER BY m.timestamp DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun searchAllWorkspaces(escapedQuery: String, limit: Int): List<ChatSearchMatch>
+
+    /** 实时统计各会话的可见消息条数，供设置页「会话管理」列表展示。 */
+    @Query(
+        """
+        SELECT sessionId, COUNT(*) AS messageCount
+        FROM agent_messages
+        WHERE isCompacted = 0
+          AND isContextSummary = 0
+          AND isCompactionMarker = 0
+        GROUP BY sessionId
+        """
+    )
+    fun getSessionMessageCountsFlow(): Flow<List<SessionMessageCount>>
 
     /** 指定会话中时间戳不早于 [timestamp] 的消息条数（含并列时间戳），供定位时确定所需分页上限。 */
     @Query("SELECT COUNT(*) FROM agent_messages WHERE sessionId = :sessionId AND timestamp >= :timestamp")
@@ -206,7 +306,14 @@ data class ChatSearchMatch(
     val sessionTitle: String,
     val role: String,
     val content: String,
-    val timestamp: Long
+    val timestamp: Long,
+    val workspacePath: String = ""
+)
+
+/** 单个会话的消息条数投影（[AgentMessageDao.getSessionMessageCountsFlow] 的投影）。 */
+data class SessionMessageCount(
+    val sessionId: String,
+    val messageCount: Int
 )
 
 /** 单个会话的消息占用估算（[AgentMessageDao.sessionStorageUsage] 的投影）。 */

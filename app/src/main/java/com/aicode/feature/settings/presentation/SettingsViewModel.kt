@@ -1,14 +1,17 @@
 package com.aicode.feature.settings.presentation
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicode.core.net.AppProxy
+import com.aicode.core.util.AILogger
 import com.aicode.core.util.ApkInstaller
 import com.aicode.core.util.FileLogger
 import com.aicode.core.util.LogLevel
+import com.aicode.feature.agent.data.local.dao.ChatSessionDao
 import com.aicode.feature.agent.data.local.dao.LlmCallRecordDao
 import com.aicode.feature.agent.data.local.dao.RecentCallRecord
 import com.aicode.feature.agent.data.local.entity.LlmCallRecordEntity
@@ -18,6 +21,8 @@ import com.aicode.feature.agent.domain.container.ContainerImageEntry
 import com.aicode.feature.agent.domain.container.ContainerInstaller
 import com.aicode.feature.agent.domain.container.ContainerOsDetector
 import com.aicode.feature.agent.domain.container.ContainerProfile
+import com.aicode.feature.agent.domain.container.ExecutionBackend
+import com.aicode.feature.agent.domain.container.ExecutionBackendRegistry
 import com.aicode.feature.agent.domain.container.RemoteSshConnection
 import com.aicode.feature.agent.domain.container.RootfsSource
 import com.aicode.feature.agent.domain.container.displayLabel
@@ -90,6 +95,7 @@ import com.aicode.feature.settings.data.repository.ToolSafetySettingsRepository
 import com.aicode.feature.settings.data.repository.BackgroundSettingsRepository
 import com.aicode.feature.settings.data.repository.ImageGenModelSettingsRepository
 import com.aicode.feature.settings.data.repository.VisionModelSettingsRepository
+import com.aicode.feature.workspace.domain.RemoteAgentConfigIdentityChangedException
 import com.aicode.feature.workspace.domain.model.RemoteConnection
 import com.aicode.feature.workspace.domain.repository.RemoteRepository
 import com.aicode.feature.settings.domain.model.AIProviderConfig
@@ -166,17 +172,6 @@ data class McpImportUiState(
     val inProgress: Boolean = false,
     val error: String? = null,
     val importedCount: Int? = null
-)
-
-data class LogViewerUiState(
-    val files: List<String> = emptyList(),
-    val selectedFileName: String? = null,
-    val filterServerName: String? = null,
-    val content: String = "",
-    val totalLines: Int = 0,
-    val shownLines: Int = 0,
-    val loading: Boolean = false,
-    val error: String? = null
 )
 
 /** 检查更新弹窗状态（全局弹窗宿主在主页 AppNavigation 层渲染，自动/手动共用）。 */
@@ -394,8 +389,10 @@ class SettingsViewModel @Inject constructor(
     private val containerOsDetector: ContainerOsDetector,
     private val executionModeRepository: ExecutionModeRepository,
     private val executionModeHolder: ExecutionModeHolder,
+    private val executionBackendRegistry: ExecutionBackendRegistry,
     private val remoteSshConnection: RemoteSshConnection,
     private val remoteRepository: RemoteRepository,
+    private val chatSessionDao: ChatSessionDao,
     private val llmCallRecordDao: LlmCallRecordDao,
     private val modelCostCalculator: ModelCostCalculator,
     private val updateCheckSettingsRepository: UpdateCheckSettingsRepository,
@@ -407,8 +404,6 @@ class SettingsViewModel @Inject constructor(
     private val proxySettingsRepository: ProxySettingsRepository
 ) : ViewModel() {
     private companion object {
-        const val MAX_LOG_LINES = 1200
-
         /** 正式包的 applicationId：只有它能应用内覆盖安装 GitHub Releases 里的包。 */
         const val RELEASE_APPLICATION_ID = "com.aicode"
         const val CALLS_PAGE_SIZE = 10
@@ -539,6 +534,9 @@ class SettingsViewModel @Inject constructor(
 
     private val _logViewerState = MutableStateFlow(LogViewerUiState())
     val logViewerState: StateFlow<LogViewerUiState> = _logViewerState.asStateFlow()
+    private var logLoadJob: Job? = null
+    @Volatile
+    private var lastLoadedLogSignature: String? = null
 
     private val _updateCheckState = MutableStateFlow<UpdateCheckUiState>(UpdateCheckUiState.Idle)
     val updateCheckState: StateFlow<UpdateCheckUiState> = _updateCheckState.asStateFlow()
@@ -808,6 +806,22 @@ class SettingsViewModel @Inject constructor(
 
     /** 当前执行模式（本地 PRoot / 远程 SSH），供 UI 判断是否显示远程连接指示器。 */
     val executionMode: StateFlow<ExecutionMode> = executionModeHolder.mode
+
+    /** 当前激活的执行后端（内置 PRoot / 内置 SSH / 插件执行后端）。 */
+    val activeBackend: StateFlow<ExecutionBackend> = executionBackendRegistry.activeBackend
+
+    /** 当前激活的执行后端 ID。 */
+    val activeBackendId: StateFlow<String> = executionBackendRegistry.activeBackendId
+
+    /** 插件注册的非内置执行后端列表。 */
+    val pluginExecutionBackends: StateFlow<List<ExecutionBackend>> = executionBackendRegistry.backends
+        .map { backends ->
+            backends.filter {
+                it.id != ExecutionBackendRegistry.BUILTIN_LOCAL_PROOT_ID &&
+                    it.id != ExecutionBackendRegistry.BUILTIN_REMOTE_SSH_ID
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** 远程 SSH 连接状态，供 UI 显示指示器。 */
     val connectionState: StateFlow<ConnectionState> = remoteSshConnection.connectionState
@@ -1602,7 +1616,11 @@ class SettingsViewModel @Inject constructor(
                 }
             } catch (error: java.io.IOException) {
                 if (error is java.io.InterruptedIOException) throw error
-                FileLogger.w("Settings", "技能清单读取失败", error)
+                if (isTransientRemoteConfigError(error)) {
+                    FileLogger.d("Settings", "技能清单等待 SSH 就绪")
+                } else {
+                    FileLogger.w("Settings", "技能清单读取失败", error)
+                }
                 emptyList()
             }
         }
@@ -1771,7 +1789,11 @@ class SettingsViewModel @Inject constructor(
                 }
             } catch (error: java.io.IOException) {
                 if (error is java.io.InterruptedIOException) throw error
-                FileLogger.w("Settings", "子代理清单读取失败", error)
+                if (isTransientRemoteConfigError(error)) {
+                    FileLogger.d("Settings", "子代理清单等待 SSH 就绪")
+                } else {
+                    FileLogger.w("Settings", "子代理清单读取失败", error)
+                }
                 emptyList()
             }
         }
@@ -2075,103 +2097,439 @@ class SettingsViewModel @Inject constructor(
         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
     }.getOrDefault("unknown")
 
-    /**
-     * 判断日志行是否属于某个 MCP server：只认 MCP 组件写下的日志（tag 以 `Mcp` 开头，
-     * 如 McpManager/McpClient/McpStdioTransport/McpTool），且消息里引用了该 server——
-     * 要么是消息前缀 `[名字]`，要么是命名空间工具名 `mcp__名字__`。
-     * 不能只按 server 名做子串匹配：那会把任何恰好提到该名字的无关日志一并捞进来。
-     */
-    private fun isMcpServerLogLine(line: String, serverName: String): Boolean {
-        if (!line.contains("[Mcp")) return false
-        return line.contains("[$serverName]") || line.contains("mcp__${serverName}__")
-    }
-
-    /** 标准日志行的开头（时间 + 等级），用于区分堆栈续行。与 FileLogger 落盘格式对齐。 */
-    private val logLinePrefixRegex = Regex("""^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} (?:VERBOSE|DEBUG|INFO|WARN|ERROR) """)
-
-    /**
-     * 按 MCP server 过滤日志：命中的标准日志行连同其后的堆栈续行一并保留。
-     * 堆栈续行本身不含 tag 与 server 名，逐行匹配会把报错的堆栈整段丢掉。
-     */
-    private fun filterMcpServerLines(rawLines: List<String>, serverName: String): List<String> {
-        val result = ArrayList<String>()
-        var keepContinuation = false
-        for (line in rawLines) {
-            if (logLinePrefixRegex.containsMatchIn(line)) {
-                keepContinuation = isMcpServerLogLine(line, serverName)
-                if (keepContinuation) result.add(line)
-            } else if (keepContinuation) {
-                result.add(line)
-            }
-        }
-        return result
-    }
-
     fun refreshLogs(filterServerName: String? = _logViewerState.value.filterServerName, silent: Boolean = false) {
+        val normalizedServer = filterServerName?.takeIf { it.isNotBlank() }
+        val current = _logViewerState.value
+        val forceAppSource = normalizedServer != null && current.source != LogSourceTab.APP
         loadLogs(
-            filterServerName = filterServerName?.takeIf { it.isNotBlank() },
-            preferredFileName = _logViewerState.value.selectedFileName,
+            source = if (forceAppSource) LogSourceTab.APP else current.source,
+            filterServerName = normalizedServer,
+            filterTag = if (normalizedServer != null && normalizedServer != current.filterServerName) null else current.filterTag,
+            levelFilter = if (normalizedServer != null && normalizedServer != current.filterServerName) LogLevelFilter.ALL else current.levelFilter,
+            preferredFileName = if (forceAppSource) null else current.selectedFileName,
+            maxVisibleLines = current.maxVisibleLines,
+            maxVisibleAiBlocks = current.maxVisibleAiBlocks,
             silent = silent
         )
     }
 
-    fun selectLogFile(fileName: String) {
+    fun selectLogSource(source: LogSourceTab) {
+        val current = _logViewerState.value
+        if (current.source == source) return
+        lastLoadedLogSignature = null
         loadLogs(
-            filterServerName = _logViewerState.value.filterServerName,
-            preferredFileName = fileName
+            source = source,
+            filterServerName = if (source == LogSourceTab.APP) current.filterServerName else null,
+            filterTag = if (source == LogSourceTab.APP) current.filterTag else null,
+            levelFilter = if (source == LogSourceTab.APP) current.levelFilter else LogLevelFilter.ALL,
+            preferredFileName = null,
+            maxVisibleLines = LogViewerUiState.INITIAL_LOG_LINES,
+            maxVisibleAiBlocks = LogViewerUiState.INITIAL_AI_BLOCKS,
+            silent = false
         )
     }
 
-    private fun loadLogs(filterServerName: String?, preferredFileName: String?, silent: Boolean = false) {
+    fun selectLogFile(fileName: String) {
+        val current = _logViewerState.value
+        lastLoadedLogSignature = null
+        loadLogs(
+            source = current.source,
+            filterServerName = current.filterServerName,
+            filterTag = current.filterTag,
+            levelFilter = current.levelFilter,
+            preferredFileName = fileName,
+            maxVisibleLines = LogViewerUiState.INITIAL_LOG_LINES,
+            maxVisibleAiBlocks = LogViewerUiState.INITIAL_AI_BLOCKS,
+            silent = false
+        )
+    }
+
+    fun setLogLevelFilter(levelFilter: LogLevelFilter) {
+        val current = _logViewerState.value
+        if (current.levelFilter == levelFilter) return
+        lastLoadedLogSignature = null
+        loadLogs(
+            source = current.source,
+            filterServerName = current.filterServerName,
+            filterTag = current.filterTag,
+            levelFilter = levelFilter,
+            preferredFileName = current.selectedFileName,
+            maxVisibleLines = LogViewerUiState.INITIAL_LOG_LINES,
+            maxVisibleAiBlocks = current.maxVisibleAiBlocks,
+            silent = false
+        )
+    }
+
+    fun setLogTagFilter(tag: String?) {
+        val normalized = tag?.takeIf { it.isNotBlank() }
+        val current = _logViewerState.value
+        if (current.filterTag == normalized) return
+        lastLoadedLogSignature = null
+        loadLogs(
+            source = current.source,
+            filterServerName = current.filterServerName,
+            filterTag = normalized,
+            levelFilter = current.levelFilter,
+            preferredFileName = current.selectedFileName,
+            maxVisibleLines = LogViewerUiState.INITIAL_LOG_LINES,
+            maxVisibleAiBlocks = current.maxVisibleAiBlocks,
+            silent = false
+        )
+    }
+
+    fun loadEarlierLogs() {
+        val current = _logViewerState.value
+        if (!current.hasMoreEarlier || current.loading) return
+        lastLoadedLogSignature = null
+        loadLogs(
+            source = current.source,
+            filterServerName = current.filterServerName,
+            filterTag = current.filterTag,
+            levelFilter = current.levelFilter,
+            preferredFileName = current.selectedFileName,
+            maxVisibleLines = if (current.source == LogSourceTab.APP) {
+                current.maxVisibleLines + LogViewerUiState.LOG_LINES_PAGE_STEP
+            } else {
+                current.maxVisibleLines
+            },
+            maxVisibleAiBlocks = if (current.source == LogSourceTab.AI) {
+                current.maxVisibleAiBlocks + LogViewerUiState.AI_BLOCKS_PAGE_STEP
+            } else {
+                current.maxVisibleAiBlocks
+            },
+            silent = false
+        )
+    }
+
+    /** 展开 AI 调用卡片时按需读取该条目的完整请求/响应正文。 */
+    fun loadAiBlockDetail(seq: Int) {
+        val current = _logViewerState.value
+        if (current.source != LogSourceTab.AI || seq in current.aiBlockDetails) return
+        val fileName = current.selectedFileName ?: return
+        val block = current.aiBlocks.firstOrNull { it.seq == seq } ?: return
+
         viewModelScope.launch {
+            val detail = withContext(Dispatchers.IO) {
+                val file = AILogger.listLogFiles().firstOrNull { it.name == fileName }
+                    ?: return@withContext null
+                runCatching { LogViewerHelper.readAiBlockDetail(file, block) }.getOrNull()
+            } ?: return@launch
+            _logViewerState.update { state ->
+                if (state.selectedFileName == fileName && state.source == LogSourceTab.AI) {
+                    state.copy(aiBlockDetails = state.aiBlockDetails + (seq to detail))
+                } else {
+                    state
+                }
+            }
+        }
+    }
+
+    fun deleteLogFile(fileName: String) {
+        val current = _logViewerState.value
+        lastLoadedLogSignature = null
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                when (current.source) {
+                    LogSourceTab.APP -> FileLogger.deleteLogFile(fileName)
+                    LogSourceTab.AI -> AILogger.deleteLogFile(fileName)
+                    LogSourceTab.CRASH -> FileLogger.deleteCrashTraceFile(fileName)
+                }
+            }
+            val nextPreferred = if (current.selectedFileName == fileName) null else current.selectedFileName
+            loadLogs(
+                source = current.source,
+                filterServerName = current.filterServerName,
+                filterTag = current.filterTag,
+                levelFilter = current.levelFilter,
+                preferredFileName = nextPreferred,
+                maxVisibleLines = LogViewerUiState.INITIAL_LOG_LINES,
+                maxVisibleAiBlocks = LogViewerUiState.INITIAL_AI_BLOCKS,
+                silent = false
+            )
+        }
+    }
+
+    fun clearLogs(currentSourceOnly: Boolean) {
+        val current = _logViewerState.value
+        lastLoadedLogSignature = null
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                if (currentSourceOnly) {
+                    when (current.source) {
+                        LogSourceTab.APP -> FileLogger.clearLogs()
+                        LogSourceTab.AI -> AILogger.clearLogs()
+                        LogSourceTab.CRASH -> FileLogger.clearCrashTraces()
+                    }
+                } else {
+                    FileLogger.clearLogs()
+                    AILogger.clearLogs()
+                    FileLogger.clearCrashTraces()
+                }
+            }
+            loadLogs(
+                source = current.source,
+                filterServerName = current.filterServerName,
+                filterTag = current.filterTag,
+                levelFilter = current.levelFilter,
+                preferredFileName = null,
+                maxVisibleLines = LogViewerUiState.INITIAL_LOG_LINES,
+                maxVisibleAiBlocks = LogViewerUiState.INITIAL_AI_BLOCKS,
+                silent = false
+            )
+        }
+    }
+
+    fun prepareShareCurrentLog(
+        onReady: (Intent) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val current = _logViewerState.value
+        val fileName = current.selectedFileName
+        if (fileName == null) {
+            onError(context.getString(R.string.settings_log_no_files))
+            return
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val file = when (current.source) {
+                        LogSourceTab.APP -> FileLogger.listLogFiles().firstOrNull { it.name == fileName }
+                        LogSourceTab.AI -> AILogger.listLogFiles().firstOrNull { it.name == fileName }
+                        LogSourceTab.CRASH -> FileLogger.listCrashTraceFiles().firstOrNull { it.name == fileName }
+                    } ?: error(context.getString(R.string.settings_log_no_files))
+                    LogViewerHelper.buildShareSingleFileIntent(
+                        context = context,
+                        file = file,
+                        isCrashPb = current.source == LogSourceTab.CRASH && file.name.endsWith(".pb", ignoreCase = true)
+                    )
+                }
+            }
+            result.onSuccess(onReady)
+                .onFailure { onError(context.getString(R.string.log_share_failed, it.message ?: "")) }
+        }
+    }
+
+    fun prepareShareAllLogs(
+        onReady: (Intent) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    LogViewerHelper.buildShareAllZipIntent(context)
+                        ?: error(context.getString(R.string.settings_log_no_files))
+                }
+            }
+            result.onSuccess(onReady)
+                .onFailure { onError(context.getString(R.string.log_share_failed, it.message ?: "")) }
+        }
+    }
+
+    private fun loadLogs(
+        source: LogSourceTab,
+        filterServerName: String?,
+        filterTag: String?,
+        levelFilter: LogLevelFilter,
+        preferredFileName: String?,
+        maxVisibleLines: Int,
+        maxVisibleAiBlocks: Int,
+        silent: Boolean
+    ) {
+        logLoadJob?.cancel()
+        logLoadJob = viewModelScope.launch {
             if (!silent) {
                 _logViewerState.update {
                     it.copy(
+                        source = source,
                         loading = true,
                         filterServerName = filterServerName,
+                        filterTag = filterTag,
+                        levelFilter = levelFilter,
+                        maxVisibleLines = maxVisibleLines,
+                        maxVisibleAiBlocks = maxVisibleAiBlocks,
                         error = null
                     )
                 }
             }
             val state = withContext(Dispatchers.IO) {
                 runCatching {
-                    val files = FileLogger.listLogFiles()
-                    val todayName = "log-${java.time.LocalDate.now()}.txt"
-                    val selected = files.firstOrNull { it.name == preferredFileName }
-                        ?: files.firstOrNull { it.name == todayName }
-                        ?: files.lastOrNull()
-                    if (selected == null) {
-                        return@runCatching LogViewerUiState(
+                    when (source) {
+                        LogSourceTab.APP -> loadAppLogsState(
                             filterServerName = filterServerName,
-                            error = context.getString(R.string.settings_log_no_files)
+                            filterTag = filterTag,
+                            levelFilter = levelFilter,
+                            preferredFileName = preferredFileName,
+                            maxVisibleLines = maxVisibleLines,
+                            silent = silent
+                        )
+                        LogSourceTab.AI -> loadAiLogsState(
+                            preferredFileName = preferredFileName,
+                            maxVisibleAiBlocks = maxVisibleAiBlocks
+                        )
+                        LogSourceTab.CRASH -> loadCrashLogsState(
+                            preferredFileName = preferredFileName
                         )
                     }
-
-                    val rawLines = selected.readLines(Charsets.UTF_8)
-                    val filteredLines = if (filterServerName.isNullOrBlank()) {
-                        rawLines
-                    } else {
-                        filterMcpServerLines(rawLines, filterServerName)
-                    }
-                    val visibleLines = filteredLines.takeLast(MAX_LOG_LINES)
-
-                    LogViewerUiState(
-                        files = files.map { it.name },
-                        selectedFileName = selected.name,
-                        filterServerName = filterServerName,
-                        content = visibleLines.joinToString("\n"),
-                        totalLines = filteredLines.size,
-                        shownLines = visibleLines.size
-                    )
                 }.getOrElse { e ->
+                    if (e is kotlinx.coroutines.CancellationException) throw e
                     LogViewerUiState(
+                        source = source,
                         filterServerName = filterServerName,
+                        filterTag = filterTag,
+                        levelFilter = levelFilter,
+                        maxVisibleLines = maxVisibleLines,
+                        maxVisibleAiBlocks = maxVisibleAiBlocks,
                         error = context.getString(R.string.settings_log_read_failed, e.message ?: "")
                     )
                 }
             }
-            _logViewerState.value = state
+            if (state != null) {
+                _logViewerState.value = state
+            }
         }
+    }
+
+    private fun loadAppLogsState(
+        filterServerName: String?,
+        filterTag: String?,
+        levelFilter: LogLevelFilter,
+        preferredFileName: String?,
+        maxVisibleLines: Int,
+        silent: Boolean
+    ): LogViewerUiState? {
+        val rawFiles = FileLogger.listLogFiles()
+        val files = rawFiles.reversed().map { file ->
+            LogFileItem(
+                fileName = file.name,
+                displayName = file.name.removePrefix("log-").removeSuffix(".txt"),
+                sizeBytes = file.length(),
+                lastModified = file.lastModified()
+            )
+        }
+        val todayName = "log-${java.time.LocalDate.now()}.txt"
+        val selected = rawFiles.firstOrNull { it.name == preferredFileName }
+            ?: rawFiles.firstOrNull { it.name == todayName }
+            ?: rawFiles.lastOrNull()
+        if (selected == null) {
+            lastLoadedLogSignature = null
+            return LogViewerUiState(
+                source = LogSourceTab.APP,
+                files = files,
+                filterServerName = filterServerName,
+                filterTag = filterTag,
+                levelFilter = levelFilter,
+                maxVisibleLines = maxVisibleLines
+            )
+        }
+
+        val signature = "APP|${selected.name}|${selected.length()}|${selected.lastModified()}|$filterServerName|$filterTag|$levelFilter|$maxVisibleLines"
+        if (silent && signature == lastLoadedLogSignature) {
+            return null
+        }
+
+        val tail = LogViewerHelper.readFilteredAppLogTail(
+            file = selected,
+            mcpServerName = filterServerName,
+            levelFilter = levelFilter,
+            tagFilter = filterTag,
+            maxLines = maxVisibleLines
+        )
+        lastLoadedLogSignature = signature
+        return LogViewerUiState(
+            source = LogSourceTab.APP,
+            files = files,
+            selectedFileName = selected.name,
+            filterServerName = filterServerName,
+            filterTag = filterTag,
+            levelFilter = levelFilter,
+            maxVisibleLines = maxVisibleLines,
+            content = tail.visibleLines.joinToString("\n"),
+            totalLines = tail.totalLines,
+            shownLines = tail.visibleLines.size,
+            hasMoreEarlier = tail.hasMoreEarlier
+        )
+    }
+
+    private suspend fun loadAiLogsState(
+        preferredFileName: String?,
+        maxVisibleAiBlocks: Int
+    ): LogViewerUiState {
+        val rawFiles = AILogger.listLogFiles().sortedByDescending { it.lastModified() }
+        val sessionTitles = runCatching {
+            chatSessionDao.getAllOnce().associate { it.id to it.title }
+        }.getOrDefault(emptyMap())
+
+        val files = rawFiles.map { file ->
+            val archiveSuffix = file.name.substringAfter(".log", "").takeIf { it.startsWith(".") }
+            val sessionId = file.name
+                .removePrefix("session-")
+                .substringBefore(".log")
+            val title = sessionTitles[sessionId]?.takeIf { it.isNotBlank() }
+            val shortId = sessionId.take(8)
+            val display = when {
+                title != null && archiveSuffix != null -> "$title ($archiveSuffix)"
+                title != null -> title
+                archiveSuffix != null -> "${shortId}$archiveSuffix"
+                else -> shortId
+            }
+            LogFileItem(
+                fileName = file.name,
+                displayName = display,
+                sizeBytes = file.length(),
+                lastModified = file.lastModified(),
+                subLabel = "session-$shortId"
+            )
+        }
+        val selected = rawFiles.firstOrNull { it.name == preferredFileName } ?: rawFiles.firstOrNull()
+        if (selected == null) {
+            return LogViewerUiState(source = LogSourceTab.AI, files = files)
+        }
+
+        val allBlocks = LogViewerHelper.indexAiLogFile(selected)
+        val visibleBlocks = allBlocks.takeLast(maxVisibleAiBlocks)
+        return LogViewerUiState(
+            source = LogSourceTab.AI,
+            files = files,
+            selectedFileName = selected.name,
+            maxVisibleAiBlocks = maxVisibleAiBlocks,
+            aiBlocks = visibleBlocks,
+            aiBlockDetails = emptyMap(),
+            totalLines = allBlocks.size,
+            shownLines = visibleBlocks.size,
+            hasMoreEarlier = allBlocks.size > visibleBlocks.size
+        )
+    }
+
+    private fun loadCrashLogsState(preferredFileName: String?): LogViewerUiState {
+        val rawFiles = FileLogger.listCrashTraceFiles()
+        val files = rawFiles.map { file ->
+            val display = file.name
+                .removePrefix("tombstone-")
+                .removeSuffix(".pb")
+                .removeSuffix(".txt")
+            LogFileItem(
+                fileName = file.name,
+                displayName = display,
+                sizeBytes = file.length(),
+                lastModified = file.lastModified(),
+                subLabel = if (file.name.endsWith(".pb", ignoreCase = true)) "Native Tombstone" else file.name
+            )
+        }
+        val selected = rawFiles.firstOrNull { it.name == preferredFileName } ?: rawFiles.firstOrNull()
+        if (selected == null) {
+            return LogViewerUiState(source = LogSourceTab.CRASH, files = files)
+        }
+
+        val text = LogViewerHelper.readCrashTraceText(selected)
+        val lines = text.lineSequence().count()
+        return LogViewerUiState(
+            source = LogSourceTab.CRASH,
+            files = files,
+            selectedFileName = selected.name,
+            content = text,
+            totalLines = lines,
+            shownLines = lines
+        )
     }
 
     // 仅持久化标志位——启停 Service 由 AIEditorApp 监听 enabledFlow 统一完成。
@@ -2408,6 +2766,14 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /** 切换到指定执行后端（内置或插件后端），并持久化 activeBackendId。 */
+    fun setActiveExecutionBackend(id: String) {
+        viewModelScope.launch {
+            executionBackendRegistry.setActiveBackend(id)
+            executionModeRepository.setActiveBackendId(executionBackendRegistry.currentBackend().id)
+        }
+    }
+
     /** 把 [id] 应用为当前激活 profile：持久化 + 按 mode 切执行模式。找不到时回退列表第一个，再兜底内置。 */
     private suspend fun applyProfile(id: String) {
         val profile = _customProfiles.value.firstOrNull { it.id == id }
@@ -2417,15 +2783,15 @@ class SettingsViewModel @Inject constructor(
         containerSettingsRepository.setActiveProfile(profile.id)
         when (profile.mode) {
             ExecutionMode.LOCAL_PROOT -> {
-                executionModeRepository.setExecutionMode(ExecutionMode.LOCAL_PROOT)
-                executionModeHolder.setMode(ExecutionMode.LOCAL_PROOT)
+                executionModeRepository.setActiveBackendId(ExecutionBackendRegistry.BUILTIN_LOCAL_PROOT_ID)
+                executionBackendRegistry.setActiveBackend(ExecutionBackendRegistry.BUILTIN_LOCAL_PROOT_ID)
             }
 
             ExecutionMode.REMOTE_SSH -> {
                 if (profile.rootfsSource !is RootfsSource.RemoteSsh) return
                 // 连接参数由 ActiveRemoteConnectionResolver 按激活 profile 实时解析，AIEditorApp 的常驻订阅据此重连。
-                executionModeRepository.setExecutionMode(ExecutionMode.REMOTE_SSH)
-                executionModeHolder.setMode(ExecutionMode.REMOTE_SSH)
+                executionModeRepository.setActiveBackendId(ExecutionBackendRegistry.BUILTIN_REMOTE_SSH_ID)
+                executionBackendRegistry.setActiveBackend(ExecutionBackendRegistry.BUILTIN_REMOTE_SSH_ID)
             }
         }
     }
@@ -2921,7 +3287,7 @@ class SettingsViewModel @Inject constructor(
     fun fetchModels(provider: AIProviderConfig) {
         viewModelScope.launch {
             _fetchState.value = FetchState.Loading
-            modelApiService.fetchModels(provider.baseUrl, provider.firstUsableApiKey, provider.type, provider.useFullUrl, provider.customHeaders)
+            modelApiService.fetchModels(provider.effectiveBaseUrl(), provider.firstUsableApiKey, provider.type, provider.useFullUrl, provider.customHeaders)
                 .onSuccess { result ->
                     _fetchState.value = FetchState.Success(result.models, result.debugInfo)
                     resolveModelMetadata(provider.id, provider.type, result.models)
@@ -2982,7 +3348,7 @@ class SettingsViewModel @Inject constructor(
     fun testModel(provider: AIProviderConfig, model: String) {
         viewModelScope.launch {
             _testing.update { it + model }
-            val result = modelApiService.testModel(provider.baseUrl, provider.firstUsableApiKey, provider.type, provider.useFullUrl, provider.useResponseApi, model, provider.customHeaders)
+            val result = modelApiService.testModel(provider.effectiveBaseUrl(), provider.firstUsableApiKey, provider.type, provider.useFullUrl, provider.useResponseApi, model, provider.customHeaders)
             _testResults.update { it + (model to result) }
             _testing.update { it - model }
         }
@@ -2994,7 +3360,7 @@ class SettingsViewModel @Inject constructor(
      * 测试中的行集合与结果由弹层自己按 provider+模型持有。
      */
     suspend fun runModelTest(provider: AIProviderConfig, model: String): ModelTestResult =
-        modelApiService.testModel(provider.baseUrl, provider.firstUsableApiKey, provider.type, provider.useFullUrl, provider.useResponseApi, model, provider.customHeaders)
+        modelApiService.testModel(provider.effectiveBaseUrl(), provider.firstUsableApiKey, provider.type, provider.useFullUrl, provider.useResponseApi, model, provider.customHeaders)
 
     fun clearTestResults() {
         _testResults.value = emptyMap()
@@ -3096,6 +3462,17 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { toolSafetySettingsRepository.setHostCommandAutoAllow(enabled) }
     }
 }
+
+/**
+ * 远程模式下技能/子代理清单的“暂不可用”是否属于瞬态：
+ * - 刚启动/刚切换模式时 SSH 配置或主目录尚未就绪（异常文案标识）；
+ * - 读取过程中连接身份变化（刚好连上或重连，见 [RemoteAgentConfigIdentityChangedException]）。
+ * 这两类后续会被连接就绪/文件变更监听重扫补齐，不应按故障打 WARN。
+ */
+private fun isTransientRemoteConfigError(error: java.io.IOException): Boolean =
+    error is RemoteAgentConfigIdentityChangedException ||
+        error.message == "SSH configuration unavailable" ||
+        error.message == "SSH home unavailable"
 
 /** 读取公告 md（zh 用中文版，其余英文版）；跟随系统语言时按系统语言判断。读取失败返回空串（空内容不弹窗）。 */
 private fun loadContainerAnnouncement(context: Context, languageTag: String?): String {

@@ -167,7 +167,9 @@ export default defineConfig({
             { text: '日志与故障排查', link: '/guide/logs' },
             { text: '常见错误提示', link: '/guide/error-codes' },
             { text: '存储空间', link: '/guide/storage' },
+            { text: '会话管理', link: '/guide/session-management' },
             { text: '备份与还原', link: '/guide/backup' },
+            { text: '赞助', link: '/guide/sponsor' },
             { text: '关于与更新', link: '/guide/about' },
             { text: '用户协议', link: '/terms' },
             { text: '隐私政策', link: '/privacy' }

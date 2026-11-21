@@ -97,6 +97,7 @@ import com.aicode.feature.agent.presentation.AIAgentViewModel
 import com.aicode.feature.agent.presentation.AgentAttachment
 import com.aicode.feature.agent.presentation.component.AIChatPanel
 import com.aicode.feature.agent.presentation.component.ChatDrawerContent
+import com.aicode.feature.agent.presentation.component.LocalChatAnimationsEnabled
 import com.aicode.feature.agent.presentation.component.chatImageLoader
 import com.aicode.feature.agent.presentation.component.openSentAttachment
 import com.aicode.feature.agreement.presentation.AgreementGate
@@ -143,6 +144,9 @@ import com.aicode.feature.settings.presentation.component.UpdateCheckDialog
 import com.aicode.feature.settings.presentation.component.decodeBackgroundBitmap
 import com.aicode.feature.settings.presentation.component.openUrl
 import com.aicode.feature.settings.presentation.component.settingsPageBackground
+import com.aicode.feature.starprompt.domain.StarPromptCoordinator
+import com.aicode.feature.starprompt.domain.StarPromptUiGate
+import com.aicode.feature.starprompt.presentation.StarPromptDialog
 import com.aicode.feature.terminal.domain.TerminalKeepaliveService
 import com.aicode.feature.terminal.presentation.TerminalViewModel
 import com.aicode.feature.terminal.presentation.component.TerminalScreen
@@ -205,6 +209,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var agreementRepository: com.aicode.feature.agreement.data.AgreementRepository
+
+    @Inject
+    lateinit var starPromptCoordinator: StarPromptCoordinator
 
     @Inject
     lateinit var browserManager: com.aicode.feature.agent.domain.tool.browser.BrowserManager
@@ -348,6 +355,7 @@ class MainActivity : ComponentActivity() {
                         AgreementGate(repository = agreementRepository) { agreementAccepted ->
                             AppNavigation(
                                 onboardingRepository = onboardingRepository,
+                                starPromptCoordinator = starPromptCoordinator,
                                 agreementAccepted = agreementAccepted
                             )
                             if (agreementAccepted) {
@@ -390,7 +398,10 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         // 远程模式回到前台时，若 SSH 断了立即触发重连，不等 supervisor 轮询
-        if (executionModeHolder.currentMode() == com.aicode.feature.settings.data.repository.ExecutionMode.REMOTE_SSH) {
+        val backend = executionModeHolder.currentBackend()
+        if (backend.id == com.aicode.feature.agent.domain.container.ExecutionBackendRegistry.BUILTIN_REMOTE_SSH_ID &&
+            backend.capabilities.isRemoteEnvironment
+        ) {
             lifecycleScope.launch {
                 runCatching { remoteSshConnection.tryReconnectIfDisconnected() }
             }
@@ -529,6 +540,7 @@ private const val MAX_PANE_SPLIT = 0.7f
 @Composable
 fun AppNavigation(
     onboardingRepository: com.aicode.feature.onboarding.data.OnboardingRepository,
+    starPromptCoordinator: StarPromptCoordinator,
     agreementAccepted: Boolean
 ) {
     val navController = rememberNavController()
@@ -596,11 +608,16 @@ fun AppNavigation(
             scope = onboardingScope
         )
     }
+    var onboardingChecked by remember { mutableStateOf(false) }
     // 启动判断：IN_PROGRESS 则激活引导。
     LaunchedEffect(agreementAccepted) {
-        if (!agreementAccepted) return@LaunchedEffect
+        if (!agreementAccepted) {
+            onboardingChecked = false
+            return@LaunchedEffect
+        }
         val status = onboardingRepository.status()
         onboardingCoordinator.initialize(status ?: OnboardingStatus.IN_PROGRESS)
+        onboardingChecked = true
     }
 
     // 自动检查更新：进入主页时异步检测（开关开启且每天最多一次，失败静默）
@@ -625,6 +642,14 @@ fun AppNavigation(
     }
 
     val sessions by agentViewModel.sessions.collectAsStateWithLifecycle()
+    val externalSessionGroups by agentViewModel.externalSessionGroups.collectAsStateWithLifecycle()
+    val activeExternalSession by agentViewModel.activeExternalSession.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) {
+        agentViewModel.refreshExternalSessions()
+    }
+    LaunchedEffect(drawerState.isOpen) {
+        if (drawerState.isOpen) agentViewModel.refreshExternalSessions()
+    }
     val currentSessionId by agentViewModel.currentSessionId.collectAsStateWithLifecycle()
     val agentStates by agentViewModel.agentStates.collectAsStateWithLifecycle()
     val awaitingPermissionSessionIds by agentViewModel.awaitingPermissionSessionIds.collectAsStateWithLifecycle()
@@ -854,9 +879,19 @@ fun AppNavigation(
     }
 
     // 侧栏内容：modal 抽屉与大屏常驻栏共用同一份，不在两处重复几十行参数。
-    val drawerBody: @Composable () -> Unit = {
+    val drawerBody: @Composable (Boolean) -> Unit = { animationsEnabled ->
+        CompositionLocalProvider(LocalChatAnimationsEnabled provides animationsEnabled) {
         ChatDrawerContent(
             sessions = sessions,
+            externalSessionGroups = externalSessionGroups,
+            currentExternalSessionId = activeExternalSession?.id,
+            onSelectExternalSession = { session ->
+                agentViewModel.openExternalSession(session)
+                if (!permanentDrawer) scope.launch { drawerState.close() }
+            },
+            onDeleteExternalSession = { session -> agentViewModel.deleteExternalSession(session) },
+            onRenameExternalSession = { session, title -> agentViewModel.renameExternalSession(session, title) },
+            onTogglePinExternalSession = { session -> agentViewModel.togglePinExternalSession(session) },
             currentSessionId = currentSessionId,
             agentStates = agentStates,
             awaitingPermissionSessionIds = awaitingPermissionSessionIds,
@@ -966,6 +1001,7 @@ fun AppNavigation(
                 if (!permanentDrawer) scope.launch { drawerState.close() }
             }
         )
+        }
     }
 
     var reopenRightDrawerOnDetailBack by remember { mutableStateOf(false) }
@@ -1104,6 +1140,22 @@ fun AppNavigation(
                         if (!expanded) scope.launch { drawerState.open() }
                     },
                     onStopAllAndCloseTerminal = { agentViewModel.stopAllAndCloseTerminal() },
+                    onOpenSessionInWorkspace = { targetWs, sessionId ->
+                        agentViewModel.prepareFollowSession(targetWs.path, sessionId)
+                        if (currentWorkspace?.ref != targetWs.ref) {
+                            workspaceViewModel.selectWorkspace(targetWs.ref)
+                        }
+                        navController.popBackStack()
+                    },
+                    onFollowMovedSession = { targetWs, sessionId ->
+                        agentViewModel.prepareFollowSession(targetWs.path, sessionId)
+                        if (currentWorkspace?.ref != targetWs.ref) {
+                            workspaceViewModel.selectWorkspace(targetWs.ref)
+                        }
+                    },
+                    onSessionsMutated = {
+                        agentViewModel.ensureCurrentSessionStillInWorkspace()
+                    },
                     onRerunOnboarding = {
                         // 从设置页「重新运行引导」：清状态回 in_progress、激活引导并回聊天页。
                         scope.launch {
@@ -1114,6 +1166,7 @@ fun AppNavigation(
                             }
                         }
                     },
+                    onShowStarPrompt = { starPromptCoordinator.showManual() },
                     onboardingStep = onboardingUiState.step.takeIf { onboardingUiState.active },
                     onOnboardingModelAdded = {
                         if (onboardingUiState.active && onboardingUiState.step == OnboardingStep.SIMULATE_FETCH_DIALOG) {
@@ -1314,7 +1367,7 @@ fun AppNavigation(
                             .fillMaxHeight()
                     ) {
                         sidebarStateHolder.SaveableStateProvider("chat-sidebar") {
-                            drawerBody()
+                            drawerBody(currentRoute == "chat" && sidebarWidth > 0.dp)
                         }
                     }
                 }
@@ -1343,7 +1396,10 @@ fun AppNavigation(
                     drawerTonalElevation = 0.dp,
                     modifier = Modifier.width(drawerWidth())
                 ) {
-                    drawerBody()
+                    drawerBody(
+                        drawerState.currentValue == DrawerValue.Open ||
+                            drawerState.targetValue == DrawerValue.Open
+                    )
                 }
             }
         ) {
@@ -1408,7 +1464,8 @@ fun AppNavigation(
     // 检查更新弹窗（全局宿主：自动检测与关于页手动检查共用，覆盖所有页面）
     val updateCheckState by settingsViewModel.updateCheckState.collectAsStateWithLifecycle()
     val updateCheckVisible by settingsViewModel.updateCheckVisible.collectAsStateWithLifecycle()
-    if (agreementAccepted && updateCheckVisible && updateCheckState != UpdateCheckUiState.Idle) {
+    val updateDialogShowing = agreementAccepted && updateCheckVisible && updateCheckState != UpdateCheckUiState.Idle
+    if (updateDialogShowing) {
         val version = remember {
             runCatching {
                 context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
@@ -1424,6 +1481,32 @@ fun AppNavigation(
                 settingsViewModel.dismissUpdateCheck()
             },
             onDownload = { settingsViewModel.downloadAndInstall() }
+        )
+    }
+
+    // 求 Star 弹窗（全局宿主：累计前台满 3 小时后触发，点击「下次一定」按 3/7/14 天推迟，仅在 AI 空闲且聊天主界面无抽屉/弹窗时展示）
+    val uiGate = StarPromptUiGate(
+        agreementAccepted = agreementAccepted,
+        onboardingActive = !onboardingChecked || onboardingUiState.active,
+        updateDialogVisible = updateDialogShowing,
+        pluginActionPending = pendingPluginAction != null,
+        activeSlotPageOpen = activeSlotPage != null,
+        drawerOpen = (!permanentDrawer && drawerState.isOpen) || rightDrawerState.isOpen,
+        currentRoute = currentRoute
+    )
+    LaunchedEffect(uiGate) {
+        starPromptCoordinator.updateUiGate(uiGate)
+    }
+    val starPromptVisible by starPromptCoordinator.dialogVisible.collectAsStateWithLifecycle()
+    val starPromptManual by starPromptCoordinator.isManualPrompt.collectAsStateWithLifecycle()
+    if (starPromptVisible && uiGate.allowsPrompt(manual = starPromptManual)) {
+        StarPromptDialog(
+            onGoToStar = {
+                starPromptCoordinator.onGoToStar()
+                openUrl(context, StarPromptCoordinator.GITHUB_REPO_URL)
+            },
+            onSnooze = { starPromptCoordinator.onSnooze() },
+            onDismissForever = { starPromptCoordinator.onDismissForever() }
         )
     }
 

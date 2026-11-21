@@ -18,26 +18,21 @@ import com.aicode.R
 import com.aicode.core.util.FileLogger
 import com.aicode.core.util.GitIgnoreMatcher
 import com.aicode.core.util.toUserMessage
-import com.aicode.core.util.formatCostUsd
 import com.aicode.feature.agent.data.local.dao.AgentMessageDao
 import com.aicode.feature.agent.domain.checkpoint.CheckpointManager
 import com.aicode.feature.agent.data.local.dao.CheckpointDao
 import com.aicode.feature.agent.data.local.dao.ChatSessionDao
-import com.aicode.feature.agent.data.local.dao.LlmCallRecordDao
 import com.aicode.feature.agent.data.local.dao.TodoItemDao
 import com.aicode.feature.agent.domain.model.TodoItem
 import com.aicode.feature.agent.data.local.entity.AgentMessageEntity
 import com.aicode.feature.agent.data.local.entity.ChatSessionEntity
 import com.aicode.feature.agent.domain.container.ContainerInitState
 import com.aicode.feature.agent.domain.container.ContainerOsDetector
+import com.aicode.feature.agent.domain.container.ExecutionBackendRegistry
 import com.aicode.feature.agent.domain.container.LinuxContainerEngine
-import com.aicode.feature.settings.domain.model.ProviderType
-import com.aicode.feature.settings.domain.service.ModelCostCalculator
-import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import com.aicode.feature.settings.data.repository.AgentSoundSettingsRepository
 import com.aicode.feature.settings.data.repository.ContainerSettingsRepository
 import com.aicode.feature.settings.data.repository.DefaultModelSettingsRepository
-import com.aicode.feature.settings.data.repository.ExecutionMode
 import com.aicode.feature.settings.data.repository.ExecutionModeHolder
 import com.aicode.feature.settings.data.repository.GeneralSettingsRepository
 import com.aicode.feature.settings.data.repository.KeepaliveSettingsRepository
@@ -69,6 +64,13 @@ import com.aicode.feature.agent.domain.subagent.SubAgentDigester
 import com.aicode.feature.agent.domain.subagent.SubAgentDigest
 import com.aicode.feature.agent.domain.subagent.SubAgentEventType
 import com.aicode.feature.agent.domain.workflow.AgentWorkflow
+import com.aicode.feature.agent.domain.workflow.AgentWorkflowRegistry
+import com.aicode.feature.agent.domain.workflow.WorkflowDescriptor
+import com.aicode.feature.plugin.domain.session.ExternalSessionGroup
+import com.aicode.feature.plugin.domain.session.ExternalSessionMessage
+import com.aicode.feature.plugin.domain.session.ExternalSessionSummary
+import com.aicode.feature.plugin.runtime.ExternalSessionService
+import com.aicode.feature.plugin.runtime.ExternalSessionStore
 import com.aicode.feature.terminal.domain.TabFinishedEvent
 import com.aicode.feature.terminal.domain.TerminalKeepaliveService
 import com.aicode.feature.terminal.domain.TerminalSessionManager
@@ -83,6 +85,9 @@ import com.aicode.feature.agent.domain.workflow.AgentEvent
 import com.aicode.feature.agent.domain.tool.ToolPermissionManager
 import com.aicode.feature.agent.domain.tool.ToolRegistry
 import com.aicode.feature.agent.domain.tool.mode.PlanApprovalChoice
+import com.aicode.feature.agent.presentation.component.PendingUploadAttachment
+import com.aicode.feature.agent.presentation.component.toAgentAttachments
+import com.aicode.feature.agent.presentation.component.toPendingAttachment
 import com.aicode.feature.agent.domain.tool.mode.PlanApprovalManager
 import com.aicode.feature.agent.domain.tool.mode.PlanApprovalRequest
 import com.aicode.feature.agent.domain.tool.question.AskUserQuestionManager
@@ -101,7 +106,6 @@ import com.aicode.feature.backup.domain.BackupManager
 import com.aicode.feature.agent.domain.command.SlashCommand
 import com.aicode.feature.agent.domain.command.SlashCommandContext
 import com.aicode.feature.agent.domain.command.SlashCommandRegistry
-import com.aicode.feature.agent.domain.command.SlashCommandRegistry.ResolvedCommand
 import com.aicode.feature.agent.domain.mention.FileMentionRepository
 import com.aicode.feature.agent.domain.mention.FileMentionState
 import com.aicode.feature.agent.domain.skill.Skill
@@ -113,7 +117,6 @@ import com.aicode.feature.agent.presentation.run.ReasoningDurationEvent
 import com.aicode.feature.agent.presentation.notification.AgentApprovalNotificationManager.ApprovalKind
 import com.aicode.feature.agent.presentation.component.RewindOption
 import com.aicode.feature.agent.presentation.component.toolRunningLabelRes
-import com.aicode.feature.agent.presentation.component.formatTokenCount
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -123,7 +126,6 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -143,6 +145,7 @@ import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -150,7 +153,6 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.OutputStream
 import java.nio.file.FileAlreadyExistsException
-import java.util.Calendar
 import java.util.UUID
 import javax.inject.Inject
 
@@ -161,9 +163,6 @@ class AIAgentViewModel @Inject constructor(
     private val toolRegistry: ToolRegistry,
     private val agentMessageDao: AgentMessageDao,
     private val chatSessionDao: ChatSessionDao,
-    private val llmCallRecordDao: LlmCallRecordDao,
-    private val modelCostCalculator: ModelCostCalculator,
-    private val aiProviderRepository: AIProviderRepository,
     private val defaultModelSettingsRepository: DefaultModelSettingsRepository,
     private val modelReasoningEffortRepository: ModelReasoningEffortRepository,
     private val toolPermissionManager: ToolPermissionManager,
@@ -198,11 +197,45 @@ class AIAgentViewModel @Inject constructor(
     private val fileChangeHub: FileChangeHub,
     private val executionModeHolder: ExecutionModeHolder,
     private val agentRunManager: AgentRunManager,
+    private val workflowRegistry: AgentWorkflowRegistry,
+    private val externalSessionStore: ExternalSessionStore,
+    private val externalSessionService: ExternalSessionService,
     @param:ApplicationContext private val context: Context
 ) : ViewModel(), SlashCommandContext {
 
+    private val streamingAssistantOwner = Any()
     private val _currentSessionId = MutableStateFlow<String?>(null)
     val currentSessionId: StateFlow<String?> = _currentSessionId.asStateFlow()
+
+    private fun updateSelectedSessionId(sessionId: String?) {
+        agentRunManager.setSelectedLocalSession(streamingAssistantOwner, sessionId)
+        _currentSessionId.value = sessionId
+    }
+
+    override fun onCleared() {
+        agentRunManager.setSelectedLocalSession(streamingAssistantOwner, null)
+        super.onCleared()
+    }
+
+    val externalSessionGroups: StateFlow<List<ExternalSessionGroup>> = externalSessionStore.groups
+
+    private val _activeExternalSession = MutableStateFlow<ExternalSessionSummary?>(null)
+    val activeExternalSession: StateFlow<ExternalSessionSummary?> = _activeExternalSession.asStateFlow()
+
+    private val _externalMessagesState = MutableStateFlow(
+        ChatMessagesState(null, emptyList(), loaded = false)
+    )
+    private var externalRawMessages: List<ExternalSessionMessage> = emptyList()
+    private var externalNextCursor: kotlinx.serialization.json.JsonElement? = null
+    private var externalLoadJob: Job? = null
+    private var localSessionIdBeforeExternal: String? = null
+
+    val pluginThinkingLabel: StateFlow<String?> = combine(
+        _activeExternalSession,
+        externalSessionStore.thinking
+    ) { active, thinkingMap ->
+        active?.let { thinkingMap[it.id] }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val currentSessionTodoItems: StateFlow<List<TodoItem>> = _currentSessionId
@@ -218,8 +251,11 @@ class AIAgentViewModel @Inject constructor(
 
     val subAgentCards: StateFlow<Map<String, SubAgentCardState>> = agentRunManager.subAgentCards
 
-    val agentState: StateFlow<AgentUIState> = combine(_currentSessionId, agentRunManager.agentStates) { id, states ->
-        if (id == null) AgentUIState.Idle else states[id] ?: AgentUIState.Idle
+    val agentState: StateFlow<AgentUIState> = combine(
+        _currentSessionId,
+        agentRunManager.agentStates
+    ) { id, states ->
+        if (id == null) AgentUIState.Idle else (states[id] ?: AgentUIState.Idle)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, AgentUIState.Idle)
 
     private val _messageLimit = MutableStateFlow<Map<String, Int>>(emptyMap())
@@ -265,6 +301,66 @@ class AIAgentViewModel @Inject constructor(
         val id = _currentSessionId.value ?: return
         _inputDrafts.value = _inputDrafts.value - id
         draftPrefs.edit().remove(id).apply()
+        updateAttachmentDraft(emptyList(), id)
+    }
+
+    private val attachmentDraftPrefs = context.getSharedPreferences("agent_input_attachment_drafts", Context.MODE_PRIVATE)
+    private val attachmentDraftJson = Json { ignoreUnknownKeys = true }
+    private val _attachmentDrafts = MutableStateFlow<Map<String, List<PendingUploadAttachment>>>(emptyMap())
+    internal val attachmentDraft: StateFlow<List<PendingUploadAttachment>> = _currentSessionId
+        .flatMapLatest { id ->
+            if (id == null) flowOf(emptyList()) else _attachmentDrafts.map { it[id].orEmpty() }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            val restored = attachmentDraftPrefs.all.mapNotNull { (k, v) ->
+                val raw = (v as? String)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val list = runCatching {
+                    attachmentDraftJson.decodeFromString<List<AgentAttachment>>(raw)
+                }.getOrNull()?.map { it.toPendingAttachment() }
+                list?.takeIf { it.isNotEmpty() }?.let { k to it }
+            }.toMap()
+            if (restored.isNotEmpty()) {
+                _attachmentDrafts.update { current -> restored + current }
+            }
+        }
+    }
+
+    internal fun updateAttachmentDraft(
+        attachments: List<PendingUploadAttachment>,
+        sessionId: String? = _currentSessionId.value
+    ) {
+        val id = sessionId ?: return
+        val editor = attachmentDraftPrefs.edit()
+        if (attachments.isEmpty()) {
+            _attachmentDrafts.value = _attachmentDrafts.value - id
+            editor.remove(id)
+        } else {
+            _attachmentDrafts.value = _attachmentDrafts.value + (id to attachments)
+            editor.putString(id, attachmentDraftJson.encodeToString(attachments.toAgentAttachments()))
+        }
+        editor.apply()
+    }
+
+    internal fun addAttachmentDraft(
+        attachment: PendingUploadAttachment,
+        sessionId: String? = _currentSessionId.value
+    ) {
+        val id = sessionId ?: return
+        val next = _attachmentDrafts.value[id].orEmpty() + attachment
+        updateAttachmentDraft(next, id)
+    }
+
+    internal fun removeAttachmentDraft(
+        index: Int,
+        sessionId: String? = _currentSessionId.value
+    ) {
+        val id = sessionId ?: return
+        val current = _attachmentDrafts.value[id].orEmpty()
+        if (index !in current.indices) return
+        updateAttachmentDraft(current.filterIndexed { i, _ -> i != index }, id)
     }
 
     /**
@@ -315,6 +411,11 @@ class AIAgentViewModel @Inject constructor(
     val reasoningDurations = mutableStateMapOf<String, Long>()
 
     fun loadMoreMessages() {
+        val ext = _activeExternalSession.value
+        if (ext != null) {
+            loadMoreExternalMessages(ext)
+            return
+        }
         val sid = _currentSessionId.value ?: return
         val state = messagesState.value
         if (state.sessionId != sid || !state.loaded || !state.hasMore) return
@@ -327,6 +428,32 @@ class AIAgentViewModel @Inject constructor(
 
     /** 容器初始化实时进度（解压/部署/装包），AI 页底部气泡展示。 */
     val containerInit: StateFlow<ContainerInitState> = containerEngine.initProgress
+
+    /** 从设置→会话管理页打开或移动当前会话并跟随切换时，暂存目标 `(workspacePath, sessionId)`，切区落地时优先选中。 */
+    @Volatile
+    private var pendingFollowSession: Pair<String, String>? = null
+
+    fun prepareFollowSession(workspacePath: String, sessionId: String) {
+        if (workspacePath.isBlank() || sessionId.isBlank()) return
+        if (_currentWorkspace.value == workspacePath) {
+            selectSession(sessionId)
+            return
+        }
+        pendingFollowSession = workspacePath to sessionId
+        leaveExternalSessionForLocalSwitch()
+    }
+
+    /** 若当前选中的本地会话已在会话管理页被删除或移走，切到当前工作区其余会话或补建空会话。 */
+    fun ensureCurrentSessionStillInWorkspace() = viewModelScope.launch {
+        if (_activeExternalSession.value != null) return@launch
+        val ws = _currentWorkspace.value
+        if (ws.isBlank()) return@launch
+        val curId = _currentSessionId.value
+        val cur = curId?.let { sessionUseCase.getSessionById(it) }
+        if (cur != null && cur.workspacePath == ws) return@launch
+        val nextId = sessionUseCase.getFirstSessionOfWorkspace(ws)?.id ?: createAndUpsertSession(ws)
+        updateSelectedSessionId(nextId)
+    }
 
     private val _currentWorkspace = MutableStateFlow<String>("")
     fun setWorkspace(path: String) {
@@ -537,10 +664,16 @@ class AIAgentViewModel @Inject constructor(
     private val browseWatchJobs = HashMap<String, Job>()
 
     /**
-     * 文件树作用域：工作区 / 容器 profile / 执行模式。任一变化，目录内容就是另一批文件，
+     * 文件树作用域：工作区 / 容器 profile / 执行后端及其环境能力。任一变化，目录内容就是另一批文件，
      * 缓存要丢弃重读（展开集按工作区各自持久化）。
      */
-    private data class BrowseScope(val workspace: String, val profileId: String, val mode: ExecutionMode)
+    private data class BrowseScope(
+        val workspace: String,
+        val profileId: String,
+        val backendId: String,
+        val isRemote: Boolean,
+        val fileWatch: Boolean
+    )
 
     private var browseScope: BrowseScope? = null
 
@@ -553,17 +686,26 @@ class AIAgentViewModel @Inject constructor(
 
     private val browseCommands = Channel<BrowseReload>(Channel.UNLIMITED)
 
-    /** 工作区 / 容器 profile / 执行模式，附带容器根节点的显示信息。 */
+    /** 工作区 / 容器 profile / 执行后端，附带容器根节点的显示信息。 */
     private val browseScopeFlow: Flow<Pair<BrowseScope, FileTreeRoot.Container>> = combine(
         _currentWorkspace,
         containerSettingsRepository.activeProfileFlow,
-        executionModeHolder.mode,
+        executionModeHolder.activeBackend,
         containerOsDetector.osMap
-    ) { workspace, profile, mode, osMap ->
-        BrowseScope(workspace, profile.id, mode) to FileTreeRoot.Container(
-            label = profile.name,
-            osId = osMap[profile.id],
-            remote = mode == ExecutionMode.REMOTE_SSH
+    ) { workspace, profile, backend, osMap ->
+        val isBuiltinBackend = backend.id == ExecutionBackendRegistry.BUILTIN_LOCAL_PROOT_ID ||
+            backend.id == ExecutionBackendRegistry.BUILTIN_REMOTE_SSH_ID
+        val effectiveProfileId = if (isBuiltinBackend) profile.id else backend.id
+        BrowseScope(
+            workspace = workspace,
+            profileId = effectiveProfileId,
+            backendId = backend.id,
+            isRemote = backend.capabilities.isRemoteEnvironment,
+            fileWatch = backend.capabilities.fileWatch
+        ) to FileTreeRoot.Container(
+            label = if (isBuiltinBackend) profile.name else backend.displayName,
+            osId = if (isBuiltinBackend) osMap[profile.id] else null,
+            remote = backend.capabilities.isRemoteEnvironment
         )
     }
 
@@ -787,8 +929,8 @@ class AIAgentViewModel @Inject constructor(
     /** 按展开集增删目录监听：只新开/关闭变化的那几个，不重挂全部（否则每次点开都重建所有 inotify）。 */
     private fun syncBrowseWatches() {
         val scope = browseScope ?: return
-        // 无人订阅或远程模式（没有宿主目录可监听）：不挂任何监听
-        val wanted = if (!browseSubscribed || scope.mode == ExecutionMode.REMOTE_SSH) {
+        // 无人订阅或当前后端不支持本地文件监控：不挂任何监听
+        val wanted = if (!browseSubscribed || !scope.fileWatch) {
             emptySet()
         } else {
             _expandedPaths.value + WorkspacePathMapper.CONTAINER_ROOT
@@ -1190,11 +1332,19 @@ class AIAgentViewModel @Inject constructor(
 
     // endregion
 
-    /** 当前会话完整信息（根会话与子会话通用；null 表示尚未解析出会话）。 */
-    val currentSessionState: StateFlow<ChatSession?> = _currentSessionId
-        .flatMapLatest { id ->
-            if (id == null) flowOf(null)
-            else chatSessionDao.getByIdFlow(id).map { it?.toDomain() }
+    /**
+     * 当前会话完整信息（根会话与子会话通用；null 表示尚未解析出会话）。
+     */
+    val currentSessionState: StateFlow<ChatSession?> = combine(
+        _currentSessionId,
+        _activeExternalSession
+    ) { id, ext -> id to ext }
+        .flatMapLatest { (id, ext) ->
+            when {
+                ext != null -> flowOf(ExternalSessionUiMapper.toChatSession(ext))
+                id == null -> flowOf(null)
+                else -> chatSessionDao.getByIdFlow(id).map { it?.toDomain() }
+            }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
@@ -1220,39 +1370,48 @@ class AIAgentViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     /** 当前会话绑定的 providerId/model（null 表示未绑定，回退全局 active provider）。 */
-    val currentSessionProviderModel: StateFlow<Pair<String?, String?>> =
-        currentSessionState.map { s -> (s?.providerId ?: "") to (s?.model ?: "") }
-            .stateIn(viewModelScope, SharingStarted.Eagerly, Pair(null, null))
+    val currentSessionProviderModel: StateFlow<Pair<String?, String?>> = currentSessionState
+        .map { session ->
+            (session?.providerId ?: "") to (session?.model ?: "")
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, Pair(null, null))
 
     /**
-     * 当前会话的消息状态：会话切换时自动切换到对应历史，并携带所属会话 id 与 loaded 标志，
-     * 使 UI 能区分「切换/冷启动加载中」与「空会话」——避免先闪 Welcome 或上一个会话的消息再突然刷新。
-     * 过滤掉「纯工具调用」的空助手行（content 为空、仅用于回放配对，不应显示为气泡）。
+     * 当前会话的消息状态：Room/AgentMessageDao 分页流。
      */
     val messagesState: StateFlow<ChatMessagesState> = combine(
         _currentSessionId,
-        _messageLimit
-    ) { id, limitMap -> id to (limitMap[id] ?: defaultLimit) }
-        .flatMapLatest { (id, limit) ->
-            if (id == null) flowOf(ChatMessagesState(null, emptyList(), loaded = false))
-            else agentMessageDao.getMessagesBySessionPaged(id, limit).map { list ->
-                ChatMessagesState(
-                    sessionId = id,
-                    messages = list.asSequence()
-                        .filterNot {
-                            it.role == MessageRole.ASSISTANT.name &&
-                                !it.content.hasVisibleContent() &&
-                                it.reasoning.isNullOrEmpty()
-                        }
-                        .map { entity -> entity.toUIMessage() }
-                        .toList(),
-                    loaded = true,
-                    hasMore = list.size >= limit,
-                    isLoadingMore = false,
-                    limit = limit
-                )
-            }.flowOn(Dispatchers.Default)
-                .onEach { loadedMessageLimits[id] = limit }
+        _messageLimit,
+        _activeExternalSession,
+        _externalMessagesState
+    ) { id, limitMap, ext, extState ->
+        Triple(id, limitMap[id] ?: defaultLimit, if (ext != null) extState else null)
+    }
+        .flatMapLatest { (id, limit, extState) ->
+            if (extState != null) {
+                flowOf(extState)
+            } else if (id == null) {
+                flowOf(ChatMessagesState(null, emptyList(), loaded = false))
+            } else {
+                agentMessageDao.getMessagesBySessionPaged(id, limit).map { list ->
+                    ChatMessagesState(
+                        sessionId = id,
+                        messages = list.asSequence()
+                            .filterNot {
+                                it.role == MessageRole.ASSISTANT.name &&
+                                    !it.content.hasVisibleContent() &&
+                                    it.reasoning.isNullOrEmpty()
+                            }
+                            .map { entity -> entity.toUIMessage() }
+                            .toList(),
+                        loaded = true,
+                        hasMore = list.size >= limit,
+                        isLoadingMore = false,
+                        limit = limit
+                    )
+                }.flowOn(Dispatchers.Default)
+                    .onEach { loadedMessageLimits[id] = limit }
+            }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, ChatMessagesState(null, emptyList(), loaded = false))
 
@@ -1278,6 +1437,10 @@ class AIAgentViewModel @Inject constructor(
     ) { id, assistants ->
         if (id == null) null else assistants[id]
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    fun acknowledgeRenderedAssistant(sessionId: String, messageId: String) {
+        agentRunManager.acknowledgeRenderedAssistant(sessionId, messageId)
+    }
 
     val retryState: StateFlow<RetryState?> = combine(_currentSessionId, agentRunManager.retryStates) { id, states ->
         if (id == null) null else states[id]
@@ -1361,9 +1524,6 @@ class AIAgentViewModel @Inject constructor(
         /** 写文件会连珠触发多个 inotify 事件，合并后再重读目录。 */
         const val BROWSE_DEBOUNCE_MS = 300L
 
-        /** 会话目标文本长度上限，避免 system 提示词过长。 */
-        const val MAX_GOAL_CHARS = 2000
-
         /** 当前容器在容器内的根路径，对应宿主上的 rootfs 目录（随当前 profile 变化）。 */
         const val CONTAINER_FS_ROOT = "/"
 
@@ -1423,6 +1583,12 @@ class AIAgentViewModel @Inject constructor(
         viewModelScope.launch {
             _currentWorkspace.collectLatest { path ->
                 if (path.isBlank()) return@collectLatest
+                _activeExternalSession.value = null
+                externalLoadJob?.cancel()
+                val pending = pendingFollowSession?.takeIf { it.first == path }
+                if (pending != null) {
+                    pendingFollowSession = null
+                }
                 val recent = sessionUseCase.getMostRecentSessionOfWorkspace(path)
                 // Activity 被回收重建时，若原会话仍在运行，优先回到它，而不是跳去新会话。
                 val saved = sessionSelectionStore.load()
@@ -1431,16 +1597,18 @@ class AIAgentViewModel @Inject constructor(
                 }
                 val runningSaved = savedId?.takeIf { agentRunManager.isSessionRunning(it) }
                 // 立即确定并设置当前会话，确保首帧 UI 秒开、侧边栏立即出现新会话，彻底消除转圈卡顿。
+                // 若存在从会话管理页切过来的目标会话且已落在该工作区，优先直接选中它；
                 // 「打开最近会话」有历史就直接进最近那个（按 updatedAt，不受置顶影响）；
                 // 「新开会话」复用还没发过消息的空会话（避免每次启动都堆一个空会话），其余情况新建。
                 val targetId = when {
+                    pending != null && sessionUseCase.getSessionById(pending.second)?.workspacePath == path -> pending.second
                     runningSaved != null -> runningSaved
                     recent == null -> createAndUpsertSession(path)
                     generalSettingsRepository.startupSessionMode() == StartupSessionMode.RECENT_SESSION -> savedId ?: recent.id
                     sessionUseCase.isSessionEmpty(recent.id) -> recent.id
                     else -> createAndUpsertSession(path)
                 }
-                _currentSessionId.value = targetId
+                updateSelectedSessionId(targetId)
 
                 // 异步回收多余的空会话（保留当前 targetId），在后台执行，不卡主线程与首帧渲染。
                 if (recent != null) {
@@ -1455,7 +1623,9 @@ class AIAgentViewModel @Inject constructor(
         viewModelScope.launch {
             combine(_currentSessionId, _currentWorkspace) { id, ws -> id to ws }
                 .collect { (id, ws) ->
-                    if (id != null && ws.isNotBlank()) sessionSelectionStore.save(id, ws)
+                    if (id != null && ws.isNotBlank()) {
+                        sessionSelectionStore.save(id, ws)
+                    }
                 }
         }
 
@@ -1471,14 +1641,14 @@ class AIAgentViewModel @Inject constructor(
         }
     }
 
-    /** 消费插件会话请求：发送/停止由运行器处理，切会话/写草稿/删除仍由聊天页执行。 */
+    /** 消费来自运行器/外部的会话 UI 请求：发送/停止由运行器处理，切会话/写草稿/删除仍由聊天页执行。 */
     private suspend fun handleUiRequest(request: AgentChatRequest) {
         when (request) {
             is AgentChatRequest.Select -> selectSession(request.sessionId)
             is AgentChatRequest.SetDraft -> {
                 val target = request.sessionId ?: _currentSessionId.value ?: ensureSession()
                 if (target.isBlank() || sessionUseCase.getSessionById(target) == null) return
-                _currentSessionId.value = target
+                updateSelectedSessionId(target)
                 val next = if (request.append) {
                     val existing = _inputDrafts.value[target].orEmpty()
                     if (existing.isBlank()) request.text else existing.trimEnd() + "\n\n" + request.text
@@ -1512,6 +1682,11 @@ class AIAgentViewModel @Inject constructor(
         persistUserMessage: Boolean = true,
         targetSessionId: String? = null
     ) {
+        val ext = _activeExternalSession.value
+        if (ext != null && (targetSessionId == null || targetSessionId == ext.id)) {
+            sendExternalTurn(ext, request, modelRequest, projectRoot)
+            return
+        }
         agentRunManager.enqueueAgentRequest(
             request = request,
             modelRequest = modelRequest,
@@ -1549,27 +1724,6 @@ class AIAgentViewModel @Inject constructor(
         _currentSessionId.value?.let { agentRunManager.interjectQueuedRequest(it, id) }
     }
 
-    /**
-     * 执行斜杠命令：先把命令文本作为用户消息落库（进入对话上下文），再按类型派发——
-     * 内置命令走本地动作，技能则把其正文作为本轮指令触发 agent 回合。
-     * 执行期间标记为命令占用（防新消息并行执行），结束后接续队列中排队的下一条。
-     */
-    private fun runResolvedCommand(resolved: ResolvedCommand, input: String, sessionId: String) {
-        viewModelScope.launch {
-            agentRunManager.markCommandStarted(sessionId)
-            try {
-                messagePersistenceUseCase.persist(sessionId, MessageRole.USER, input)
-                sessionUseCase.touch(sessionId, messagePersistenceUseCase.nextTimestamp())
-                when (resolved) {
-                    is ResolvedCommand.Action -> resolved.handler.execute(this@AIAgentViewModel, resolved.args)
-                    is ResolvedCommand.SkillCommand -> runSkill(resolved.skill, resolved.args)
-                }
-            } finally {
-                agentRunManager.onCommandFinished(sessionId)
-            }
-        }
-    }
-
     fun resolveToolPermission(id: String, choice: PermissionChoice) {
         toolPermissionManager.resolve(id, choice)
     }
@@ -1578,10 +1732,11 @@ class AIAgentViewModel @Inject constructor(
         askUserQuestionManager.resolve(id, answer)
     }
 
-    /** 停止当前工作区所有正在运行的 AI 会话并关闭所有终端标签（切换工作区前调用）。 */
+    /** 停止当前工作区所有正在运行的 AI 会话并关闭所有终端标签（切换工作区/后端前调用）。 */
     fun stopAllAndCloseTerminal() {
         stopAllAgents()
         terminalSessionManager.tabs.value.map { it.id }.forEach { terminalSessionManager.closeTab(it) }
+        terminalSessionProvider.listTabs().forEach { terminalSessionProvider.closeTab(it.id) }
     }
 
     /** 停止当前工作区所有正在运行的 AI 会话（切换工作区前调用）。 */
@@ -1617,10 +1772,13 @@ class AIAgentViewModel @Inject constructor(
         agentRunManager.clearSessionRuntimeState(sessionId)
         _inputDrafts.value = _inputDrafts.value - sessionId
         draftPrefs.edit().remove(sessionId).apply()
+        _attachmentDrafts.value = _attachmentDrafts.value - sessionId
+        attachmentDraftPrefs.edit().remove(sessionId).apply()
     }
 
     /** 新建会话；工作区里已有空会话时直接切过去复用（当前会话为空则优先），避免堆积空会话。 */
     fun newSession() = viewModelScope.launch {
+        leaveExternalSessionForLocalSwitch()
         val ws = _currentWorkspace.value
         if (ws.isBlank()) return@launch
         val curId = _currentSessionId.value
@@ -1630,19 +1788,20 @@ class AIAgentViewModel @Inject constructor(
             sessionUseCase.getEmptySessionOfWorkspace(ws)?.id
         }
         if (reusableId != null) {
-            _currentSessionId.value = reusableId
+            updateSelectedSessionId(reusableId)
             return@launch
         }
         // 新会话时异步重连未连接的 MCP server，让 manageMcp 新增的配置真正生效；
         // 不阻塞会话创建——MCP 环境未就绪/超时时不能卡住「新建会话」。
         mcpManager.reconnectUnconnectedAsync()
         val sid = createAndUpsertSession(ws)
-        _currentSessionId.value = sid
+        updateSelectedSessionId(sid)
     }
 
     fun setCurrentSessionId(id: String) {
+        leaveExternalSessionForLocalSwitch()
         if (_currentSessionId.value == id) return
-        _currentSessionId.value = id
+        updateSelectedSessionId(id)
     }
 
     fun setSessionMode(mode: AgentMode) {
@@ -1681,7 +1840,39 @@ class AIAgentViewModel @Inject constructor(
         }
     }
 
+    val workflows: StateFlow<List<WorkflowDescriptor>> = workflowRegistry.workflows
+
+    fun setSessionWorkflow(workflowId: String?) {
+        val normalized = workflowId?.trim()?.takeIf {
+            it.isNotEmpty() && it != AgentWorkflowRegistry.BUILTIN_WORKFLOW_ID
+        }
+        val ext = _activeExternalSession.value
+        if (ext != null) {
+            val updated = ext.copy(workflowId = normalized)
+            _activeExternalSession.value = updated
+            externalSessionStore.updateSummary(ext.sourceKey, ext.sessionId) {
+                it.copy(workflowId = normalized)
+            }
+            return
+        }
+        val sid = _currentSessionId.value ?: return
+        viewModelScope.launch {
+            val existing = sessionUseCase.getSessionById(sid)
+            if (existing?.workflowId == normalized) return@launch
+            sessionUseCase.updateWorkflow(sid, normalized, workflowState = null)
+        }
+    }
+
     fun setSessionProviderModel(providerId: String, model: String) {
+        val ext = _activeExternalSession.value
+        if (ext != null) {
+            val updated = ext.copy(providerId = providerId, model = model)
+            _activeExternalSession.value = updated
+            externalSessionStore.updateSummary(ext.sourceKey, ext.sessionId) {
+                it.copy(providerId = providerId, model = model)
+            }
+            return
+        }
         val sid = _currentSessionId.value ?: return
         viewModelScope.launch {
             sessionUseCase.updateProviderModel(sid, providerId, model)
@@ -1763,166 +1954,25 @@ class AIAgentViewModel @Inject constructor(
     /** /usage —— 以 Markdown 表格输出今日与累计的调用次数、token 用量与预估费用。 */
     override fun showUsage() {
         val sid = _currentSessionId.value ?: return
-        viewModelScope.launch {
-            val now = System.currentTimeMillis()
-            val todayStart = Calendar.getInstance().apply {
-                timeInMillis = now
-                set(Calendar.HOUR_OF_DAY, 0)
-                set(Calendar.MINUTE, 0)
-                set(Calendar.SECOND, 0)
-                set(Calendar.MILLISECOND, 0)
-            }.timeInMillis
-            val today = loadUsageSummary(todayStart)
-            val allTime = loadUsageSummary(0L)
-            val table = buildString {
-                appendLine("| 项目 | 今日 | 累计 |")
-                appendLine("|---|---|---|")
-                appendLine("| 调用次数 | ${today.calls} | ${allTime.calls} |")
-                appendLine("| 输入 tokens | ${formatTokenCount(today.inputTokens)} | ${formatTokenCount(allTime.inputTokens)} |")
-                appendLine("| 输出 tokens | ${formatTokenCount(today.outputTokens)} | ${formatTokenCount(allTime.outputTokens)} |")
-                appendLine("| 缓存命中 tokens | ${formatTokenCount(today.cachedInputTokens)} | ${formatTokenCount(allTime.cachedInputTokens)} |")
-                appendLine("| 预估费用 | ${formatCostUsd(today.costUsd)} | ${formatCostUsd(allTime.costUsd)} |")
-            }
-            sessionUseCase.touch(sid, messagePersistenceUseCase.nextTimestamp())
-            messagePersistenceUseCase.persist(sid, MessageRole.ASSISTANT, table.trimEnd(), isContextExcluded = true)
-        }
+        agentRunManager.showUsage(sid)
     }
 
     /** /goal —— 管理当前会话的持续目标。 */
     override fun setSessionGoal(rawArgs: String) {
         val sid = _currentSessionId.value ?: return
-        viewModelScope.launch {
-            val session = sessionUseCase.getSessionById(sid) ?: return@launch
-            val arg = rawArgs.trim()
-            when {
-                arg.isEmpty() -> persistGoalNotice(sid, goalSummary(session))
-                arg.equals("clear", ignoreCase = true) || arg.equals("off", ignoreCase = true) -> clearGoal(sid)
-                arg.equals("pause", ignoreCase = true) -> pauseGoal(sid)
-                arg.equals("resume", ignoreCase = true) -> resumeGoal(sid)
-                else -> setGoalText(sid, session, arg)
-            }
-        }
+        agentRunManager.setSessionGoal(sid, rawArgs, _currentWorkspace.value)
     }
 
     /** UI：暂停/恢复当前会话的 goal 自主循环。 */
     fun setGoalPaused(paused: Boolean) {
         val sid = _currentSessionId.value ?: return
-        viewModelScope.launch { if (paused) pauseGoal(sid) else resumeGoal(sid) }
+        agentRunManager.setGoalPaused(sid, paused)
     }
 
     /** UI：清除当前会话的 goal。 */
     fun clearGoal() {
         val sid = _currentSessionId.value ?: return
-        viewModelScope.launch { clearGoal(sid) }
-    }
-
-    private fun goalSummary(session: ChatSessionEntity): String {
-        val goal = session.goal?.takeIf { it.isNotBlank() }
-            ?: return "当前会话未设定目标。用 `/goal <目标>` 设定后，AI 会自主循环推进直到达成、受阻或预算耗尽。"
-        val status = session.goalStatus
-            ?.let { runCatching { GoalStatus.valueOf(it) }.getOrNull() }
-            ?: GoalStatus.ACTIVE
-        val statusLabel = when (status) {
-            GoalStatus.ACTIVE -> "进行中"
-            GoalStatus.PAUSED -> "已暂停"
-            GoalStatus.COMPLETED -> "已完成"
-            GoalStatus.BLOCKED -> "受阻"
-            GoalStatus.EXHAUSTED -> "预算耗尽"
-        }
-        return "当前目标（$statusLabel，已续跑 ${session.goalTurnCount} 轮）：\n$goal"
-    }
-
-    private suspend fun setGoalText(sid: String, session: ChatSessionEntity, text: String) {
-        val goalText = text.trim().take(MAX_GOAL_CHARS)
-        if (goalText.isEmpty()) return
-        agentRunManager.resetGoalEmptyTurns(sid)
-        sessionUseCase.setGoal(sid, goalText, session.totalInputTokens, session.totalOutputTokens)
-        // goal 与 PLAN 互斥：自主循环期间 PLAN 退出门禁需人工审查，故设定 goal 时若处于 PLAN 则强制退出。
-        if (runCatching { AgentMode.valueOf(session.mode) }.getOrNull() == AgentMode.PLAN) {
-            sessionUseCase.updateMode(sid, AgentMode.BUILD.name)
-        }
-        persistGoalNotice(
-            sid,
-            "已设定目标：$goalText\nAI 将自主循环推进（工具自动放行、PLAN 停用），直到达成、受阻或预算耗尽。" +
-                "可随时 `/goal pause` / `/goal resume` / `/goal clear`。"
-        )
-        enqueueGoalTurn(sid, session.workspacePath, buildGoalPrompt(goalText, 1))
-    }
-
-    private suspend fun clearGoal(sid: String) {
-        agentRunManager.resetGoalEmptyTurns(sid)
-        sessionUseCase.setGoal(sid, null, 0, 0)
-        persistGoalNotice(sid, "已清除当前目标。")
-    }
-
-    private suspend fun pauseGoal(sid: String) {
-        val session = sessionUseCase.getSessionById(sid) ?: return
-        if (session.goal.isNullOrBlank()) {
-            persistGoalNotice(sid, "当前会话未设定目标。")
-            return
-        }
-        sessionUseCase.updateGoalStatus(sid, GoalStatus.PAUSED)
-        persistGoalNotice(sid, "目标已暂停。用 `/goal resume` 继续。")
-    }
-
-    private suspend fun resumeGoal(sid: String) {
-        val session = sessionUseCase.getSessionById(sid) ?: return
-        val goal = session.goal?.takeIf { it.isNotBlank() }
-        if (goal == null) {
-            persistGoalNotice(sid, "当前会话未设定目标。")
-            return
-        }
-        sessionUseCase.updateGoalStatus(sid, GoalStatus.ACTIVE)
-        persistGoalNotice(sid, "目标已恢复，继续自主循环。")
-        enqueueGoalTurn(sid, session.workspacePath, buildGoalPrompt(goal, session.goalTurnCount + 1))
-    }
-
-    /** 把一轮 goal 续跑/启动请求交给会话：空闲则立即执行，忙则入队（用户消息优先）。不落库。 */
-    private fun enqueueGoalTurn(sessionId: String, workspacePath: String, prompt: String) {
-        enqueueAgentRequest(
-            request = prompt,
-            modelRequest = prompt,
-            projectRoot = workspacePath,
-            isAutoTrigger = true,
-            persistUserMessage = false,
-            targetSessionId = sessionId
-        )
-    }
-
-    private fun buildGoalPrompt(goal: String, turn: Int): String =
-        "【目标自主循环 · 第 $turn 轮】继续推进目标：$goal\n" +
-            "按系统提示中的完成审计与受阻审计规则决定是否调用 goalStatus；未达成则直接继续下一步。"
-
-    private suspend fun persistGoalNotice(sid: String, text: String) {
-        sessionUseCase.touch(sid, messagePersistenceUseCase.nextTimestamp())
-        messagePersistenceUseCase.persist(sid, MessageRole.ASSISTANT, text, isContextExcluded = true)
-    }
-
-    private data class UsageSummary(
-        val calls: Int,
-        val inputTokens: Long,
-        val outputTokens: Long,
-        val cachedInputTokens: Long,
-        val costUsd: Double
-    )
-
-    /** 汇总自 [start] 起的调用次数、token 与预估费用；费用按「渠道 + 模型」分组逐组估算，才取得到自定义单价。 */
-    private suspend fun loadUsageSummary(start: Long): UsageSummary = withContext(Dispatchers.IO) {
-        val summary = llmCallRecordDao.getSummary(start).first()
-        val providerTypes = aiProviderRepository.getAllProviders().first().associate { it.id to it.type }
-        val cost = llmCallRecordDao.getModelProviderCostStats(start).first().sumOf { stat ->
-            val model = stat.model ?: return@sumOf 0.0
-            modelCostCalculator.costUsd(
-                providerId = stat.providerId.orEmpty(),
-                providerType = stat.providerId?.let { providerTypes[it] } ?: ProviderType.OPENAI,
-                model = model,
-                inputTokens = stat.inputTokens,
-                cachedInputTokens = stat.cachedInputTokens,
-                outputTokens = stat.outputTokens,
-                cacheCreationTokens = stat.cacheCreationTokens
-            ) ?: 0.0
-        }
-        UsageSummary(summary.calls, summary.inputTokens, summary.outputTokens, summary.cachedInputTokens, cost)
+        agentRunManager.clearGoal(sid)
     }
 
     /** /compress —— 手动触发当前会话的上下文压缩。 */
@@ -1946,9 +1996,248 @@ class AIAgentViewModel @Inject constructor(
     }
 
     fun selectSession(id: String) {
+        leaveExternalSessionForLocalSwitch()
         if (_currentSessionId.value == id) return
-        _currentSessionId.value = id
+        updateSelectedSessionId(id)
     }
+
+    // region 外部会话源
+
+    fun refreshExternalSessions() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                externalSessionService.syncDeclaredSources()
+                externalSessionService.requestRefresh()
+            }.onFailure {
+                FileLogger.w(TAG, "刷新外部会话列表失败", it)
+            }
+        }
+    }
+
+    fun openExternalSession(session: ExternalSessionSummary) {
+        if (_activeExternalSession.value == null) {
+            localSessionIdBeforeExternal = _currentSessionId.value
+        }
+        externalLoadJob?.cancel()
+        externalNextCursor = null
+        externalRawMessages = emptyList()
+        _activeExternalSession.value = session
+        updateSelectedSessionId(session.id)
+        _externalMessagesState.value = ChatMessagesState(
+            sessionId = session.id,
+            messages = emptyList(),
+            loaded = false,
+            hasMore = false,
+            isLoadingMore = true,
+            limit = 0
+        )
+        externalLoadJob = viewModelScope.launch(Dispatchers.IO) {
+            loadExternalMessagesPage(session, cursor = null, appendOlder = false)
+        }
+    }
+
+    fun deleteExternalSession(session: ExternalSessionSummary) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                agentRunManager.stopAgentSession(session.id)
+                externalSessionService.deleteSession(session.sourceKey, session.sessionId)
+            }.onFailure {
+                FileLogger.w(TAG, "删除外部会话失败: ${session.id}", it)
+            }
+            if (_activeExternalSession.value?.id == session.id) {
+                closeExternalSession()
+            }
+        }
+    }
+
+    fun renameExternalSession(session: ExternalSessionSummary, newTitle: String) {
+        val trimmed = newTitle.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                externalSessionService.renameSession(session.sourceKey, session.sessionId, trimmed)
+            }.onSuccess { updated ->
+                if (updated != null && _activeExternalSession.value?.id == session.id) {
+                    _activeExternalSession.value = updated
+                }
+            }.onFailure {
+                FileLogger.w(TAG, "重命名外部会话失败: ${session.id}", it)
+            }
+        }
+    }
+
+    fun togglePinExternalSession(session: ExternalSessionSummary) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                externalSessionService.pinSession(session.sourceKey, session.sessionId, !session.isPinned)
+            }.onSuccess { updated ->
+                if (updated != null && _activeExternalSession.value?.id == session.id) {
+                    _activeExternalSession.value = updated
+                }
+            }.onFailure {
+                FileLogger.w(TAG, "置顶外部会话失败: ${session.id}", it)
+            }
+        }
+    }
+
+    fun closeExternalSession() {
+        if (_activeExternalSession.value == null) return
+        clearExternalSessionState(restoreLocalSessionId = true)
+    }
+
+    private fun leaveExternalSessionForLocalSwitch() {
+        if (_activeExternalSession.value != null) {
+            clearExternalSessionState(restoreLocalSessionId = false)
+        }
+    }
+
+    private fun clearExternalSessionState(restoreLocalSessionId: Boolean) {
+        externalLoadJob?.cancel()
+        externalLoadJob = null
+        externalNextCursor = null
+        externalRawMessages = emptyList()
+        _activeExternalSession.value = null
+        _externalMessagesState.value = ChatMessagesState(null, emptyList(), loaded = false)
+        if (restoreLocalSessionId) {
+            val restoreId = localSessionIdBeforeExternal
+            localSessionIdBeforeExternal = null
+            updateSelectedSessionId(restoreId)
+        } else {
+            localSessionIdBeforeExternal = null
+        }
+    }
+
+    private fun loadMoreExternalMessages(session: ExternalSessionSummary) {
+        val state = _externalMessagesState.value
+        val cursor = externalNextCursor ?: return
+        if (state.sessionId != session.id || !state.loaded || !state.hasMore || state.isLoadingMore) return
+        _externalMessagesState.value = state.copy(isLoadingMore = true)
+        externalLoadJob = viewModelScope.launch(Dispatchers.IO) {
+            loadExternalMessagesPage(session, cursor = cursor, appendOlder = true)
+        }
+    }
+
+    private suspend fun loadExternalMessagesPage(
+        session: ExternalSessionSummary,
+        cursor: kotlinx.serialization.json.JsonElement?,
+        appendOlder: Boolean
+    ) {
+        try {
+            val page = externalSessionService.readMessages(
+                sourceKey = session.sourceKey,
+                sessionId = session.sessionId,
+                cursor = cursor,
+                maxMessages = 50
+            )
+            if (_activeExternalSession.value?.id != session.id) return
+            page.session?.let { refreshed ->
+                _activeExternalSession.value = refreshed
+            }
+            val mergedRaw = if (appendOlder) page.messages + externalRawMessages else page.messages
+            externalRawMessages = mergedRaw
+            externalNextCursor = page.nextCursor
+            val uiMessages = ExternalSessionUiMapper.toUiMessages(mergedRaw)
+            _externalMessagesState.value = _externalMessagesState.value.copy(
+                sessionId = session.id,
+                messages = uiMessages,
+                loaded = true,
+                hasMore = page.hasMore && page.nextCursor != null,
+                isLoadingMore = false,
+                limit = _externalMessagesState.value.limit + 1
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            FileLogger.w(TAG, "读取外部会话消息失败: ${session.id}", e)
+            if (_activeExternalSession.value?.id != session.id) return
+            _externalMessagesState.value = _externalMessagesState.value.copy(
+                sessionId = session.id,
+                loaded = true,
+                isLoadingMore = false
+            )
+        }
+    }
+
+    private fun sendExternalTurn(
+        session: ExternalSessionSummary,
+        displayRequest: String,
+        modelRequest: String,
+        projectRoot: String
+    ) {
+        val now = System.currentTimeMillis()
+        val userMsgId = "ext-user-$now-${UUID.randomUUID()}"
+        val historySnapshot = ExternalSessionUiMapper.toAgentHistory(externalRawMessages)
+        val userUiMessage = AgentUIMessage(
+            id = userMsgId,
+            role = MessageRole.USER,
+            content = displayRequest,
+            timestamp = now
+        )
+        externalRawMessages = externalRawMessages + ExternalSessionMessage(
+            id = userMsgId,
+            role = "user",
+            blocks = listOf(com.aicode.feature.plugin.domain.session.ExternalMessageBlock.Text(displayRequest)),
+            timestamp = now
+        )
+        if (_activeExternalSession.value?.id == session.id) {
+            _externalMessagesState.value = _externalMessagesState.value.copy(
+                sessionId = session.id,
+                loaded = true,
+                messages = _externalMessagesState.value.messages + userUiMessage
+            )
+        }
+        val workspacePath = projectRoot.ifBlank { session.workspaceId ?: _currentWorkspace.value }
+        agentRunManager.launchExternalTurn(
+            externalSessionId = session.id,
+            workflowId = session.workflowId,
+            request = modelRequest,
+            workspacePath = workspacePath,
+            history = historySnapshot,
+            providerId = session.providerId,
+            model = session.model,
+            onCommittedEvent = { event ->
+                if (_activeExternalSession.value?.id != session.id) return@launchExternalTurn
+                val appended = when (event) {
+                    is AgentEvent.AssistantText -> AgentUIMessage(
+                        id = event.messageId,
+                        role = MessageRole.ASSISTANT,
+                        content = event.content,
+                        timestamp = System.currentTimeMillis(),
+                        reasoning = event.reasoning.takeIf { it.isNotBlank() },
+                        attachments = event.attachments,
+                        inputTokens = event.inputTokens,
+                        outputTokens = event.outputTokens,
+                        cachedInputTokens = event.cachedInputTokens
+                    )
+                    is AgentEvent.ToolCallFinished -> AgentUIMessage(
+                        id = "tool_${event.id}",
+                        role = MessageRole.TOOL,
+                        content = event.result,
+                        timestamp = System.currentTimeMillis(),
+                        toolName = event.toolName,
+                        toolArgs = event.argsPreview.orEmpty(),
+                        isError = event.isError,
+                        attachments = event.attachments
+                    )
+                    else -> null
+                }
+                if (appended != null) {
+                    _externalMessagesState.value = _externalMessagesState.value.copy(
+                        sessionId = session.id,
+                        messages = _externalMessagesState.value.messages.filterNot { it.id == appended.id } + appended
+                    )
+                }
+            },
+            onFinished = {
+                externalSessionStore.clearThinking(session.id)
+                if (_activeExternalSession.value?.id == session.id) {
+                    loadExternalMessagesPage(session, cursor = null, appendOlder = false)
+                }
+            }
+        )
+    }
+
+    // endregion
 
     fun deleteSessions(ids: Set<String>) = viewModelScope.launch {
         if (ids.isEmpty()) return@launch
@@ -1970,13 +2259,13 @@ class AIAgentViewModel @Inject constructor(
         if (_currentSessionId.value in allDeletedIds) {
             val ws = _currentWorkspace.value
             if (ws.isBlank()) {
-                _currentSessionId.value = null
+                updateSelectedSessionId(null)
             } else {
                 val remaining = sessionUseCase.getFirstSessionOfWorkspace(ws)
                 if (remaining != null) {
-                    _currentSessionId.value = remaining.id
+                    updateSelectedSessionId(remaining.id)
                 } else {
-                    _currentSessionId.value = createAndUpsertSession(ws)
+                    updateSelectedSessionId(createAndUpsertSession(ws))
                 }
             }
         }
@@ -1998,13 +2287,13 @@ class AIAgentViewModel @Inject constructor(
         if (_currentSessionId.value in deletedIds) {
             val ws = _currentWorkspace.value
             if (ws.isBlank()) {
-                _currentSessionId.value = null
+                updateSelectedSessionId(null)
             } else {
                 val remaining = sessionUseCase.getFirstSessionOfWorkspace(ws)
                 if (remaining != null) {
-                    _currentSessionId.value = remaining.id
+                    updateSelectedSessionId(remaining.id)
                 } else {
-                    _currentSessionId.value = createAndUpsertSession(ws)
+                    updateSelectedSessionId(createAndUpsertSession(ws))
                 }
             }
         }
@@ -2114,7 +2403,7 @@ class AIAgentViewModel @Inject constructor(
         val ws = _currentWorkspace.value
         if (ws.isBlank()) return ""
         val id = sessionUseCase.getFirstSessionOfWorkspace(ws)?.id ?: createAndUpsertSession(ws)
-        _currentSessionId.value = id
+        updateSelectedSessionId(id)
         return id
     }
 

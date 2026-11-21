@@ -1,6 +1,5 @@
 package com.aicode.feature.agent.presentation.component
 
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.content.Intent
@@ -56,8 +55,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ProgressIndicatorDefaults
 import com.aicode.core.ui.AdaptiveModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -68,10 +67,8 @@ import com.aicode.core.ui.dialogTextFieldColors
 import com.aicode.feature.onboarding.domain.OnboardingStep
 import com.aicode.feature.onboarding.presentation.onboardingTarget
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.listSaver
@@ -94,11 +91,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.FloatingSelectionBar
 import com.aicode.core.ui.SegmentedTabs
+import com.aicode.core.ui.SelectionActionDangerButton
 import com.aicode.core.ui.rememberImeBottomInset
+import com.aicode.core.ui.rememberSaveableListSelectionState
 import com.aicode.feature.settings.presentation.component.ModelSearchField
 import com.aicode.feature.settings.presentation.component.CollapsibleGroupHeader
 import com.aicode.feature.settings.presentation.component.SettingsDivider
@@ -107,7 +108,10 @@ import com.aicode.feature.settings.presentation.component.SettingsGroupHeader
 import com.aicode.feature.settings.presentation.component.SettingsRow
 import com.aicode.feature.settings.presentation.component.settingsPageBackground
 import com.aicode.feature.agent.domain.model.ChatSession
+import com.aicode.feature.agent.presentation.ExternalSessionUiMapper
 import com.aicode.feature.agent.presentation.AgentUIState
+import com.aicode.feature.plugin.domain.session.ExternalSessionGroup
+import com.aicode.feature.plugin.domain.session.ExternalSessionSummary
 import com.aicode.feature.agent.presentation.ChatSearchHit
 import com.aicode.feature.agent.presentation.ChatSearchState
 import com.aicode.feature.agent.presentation.BrowseClipboard
@@ -153,6 +157,24 @@ import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
 
+@Composable
+private fun DrawerProgressIndicator(
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.primary,
+    strokeWidth: Dp = ProgressIndicatorDefaults.CircularStrokeWidth
+) {
+    if (chatAnimationsEnabled()) {
+        CircularProgressIndicator(modifier = modifier, color = color, strokeWidth = strokeWidth)
+    } else {
+        CircularProgressIndicator(
+            progress = { 0.75f },
+            modifier = modifier,
+            color = color,
+            strokeWidth = strokeWidth
+        )
+    }
+}
+
 /**
  * 侧边栏内容：顶部 Tab 切换「会话」/「文件」，底部「设置」入口卡片。
  * Tab0 为根会话列表，带子代理的会话行可就地展开；Tab1 为当前工作区的文件树。
@@ -161,6 +183,12 @@ import kotlinx.coroutines.delay
 @Composable
 fun ChatDrawerContent(
     sessions: List<ChatSession>,
+    externalSessionGroups: List<ExternalSessionGroup> = emptyList(),
+    currentExternalSessionId: String? = null,
+    onSelectExternalSession: (ExternalSessionSummary) -> Unit = {},
+    onDeleteExternalSession: (ExternalSessionSummary) -> Unit = {},
+    onRenameExternalSession: (ExternalSessionSummary, String) -> Unit = { _, _ -> },
+    onTogglePinExternalSession: (ExternalSessionSummary) -> Unit = {},
     currentSessionId: String?,
     agentStates: Map<String, AgentUIState>,
     awaitingPermissionSessionIds: Set<String> = emptySet(),
@@ -214,18 +242,31 @@ fun ChatDrawerContent(
     // tab 与展开状态进 saveable：大屏下侧栏收起后整棵子树会离开组合（见 MainActivity 的
     // SaveableStateProvider），用 remember 存会让每次回到聊天页都重置回「会话」页。
     var selectedTab by rememberSaveable { mutableStateOf(0) }
-    var isSelectionMode by rememberSaveable { mutableStateOf(false) }
-    val selectedSessionIds = remember { mutableStateListOf<String>() }
+    val selection = rememberSaveableListSelectionState()
     var showBatchDeleteConfirm by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<ChatSession?>(null) }
     var pendingRename by remember { mutableStateOf<ChatSession?>(null) }
     var menuSession by remember { mutableStateOf<ChatSession?>(null) }
+    var pendingExternalDelete by remember { mutableStateOf<ExternalSessionSummary?>(null) }
+    var pendingExternalRename by remember { mutableStateOf<ExternalSessionSummary?>(null) }
+    var menuExternalSession by remember { mutableStateOf<ExternalSessionSummary?>(null) }
     var showAllPlugins by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
-    BackHandler(enabled = isSelectionMode) {
-        isSelectionMode = false
-        selectedSessionIds.clear()
+    val allSessionIds: List<String> = remember(sessions, subSessionsByParent) {
+        buildList {
+            sessions.forEach { s ->
+                add(s.id)
+                subSessionsByParent[s.id]?.forEach { sub -> add(sub.id) }
+            }
+        }
+    }
+    LaunchedEffect(allSessionIds, selection.isActive) {
+        selection.retainOnly(allSessionIds.toSet())
+        if (selection.isActive && allSessionIds.isEmpty()) selection.exit()
+    }
+    LaunchedEffect(selectedTab) {
+        if (selectedTab != 0 && selection.isActive) selection.exit()
     }
 
     // 点击会话/重开侧边栏保持原滚动位置；仅当同一会话的最后回复时间变化（发消息/收到回复）时滚回顶部。
@@ -273,86 +314,7 @@ fun ChatDrawerContent(
         )
 
         // 聊天记录搜索框放在 Tab 栏正下方，仅「会话」Tab 可见。
-        if (selectedTab == 0 && isSelectionMode) {
-            Surface(
-                color = MaterialTheme.semanticColors.cardSurface,
-                shape = RoundedCornerShape(Radius.mdLarge),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                CompositionLocalProvider(
-                    LocalMinimumInteractiveComponentSize provides 0.dp
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .padding(horizontal = Spacing.md),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(
-                            onClick = {
-                                isSelectionMode = false
-                                selectedSessionIds.clear()
-                            },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = FeatherIcons.X,
-                                contentDescription = stringResource(R.string.common_cancel),
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                        Spacer(Modifier.width(Spacing.sm))
-                        Text(
-                            text = stringResource(R.string.chat_sessions_selected_count, selectedSessionIds.size),
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f)
-                        )
-                        val allSessionIds: List<String> = remember(sessions, subSessionsByParent) {
-                            val ids = mutableListOf<String>()
-                            sessions.forEach { s ->
-                                ids.add(s.id)
-                                subSessionsByParent[s.id]?.forEach { sub -> ids.add(sub.id) }
-                            }
-                            ids
-                        }
-                        val allSelected = allSessionIds.isNotEmpty() && selectedSessionIds.size == allSessionIds.size
-                        TextButton(
-                            onClick = {
-                                if (allSelected) {
-                                    selectedSessionIds.clear()
-                                } else {
-                                    selectedSessionIds.clear()
-                                    selectedSessionIds.addAll(allSessionIds)
-                                }
-                            },
-                            contentPadding = PaddingValues(horizontal = Spacing.sm, vertical = 0.dp),
-                            modifier = Modifier.height(32.dp)
-                        ) {
-                            Text(
-                                text = stringResource(if (allSelected) R.string.provider_models_deselect_all else R.string.provider_models_select_all),
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                        }
-                        Spacer(Modifier.width(Spacing.xs))
-                        IconButton(
-                            onClick = { showBatchDeleteConfirm = true },
-                            enabled = selectedSessionIds.isNotEmpty(),
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = FeatherIcons.Trash2,
-                                contentDescription = stringResource(R.string.chat_batch_delete_title),
-                                modifier = Modifier.size(18.dp),
-                                tint = if (selectedSessionIds.isNotEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
-                            )
-                        }
-                    }
-                }
-            }
-        } else if (selectedTab == 0) {
+        if (selectedTab == 0) {
             ChatSearchField(
                 query = searchQuery,
                 onQueryChange = onSearchQueryChange,
@@ -364,6 +326,10 @@ fun ChatDrawerContent(
             when (selectedTab) {
                 0 -> SessionListTab(
                     sessions = sessions,
+                    externalSessionGroups = externalSessionGroups,
+                    currentExternalSessionId = currentExternalSessionId,
+                    onSelectExternalSession = onSelectExternalSession,
+                    onLongClickExternalSession = { menuExternalSession = it },
                     currentSessionId = currentSessionId,
                     agentStates = agentStates,
                     awaitingPermissionSessionIds = awaitingPermissionSessionIds,
@@ -371,15 +337,9 @@ fun ChatDrawerContent(
                     listState = listState,
                     searchQuery = searchQuery,
                     searchState = searchState,
-                    selectionMode = isSelectionMode,
-                    selectedSessionIds = selectedSessionIds,
-                    onToggleSelectSession = { s ->
-                        if (s.id in selectedSessionIds) {
-                            selectedSessionIds.remove(s.id)
-                        } else {
-                            selectedSessionIds.add(s.id)
-                        }
-                    },
+                    selectionMode = selection.isActive,
+                    selectedSessionIds = selection.selectedKeys,
+                    onToggleSelectSession = { s -> selection.toggle(s.id) },
                     onSelect = onSelect,
                     onLongClick = { menuSession = it },
                     onOpenSearchHit = onOpenSearchHit
@@ -409,6 +369,30 @@ fun ChatDrawerContent(
                     filePluginEntries = filePluginEntries,
                     pluginLanguageTag = pluginLanguageTag,
                     onFilePluginEntry = onFilePluginEntry
+                )
+            }
+
+            val allSelected = allSessionIds.isNotEmpty() && selection.selectedCount == allSessionIds.size
+            FloatingSelectionBar(
+                visible = selectedTab == 0 && selection.isActive,
+                selectedCount = selection.selectedCount,
+                allSelected = allSelected,
+                onToggleSelectAll = {
+                    if (allSelected) selection.clear() else selection.replaceAll(allSessionIds)
+                },
+                onExit = { selection.exit() },
+                showCloseButton = true,
+                selectedCountText = stringResource(R.string.chat_sessions_selected_count, selection.selectedCount),
+                selectAllText = stringResource(
+                    if (allSelected) R.string.provider_models_deselect_all else R.string.provider_models_select_all
+                ),
+                outerPadding = PaddingValues(bottom = Spacing.xs),
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                SelectionActionDangerButton(
+                    text = stringResource(R.string.common_batch_delete),
+                    enabled = selection.selectedCount > 0,
+                    onClick = { showBatchDeleteConfirm = true }
                 )
             }
         }
@@ -545,9 +529,7 @@ fun ChatDrawerContent(
             },
             onBatchSelect = {
                 menuSession = null
-                isSelectionMode = true
-                selectedSessionIds.clear()
-                selectedSessionIds.add(session.id)
+                selection.enterWith(session.id)
             },
             onDelete = {
                 menuSession = null
@@ -565,14 +547,13 @@ fun ChatDrawerContent(
             onDismissRequest = { showBatchDeleteConfirm = false },
             title = { Text(stringResource(R.string.chat_batch_delete_title)) },
             text = {
-                Text(stringResource(R.string.chat_batch_delete_confirm, selectedSessionIds.size))
+                Text(stringResource(R.string.chat_batch_delete_confirm, selection.selectedCount))
             },
             confirmButton = {
                 TextButton(onClick = {
                     showBatchDeleteConfirm = false
-                    val toDelete = selectedSessionIds.toSet()
-                    selectedSessionIds.clear()
-                    isSelectionMode = false
+                    val toDelete = selection.selectedKeys.toSet()
+                    selection.exit()
                     if (onDeleteSessions != null) {
                         onDeleteSessions(toDelete)
                     } else {
@@ -588,6 +569,78 @@ fun ChatDrawerContent(
                 TextButton(onClick = { showBatchDeleteConfirm = false }) {
                     Text(stringResource(R.string.common_cancel))
                 }
+            }
+        )
+    }
+
+    menuExternalSession?.let { ext ->
+        SessionActionSheet(
+            session = ExternalSessionUiMapper.toChatSession(ext),
+            onTogglePin = {
+                menuExternalSession = null
+                onTogglePinExternalSession(ext)
+            },
+            onRename = {
+                menuExternalSession = null
+                pendingExternalRename = ext
+            },
+            onExport = {},
+            onBatchSelect = {},
+            onDelete = {
+                menuExternalSession = null
+                pendingExternalDelete = ext
+            },
+            pluginEntries = emptyList(),
+            pluginLanguageTag = pluginLanguageTag,
+            onPluginEntry = {},
+            onDismiss = { menuExternalSession = null },
+            isExternal = true
+        )
+    }
+
+    pendingExternalDelete?.let { ext ->
+        AlertDialog(
+            onDismissRequest = { pendingExternalDelete = null },
+            title = { Text(stringResource(R.string.chat_delete_session)) },
+            text = { Text(stringResource(R.string.chat_delete_session_confirm, ext.title)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteExternalSession(ext)
+                    pendingExternalDelete = null
+                }) { Text(stringResource(R.string.common_delete), color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingExternalDelete = null }) { Text(stringResource(R.string.common_cancel)) }
+            }
+        )
+    }
+
+    pendingExternalRename?.let { ext ->
+        var renameText by remember(ext.id) { mutableStateOf(ext.title) }
+        AlertDialog(
+            onDismissRequest = { pendingExternalRename = null },
+            title = { Text(stringResource(R.string.chat_rename_session)) },
+            text = {
+                AppTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    singleLine = true,
+                    label = stringResource(R.string.chat_session_name),
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = dialogTextFieldColors()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onRenameExternalSession(ext, renameText)
+                        pendingExternalRename = null
+                    },
+                    enabled = renameText.isNotBlank() && renameText != ext.title
+                ) { Text(stringResource(R.string.common_rename)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingExternalRename = null }) { Text(stringResource(R.string.common_cancel)) }
             }
         )
     }
@@ -629,6 +682,10 @@ fun ChatDrawerContent(
 @Composable
 private fun SessionListTab(
     sessions: List<ChatSession>,
+    externalSessionGroups: List<ExternalSessionGroup>,
+    currentExternalSessionId: String?,
+    onSelectExternalSession: (ExternalSessionSummary) -> Unit,
+    onLongClickExternalSession: (ExternalSessionSummary) -> Unit,
     currentSessionId: String?,
     agentStates: Map<String, AgentUIState>,
     awaitingPermissionSessionIds: Set<String>,
@@ -646,6 +703,10 @@ private fun SessionListTab(
     if (searchQuery.isBlank()) {
         SessionListContent(
             sessions = sessions,
+            externalSessionGroups = externalSessionGroups,
+            currentExternalSessionId = currentExternalSessionId,
+            onSelectExternalSession = onSelectExternalSession,
+            onLongClickExternalSession = onLongClickExternalSession,
             currentSessionId = currentSessionId,
             agentStates = agentStates,
             awaitingPermissionSessionIds = awaitingPermissionSessionIds,
@@ -662,10 +723,16 @@ private fun SessionListTab(
     }
 }
 
-/** Tab0 的会话列表本体（按最后回复时间分组）。带子代理的会话行尾有展开箭头，展开后在其下方缩进列出子代理。 */
+/**
+ * Tab0 的会话列表本体：置顶与时间分组；所有分组头都可以点击折叠/展开。
+ */
 @Composable
 private fun SessionListContent(
     sessions: List<ChatSession>,
+    externalSessionGroups: List<ExternalSessionGroup>,
+    currentExternalSessionId: String?,
+    onSelectExternalSession: (ExternalSessionSummary) -> Unit,
+    onLongClickExternalSession: (ExternalSessionSummary) -> Unit,
     currentSessionId: String?,
     agentStates: Map<String, AgentUIState>,
     awaitingPermissionSessionIds: Set<String>,
@@ -677,7 +744,7 @@ private fun SessionListContent(
     onSelect: (ChatSession) -> Unit,
     onLongClick: (ChatSession) -> Unit
 ) {
-    if (sessions.isEmpty()) {
+    if (sessions.isEmpty() && externalSessionGroups.isEmpty()) {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
@@ -697,6 +764,12 @@ private fun SessionListContent(
             restore = { it.toSet() }
         )
     ) { mutableStateOf(emptySet<String>()) }
+    var collapsedGroupKeys by rememberSaveable(
+        stateSaver = listSaver<Set<String>, String>(
+            save = { it.toList() },
+            restore = { it.toSet() }
+        )
+    ) { mutableStateOf(emptySet<String>()) }
     val groups = remember(sessions) {
         val now = System.currentTimeMillis()
         val pinned = sessions.filter { it.isPinned }
@@ -706,104 +779,160 @@ private fun SessionListContent(
             addAll(buildSessionGroups(unpinned, now))
         }
     }
+
+    fun toggleGroup(key: String) {
+        collapsedGroupKeys = if (key in collapsedGroupKeys) {
+            collapsedGroupKeys - key
+        } else {
+            collapsedGroupKeys + key
+        }
+    }
+
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = if (selectionMode) 80.dp else 0.dp)
     ) {
-        // 每个分组占一个 item、组内 forEach 全量渲染会让 LazyColumn 失去惰性：
-        // 「最近 30 天」这种分组有上百个会话时，一个 item 就要组合上百行。分组头与会话各自成 item。
-        groups.forEach { group ->
-            item(key = "group-${group.groupKey}", contentType = "group-header") {
-                SettingsGroupHeader(
-                    text = sessionGroupLabel(group.groupKey, group.sessions.first())
+        externalSessionGroups.forEach { extGroup ->
+            val groupKey = "external:${extGroup.pluginId}"
+            val expanded = groupKey !in collapsedGroupKeys
+            item(key = "group-$groupKey", contentType = "group-header") {
+                CollapsibleSessionGroupHeader(
+                    text = extGroup.pluginName.ifBlank { extGroup.pluginId },
+                    count = extGroup.sessions.size,
+                    expanded = expanded,
+                    loading = extGroup.loading,
+                    onClick = { toggleGroup(groupKey) }
                 )
             }
-            itemsIndexed(
-                items = group.sessions,
-                key = { _, session -> session.id },
-                contentType = { _, _ -> "session" }
-            ) { index, session ->
-                Column {
-                    if (index > 0) {
-                        if (group.groupKey == "pinned") Spacer(Modifier.height(Spacing.sm)) else SettingsDivider()
+            if (expanded) {
+                itemsIndexed(
+                    items = extGroup.sessions,
+                    key = { _, extSession -> "ext-${extSession.id}" },
+                    contentType = { _, _ -> "session" }
+                ) { index, extSession ->
+                    Column {
+                        if (index > 0) SettingsDivider()
+                        val extState = agentStates[extSession.id]
+                        val isExecuting = extSession.running ||
+                            extState is AgentUIState.Loading ||
+                            extState is AgentUIState.Streaming
+                        ChatSessionRow(
+                            session = ExternalSessionUiMapper.toChatSession(extSession),
+                            selected = !selectionMode && currentExternalSessionId == extSession.id,
+                            isExecuting = isExecuting,
+                            awaitingPermission = extSession.id in awaitingPermissionSessionIds,
+                            pinned = extSession.isPinned,
+                            selectionMode = false,
+                            checked = false,
+                            onCheckedChange = {},
+                            onClick = { onSelectExternalSession(extSession) },
+                            onLongClick = { onLongClickExternalSession(extSession) }
+                        )
                     }
-                    val state = agentStates[session.id]
-                    val isExecuting = state is AgentUIState.Loading || state is AgentUIState.Streaming
-                    val subSessions = subSessionsByParent[session.id].orEmpty()
-                    val expanded = session.id in expandedIds
-                    ChatSessionRow(
-                        session = session,
-                        selected = if (selectionMode) false else session.id == currentSessionId,
-                        isExecuting = isExecuting,
-                        awaitingPermission = session.id in awaitingPermissionSessionIds,
-                        pinned = session.isPinned,
-                        selectionMode = selectionMode,
-                        checked = session.id in selectedSessionIds,
-                        onCheckedChange = { onToggleSelectSession(session) },
-                        onClick = {
-                            if (selectionMode) {
-                                onToggleSelectSession(session)
-                            } else {
-                                onSelect(session)
-                            }
-                        },
-                        onLongClick = {
-                            if (selectionMode) {
-                                onToggleSelectSession(session)
-                            } else {
-                                onLongClick(session)
-                            }
-                        },
-                        trailing = if (subSessions.isEmpty()) null else {
-                            {
-                                SubAgentExpandToggle(
-                                    expanded = expanded,
-                                    count = subSessions.size,
-                                    onToggle = {
-                                        expandedIds = if (expanded) {
-                                            expandedIds - session.id
-                                        } else {
-                                            expandedIds + session.id
-                                        }
-                                    }
-                                )
-                            }
+                }
+            }
+        }
+        // 本机会话：每个分组占一个 item、组内 forEach 全量渲染会让 LazyColumn 失去惰性：
+        // 「最近 30 天」这种分组有上百个会话时，一个 item 就要组合上百行。分组头与会话各自成 item。
+        groups.forEach { group ->
+            val expanded = group.groupKey !in collapsedGroupKeys
+            item(key = "group-${group.groupKey}", contentType = "group-header") {
+                CollapsibleSessionGroupHeader(
+                    text = sessionGroupLabel(group.groupKey, group.sessions.first()),
+                    count = group.sessions.size,
+                    expanded = expanded,
+                    onClick = { toggleGroup(group.groupKey) }
+                )
+            }
+            if (expanded) {
+                itemsIndexed(
+                    items = group.sessions,
+                    key = { _, session -> session.id },
+                    contentType = { _, _ -> "session" }
+                ) { index, session ->
+                    Column {
+                        if (index > 0) {
+                            if (group.groupKey == "pinned") Spacer(Modifier.height(Spacing.sm)) else SettingsDivider()
                         }
-                    )
-                    AnimatedVisibility(
-                        visible = expanded,
-                        enter = expandVertically(expandFrom = androidx.compose.ui.Alignment.Top) + fadeIn(),
-                        exit = shrinkVertically(shrinkTowards = androidx.compose.ui.Alignment.Top) + fadeOut()
-                    ) {
-                        Column {
-                            subSessions.forEach { sub ->
-                                val subState = agentStates[sub.id]
-                                Row(modifier = Modifier.padding(start = Spacing.lg)) {
-                                    ChatSessionRow(
-                                        session = sub,
-                                        selected = if (selectionMode) false else sub.id == currentSessionId,
-                                        isExecuting = subState is AgentUIState.Loading ||
-                                            subState is AgentUIState.Streaming,
-                                        awaitingPermission = sub.id in awaitingPermissionSessionIds,
-                                        pinned = false,
-                                        selectionMode = selectionMode,
-                                        checked = sub.id in selectedSessionIds,
-                                        onCheckedChange = { onToggleSelectSession(sub) },
-                                        onClick = {
-                                            if (selectionMode) {
-                                                onToggleSelectSession(sub)
+                        val state = agentStates[session.id]
+                        val isExecuting = state is AgentUIState.Loading || state is AgentUIState.Streaming
+                        val subSessions = subSessionsByParent[session.id].orEmpty()
+                        val expanded = session.id in expandedIds
+                        ChatSessionRow(
+                            session = session,
+                            selected = !selectionMode && currentExternalSessionId == null && session.id == currentSessionId,
+                            isExecuting = isExecuting,
+                            awaitingPermission = session.id in awaitingPermissionSessionIds,
+                            pinned = session.isPinned,
+                            selectionMode = selectionMode,
+                            checked = session.id in selectedSessionIds,
+                            onCheckedChange = { onToggleSelectSession(session) },
+                            onClick = {
+                                if (selectionMode) {
+                                    onToggleSelectSession(session)
+                                } else {
+                                    onSelect(session)
+                                }
+                            },
+                            onLongClick = {
+                                if (selectionMode) {
+                                    onToggleSelectSession(session)
+                                } else {
+                                    onLongClick(session)
+                                }
+                            },
+                            trailing = if (subSessions.isEmpty()) null else {
+                                {
+                                    SubAgentExpandToggle(
+                                        expanded = expanded,
+                                        count = subSessions.size,
+                                        onToggle = {
+                                            expandedIds = if (expanded) {
+                                                expandedIds - session.id
                                             } else {
-                                                onSelect(sub)
-                                            }
-                                        },
-                                        onLongClick = {
-                                            if (selectionMode) {
-                                                onToggleSelectSession(sub)
-                                            } else {
-                                                onLongClick(sub)
+                                                expandedIds + session.id
                                             }
                                         }
                                     )
+                                }
+                            }
+                        )
+                        AnimatedVisibility(
+                            visible = expanded,
+                            enter = expandVertically(expandFrom = androidx.compose.ui.Alignment.Top) + fadeIn(),
+                            exit = shrinkVertically(shrinkTowards = androidx.compose.ui.Alignment.Top) + fadeOut()
+                        ) {
+                            Column {
+                                subSessions.forEach { sub ->
+                                    val subState = agentStates[sub.id]
+                                    Row(modifier = Modifier.padding(start = Spacing.lg)) {
+                                        ChatSessionRow(
+                                            session = sub,
+                                            selected = !selectionMode && currentExternalSessionId == null && sub.id == currentSessionId,
+                                            isExecuting = subState is AgentUIState.Loading ||
+                                                subState is AgentUIState.Streaming,
+                                            awaitingPermission = sub.id in awaitingPermissionSessionIds,
+                                            pinned = false,
+                                            selectionMode = selectionMode,
+                                            checked = sub.id in selectedSessionIds,
+                                            onCheckedChange = { onToggleSelectSession(sub) },
+                                            onClick = {
+                                                if (selectionMode) {
+                                                    onToggleSelectSession(sub)
+                                                } else {
+                                                    onSelect(sub)
+                                                }
+                                            },
+                                            onLongClick = {
+                                                if (selectionMode) {
+                                                    onToggleSelectSession(sub)
+                                                } else {
+                                                    onLongClick(sub)
+                                                }
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -811,6 +940,52 @@ private fun SessionListContent(
                 }
             }
         }
+    }
+}
+
+/** 可点击折叠的分组头：标题 + 数量/加载转圈 + 展开箭头。 */
+@Composable
+private fun CollapsibleSessionGroupHeader(
+    text: String,
+    count: Int,
+    expanded: Boolean,
+    onClick: () -> Unit,
+    loading: Boolean = false
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = Spacing.md, end = Spacing.lg, top = Spacing.lg, bottom = Spacing.sm),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge.copy(fontSize = 13.sp),
+            fontWeight = FontWeight.Normal,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        if (loading) {
+            DrawerProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                strokeWidth = 1.5.dp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+        } else {
+            Text(
+                text = count.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+        }
+        Spacer(Modifier.width(Spacing.xs))
+        Icon(
+            imageVector = if (expanded) FeatherIcons.ChevronDown else FeatherIcons.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(14.dp)
+        )
     }
 }
 
@@ -850,7 +1025,7 @@ private fun ChatSearchResults(
     when {
         state.hits.isEmpty() && state.loading -> {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(
+                DrawerProgressIndicator(
                     modifier = Modifier.size(24.dp),
                     strokeWidth = 2.dp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1061,7 +1236,7 @@ private fun FileBrowserTab(
                 )
             }
             if (fileOpPaths.isNotEmpty()) {
-                CircularProgressIndicator(
+                DrawerProgressIndicator(
                     modifier = Modifier.padding(end = Spacing.xs).size(16.dp),
                     strokeWidth = 2.dp,
                     color = MaterialTheme.colorScheme.primary
@@ -1097,7 +1272,7 @@ private fun FileBrowserTab(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    DrawerProgressIndicator(modifier = Modifier.size(24.dp))
                 }
 
                 is FileBrowseState.Error -> Box(
@@ -1540,7 +1715,7 @@ private fun FileTreeRow(
         Spacer(Modifier.width(Spacing.lg * node.depth))
         if (node.entry.isDirectory) {
             if (showExpanding) {
-                CircularProgressIndicator(
+                DrawerProgressIndicator(
                     modifier = Modifier.size(16.dp),
                     strokeWidth = 2.dp,
                     color = MaterialTheme.colorScheme.primary
@@ -1561,7 +1736,7 @@ private fun FileTreeRow(
         }
         Spacer(Modifier.width(Spacing.xs))
         if (busy) {
-            CircularProgressIndicator(
+            DrawerProgressIndicator(
                 modifier = Modifier.size(20.dp),
                 strokeWidth = 2.dp,
                 color = MaterialTheme.colorScheme.primary
@@ -1655,7 +1830,8 @@ private fun SessionActionSheet(
     pluginEntries: List<PluginUiEntry>,
     pluginLanguageTag: String,
     onPluginEntry: (PluginUiEntry) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    isExternal: Boolean = false
 ) {
     val sheetState = rememberModalBottomSheetState()
     AdaptiveModalBottomSheet(
@@ -1696,24 +1872,26 @@ private fun SessionActionSheet(
                     onRename()
                 }
             )
-            SheetActionRow(
-                icon = FeatherIcons.Download,
-                label = stringResource(R.string.chat_export_session),
-                tint = MaterialTheme.colorScheme.onSurface,
-                onClick = {
-                    onDismiss()
-                    onExport()
-                }
-            )
-            SheetActionRow(
-                icon = FeatherIcons.CheckSquare,
-                label = stringResource(R.string.chat_batch_select),
-                tint = MaterialTheme.colorScheme.onSurface,
-                onClick = {
-                    onDismiss()
-                    onBatchSelect()
-                }
-            )
+            if (!isExternal) {
+                SheetActionRow(
+                    icon = FeatherIcons.Download,
+                    label = stringResource(R.string.chat_export_session),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    onClick = {
+                        onDismiss()
+                        onExport()
+                    }
+                )
+                SheetActionRow(
+                    icon = FeatherIcons.CheckSquare,
+                    label = stringResource(R.string.chat_batch_select),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    onClick = {
+                        onDismiss()
+                        onBatchSelect()
+                    }
+                )
+            }
             if (pluginEntries.isNotEmpty()) {
                 Text(
                     text = stringResource(R.string.settings_plugins),

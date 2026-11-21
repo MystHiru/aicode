@@ -42,6 +42,8 @@ object PluginManifestParser {
         ManifestParseResult.Failure(listOf(PluginError(code, detail)))
 
     private val TOP_LEVEL_KEYS = setOf(
+        // 仅给编辑器（JSON Schema）用，宿主不解析其内容。
+        "\$schema",
         "manifestVersion", "id", "name", "version", "publisher", "repository",
         "description", "license", "engines", "runtime", "contributes", "configPage", "icon"
     )
@@ -54,6 +56,22 @@ object PluginManifestParser {
     private val UI_ENTRY_KEYS = setOf("id", "slot", "title", "page", "handler", "confirm", "icon")
     private val WORKSPACE_TOOL_KEYS = setOf("id", "title", "description", "icon", "category", "pageFile")
     private val PROVIDER_KEYS = setOf("id", "name", "description", "format", "baseUrl")
+    private val EXECUTION_BACKEND_KEYS = setOf("id", "title", "description", "capabilities", "handlers")
+    private val EXECUTION_BACKEND_CAPABILITY_KEYS = setOf(
+        "filesystem", "command", "terminal", "fileWatch", "portForward",
+        "isRemoteEnvironment", "workspaceDiscovery", "projectConfigLocation"
+    )
+    private val EXECUTION_BACKEND_HANDLER_KEYS = setOf(
+        "fs", "exec", "execStream", "execHealth", "terminal",
+        "workspaceList", "workspaceCreate", "workspaceDelete", "workspaceSelect"
+    )
+    private val WORKFLOW_KEYS = setOf("id", "title", "description", "capabilities", "handlers")
+    private val WORKFLOW_CAPABILITY_KEYS = setOf("streaming", "tools", "compaction", "titleGeneration")
+    private val WORKFLOW_HANDLER_KEYS = setOf("startTurn", "cancelTurn", "compact", "generateTitle")
+    private val SESSION_KEYS = setOf("id", "title", "description", "handlers")
+    private val SESSION_HANDLER_KEYS = setOf(
+        "refresh", "readMessages", "createSession", "deleteSession", "renameSession", "pinSession"
+    )
     private val SHIZUKU_KEYS = setOf("purpose")
     private val BACKUP_KEYS = setOf("purpose")
     private val MODEL_ACCESS_KEYS = setOf("purpose")
@@ -75,6 +93,9 @@ object PluginManifestParser {
     private const val MAX_REPOSITORY = 300
     private const val MAX_LOCALES = 16
     private const val MAX_IDS_PER_TYPE = 64
+    private const val MAX_EXECUTION_BACKENDS = 32
+    private const val MAX_WORKFLOWS = 32
+    private const val MAX_SESSIONS = 32
     private const val MAX_PROVIDER_URL = 2048
     private const val MAX_SHIZUKU_PURPOSE = 200
     private const val MAX_BACKUP_PURPOSE = 200
@@ -132,7 +153,10 @@ object PluginManifestParser {
 
             val needsRuntime = contributes != null && (
                 contributes.tools.isNotEmpty() || contributes.hooks.isNotEmpty() ||
-                    contributes.uiEntries.any { it.handler != null }
+                    contributes.uiEntries.any { it.handler != null } ||
+                    contributes.executionBackends.isNotEmpty() ||
+                    contributes.workflows.isNotEmpty() ||
+                    contributes.sessions.isNotEmpty()
                 )
             if (needsRuntime && runtime == null) missing("runtime")
             if (errors.isNotEmpty()) return ManifestParseResult.Failure(errors.toList())
@@ -157,6 +181,9 @@ object PluginManifestParser {
                     hooks = contributes.hooks,
                     mcp = contributes.mcp,
                     providers = contributes.providers,
+                    executionBackends = contributes.executionBackends,
+                    workflows = contributes.workflows,
+                    sessions = contributes.sessions,
                     shizuku = contributes.shizuku,
                     overlay = contributes.overlay,
                     backup = contributes.backup,
@@ -396,6 +423,9 @@ object PluginManifestParser {
             val hooks: List<PluginHookRef>,
             val mcp: List<PluginMcpRef>,
             val providers: List<PluginProviderRef>,
+            val executionBackends: List<PluginExecutionBackendRef>,
+            val workflows: List<PluginWorkflowRef>,
+            val sessions: List<PluginExternalSessionRef>,
             val shizuku: PluginShizukuRef?,
             val overlay: PluginOverlayRef?,
             val backup: PluginBackupRef?,
@@ -410,8 +440,9 @@ object PluginManifestParser {
             contributes.keys.filter {
                 it != "skills" && it != "agents" && it != "workspaceTools" && it != "uiEntries" &&
                     it != "tools" && it != "hooks" && it != "mcp" && it != "providers" &&
-                    it != "shizuku" && it != "overlay" && it != "backup" && it != "modelAccess" &&
-                    it != "configPage"
+                    it != "executionBackends" && it != "workflows" && it != "sessions" &&
+                    it != "shizuku" && it != "overlay" &&
+                    it != "backup" && it != "modelAccess" && it != "configPage"
             }.forEach {
                 err(PluginErrorCode.UNSUPPORTED_CONTRIBUTION, it)
                 ok = false
@@ -427,6 +458,12 @@ object PluginManifestParser {
                 ?: run { ok = false; emptyList() }
             val mcp = mcpRefs.map { PluginMcpRef(it.id, it.file) }
             val providers = readProviders(contributes["providers"], "contributes.providers")
+                ?: run { ok = false; emptyList() }
+            val executionBackends = readExecutionBackends(contributes["executionBackends"], "contributes.executionBackends")
+                ?: run { ok = false; emptyList() }
+            val workflows = readWorkflows(contributes["workflows"], "contributes.workflows")
+                ?: run { ok = false; emptyList() }
+            val sessions = readSessions(contributes["sessions"], "contributes.sessions")
                 ?: run { ok = false; emptyList() }
             val shizuku = readShizuku(contributes["shizuku"], "contributes.shizuku")
                 ?: run {
@@ -465,14 +502,16 @@ object PluginManifestParser {
             val configPage = readConfigPage(contributes["configPage"], "contributes.configPage")
             if (ok && skills.isEmpty() && agents.isEmpty() && workspaceTools.isEmpty() && uiEntries.isEmpty() &&
                 tools.isEmpty() && hooks.isEmpty() && mcp.isEmpty() && providers.isEmpty() &&
-                shizuku == null && overlay == null && backup == null && modelAccess == null && configPage == null
+                executionBackends.isEmpty() && workflows.isEmpty() && sessions.isEmpty() &&
+                shizuku == null && overlay == null &&
+                backup == null && modelAccess == null && configPage == null
             ) {
                 invalid("contributes")
                 ok = false
             }
             return if (ok) Contributes(
                 skills, agents, workspaceTools, uiEntries, tools, hooks, mcp, providers,
-                shizuku, overlay, backup, modelAccess, configPage
+                executionBackends, workflows, sessions, shizuku, overlay, backup, modelAccess, configPage
             ) else null
         }
 
@@ -542,6 +581,492 @@ object PluginManifestParser {
                 }
             }
             return result
+        }
+
+        /** 缺省视为空列表；每项声明插件提供的执行后端能力与 handler 映射。 */
+        private fun readExecutionBackends(raw: JsonElement?, path: String): List<PluginExecutionBackendRef>? {
+            if (raw == null) return emptyList()
+            val array = raw as? JsonArray ?: return null.also { invalid(path) }
+            if (array.size > MAX_EXECUTION_BACKENDS) return null.also { invalid(path) }
+            val result = mutableListOf<PluginExecutionBackendRef>()
+            var ok = true
+            array.forEachIndexed { index, element ->
+                val itemPath = "$path[$index]"
+                val item = element as? JsonObject
+                if (item == null) {
+                    invalid(itemPath)
+                    ok = false
+                    return@forEachIndexed
+                }
+                item.keys.filter { it !in EXECUTION_BACKEND_KEYS }.forEach {
+                    err(PluginErrorCode.UNSUPPORTED_FIELD, "$itemPath.$it")
+                    ok = false
+                }
+                val id = item["id"]?.stringOrNull()?.takeIf { LOCAL_ID.matches(it) }
+                val title = item["title"]?.let { parseLocalized(it, "$itemPath.title", MAX_NAME) }
+                val descRaw = item["description"]
+                val description = if (descRaw != null) {
+                    parseLocalized(descRaw, "$itemPath.description", MAX_DESCRIPTION)
+                } else {
+                    LocalizedText.single("")
+                }
+                if (id == null) { invalid("$itemPath.id"); ok = false }
+                if (title == null) { invalid("$itemPath.title"); ok = false }
+                if (description == null) { ok = false }
+
+                val caps = readExecutionBackendCapabilities(item["capabilities"], "$itemPath.capabilities")
+                if (caps == null) ok = false
+                val handlers = readExecutionBackendHandlers(item["handlers"], "$itemPath.handlers")
+                if (handlers == null) ok = false
+
+                if (caps != null && handlers != null) {
+                    if (caps.filesystem && handlers.fs == null) {
+                        missing("$itemPath.handlers.fs")
+                        ok = false
+                    }
+                    if (caps.command && handlers.exec == null) {
+                        missing("$itemPath.handlers.exec")
+                        ok = false
+                    }
+                    if (caps.terminal && handlers.terminal == null) {
+                        missing("$itemPath.handlers.terminal")
+                        ok = false
+                    }
+                }
+
+                if (ok && id != null && title != null && caps != null && handlers != null) {
+                    if (result.any { it.id == id }) {
+                        err(PluginErrorCode.DUPLICATE_ID, "$path.$id")
+                        ok = false
+                    } else {
+                        result += PluginExecutionBackendRef(
+                            id = id,
+                            name = title,
+                            description = description ?: LocalizedText.single(""),
+                            capabilities = caps,
+                            handlers = handlers
+                        )
+                    }
+                }
+            }
+            return if (ok) result else null
+        }
+
+        private fun readExecutionBackendCapabilities(
+            raw: JsonElement?,
+            path: String
+        ): PluginExecutionBackendCapabilitiesRef? {
+            if (raw == null) return PluginExecutionBackendCapabilitiesRef()
+            val obj = raw as? JsonObject ?: return null.also { invalid(path) }
+            var ok = true
+            obj.keys.filter { it !in EXECUTION_BACKEND_CAPABILITY_KEYS }.forEach {
+                err(PluginErrorCode.UNSUPPORTED_FIELD, "$path.$it")
+                ok = false
+            }
+
+            fun readBool(key: String, default: Boolean = false): Boolean {
+                val elem = obj[key] ?: return default
+                val value = (elem as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
+                if (value == null) {
+                    invalid("$path.$key")
+                    ok = false
+                    return false
+                }
+                return value
+            }
+
+            val filesystem = readBool("filesystem", true)
+            val command = readBool("command", true)
+            val terminal = readBool("terminal")
+            val fileWatch = readBool("fileWatch")
+            val portForward = readBool("portForward")
+            val isRemoteEnvironment = readBool("isRemoteEnvironment", true)
+
+            val discovery = when (val elem = obj["workspaceDiscovery"]) {
+                null -> PluginBackendDiscoveryModes.SCAN
+                else -> elem.stringOrNull()
+                    ?.takeIf { it in PluginBackendDiscoveryModes.ALL }
+                    ?: run { invalid("$path.workspaceDiscovery"); ok = false; PluginBackendDiscoveryModes.SCAN }
+            }
+            val configLocation = when (val elem = obj["projectConfigLocation"]) {
+                null -> PluginBackendConfigLocations.APP_PRIVATE_DIR
+                else -> elem.stringOrNull()
+                    ?.takeIf { it in PluginBackendConfigLocations.ALL }
+                    ?: run { invalid("$path.projectConfigLocation"); ok = false; PluginBackendConfigLocations.APP_PRIVATE_DIR }
+            }
+
+            if (isRemoteEnvironment && configLocation == PluginBackendConfigLocations.WORKSPACE_DIR) {
+                invalid("$path.projectConfigLocation")
+                ok = false
+            }
+            if (fileWatch) {
+                invalid("$path.fileWatch")
+                ok = false
+            }
+            if (portForward) {
+                invalid("$path.portForward")
+                ok = false
+            }
+
+            return if (ok) {
+                PluginExecutionBackendCapabilitiesRef(
+                    filesystem = filesystem,
+                    command = command,
+                    terminal = terminal,
+                    fileWatch = fileWatch,
+                    portForward = portForward,
+                    isRemoteEnvironment = isRemoteEnvironment,
+                    workspaceDiscovery = discovery,
+                    projectConfigLocation = configLocation
+                )
+            } else null
+        }
+
+        private fun readExecutionBackendHandlers(
+            raw: JsonElement?,
+            path: String
+        ): PluginExecutionBackendHandlersRef? {
+            if (raw == null) {
+                missing(path)
+                return null
+            }
+            val obj = raw as? JsonObject ?: return null.also { invalid(path) }
+            var ok = true
+            obj.keys.filter { it !in EXECUTION_BACKEND_HANDLER_KEYS }.forEach {
+                err(PluginErrorCode.UNSUPPORTED_FIELD, "$path.$it")
+                ok = false
+            }
+
+            fun readHandler(key: String): String? {
+                val elem = obj[key] ?: return null
+                val value = elem.stringOrNull()?.trim()?.takeIf { HANDLER_NAME.matches(it) }
+                if (value == null) {
+                    invalid("$path.$key")
+                    ok = false
+                }
+                return value
+            }
+
+            val fs = readHandler("fs")
+            val exec = readHandler("exec")
+            val execStream = readHandler("execStream")
+            val execHealth = readHandler("execHealth")
+            val terminal = readHandler("terminal")
+            val workspaceList = readHandler("workspaceList")
+            val workspaceCreate = readHandler("workspaceCreate")
+            val workspaceDelete = readHandler("workspaceDelete")
+            val workspaceSelect = readHandler("workspaceSelect")
+
+            return if (ok) {
+                PluginExecutionBackendHandlersRef(
+                    fs = fs,
+                    exec = exec,
+                    execStream = execStream,
+                    execHealth = execHealth,
+                    terminal = terminal,
+                    workspaceList = workspaceList,
+                    workspaceCreate = workspaceCreate,
+                    workspaceDelete = workspaceDelete,
+                    workspaceSelect = workspaceSelect
+                )
+            } else null
+        }
+
+        /** 缺省视为空列表；每项声明插件提供的 Agent 工作流能力与 handler 映射。 */
+        private fun readWorkflows(raw: JsonElement?, path: String): List<PluginWorkflowRef>? {
+            if (raw == null) return emptyList()
+            val array = raw as? JsonArray ?: return null.also { invalid(path) }
+            if (array.size > MAX_WORKFLOWS) return null.also { invalid(path) }
+            val result = mutableListOf<PluginWorkflowRef>()
+            var ok = true
+            array.forEachIndexed { index, element ->
+                val itemPath = "$path[$index]"
+                val item = element as? JsonObject
+                if (item == null) {
+                    invalid(itemPath)
+                    ok = false
+                    return@forEachIndexed
+                }
+                item.keys.filter { it !in WORKFLOW_KEYS }.forEach {
+                    err(PluginErrorCode.UNSUPPORTED_FIELD, "$itemPath.$it")
+                    ok = false
+                }
+                val idRaw = item["id"]
+                val id = if (idRaw == null) {
+                    missing("$itemPath.id")
+                    ok = false
+                    null
+                } else {
+                    idRaw.stringOrNull()?.takeIf { LOCAL_ID.matches(it) } ?: run {
+                        invalid("$itemPath.id")
+                        ok = false
+                        null
+                    }
+                }
+                val titleRaw = item["title"]
+                val title = if (titleRaw == null) {
+                    missing("$itemPath.title")
+                    ok = false
+                    null
+                } else {
+                    parseLocalized(titleRaw, "$itemPath.title", MAX_NAME) ?: run {
+                        ok = false
+                        null
+                    }
+                }
+                val descRaw = item["description"]
+                val description = if (descRaw != null) {
+                    parseLocalized(descRaw, "$itemPath.description", MAX_DESCRIPTION) ?: run {
+                        ok = false
+                        null
+                    }
+                } else {
+                    LocalizedText.single("")
+                }
+                val capabilities = readWorkflowCapabilities(item["capabilities"], "$itemPath.capabilities")
+                if (capabilities == null) ok = false
+                val handlers = readWorkflowHandlers(item["handlers"], "$itemPath.handlers")
+                if (handlers == null) ok = false
+
+                if (ok && id != null && title != null && description != null && capabilities != null && handlers != null) {
+                    if (result.any { it.id == id }) {
+                        err(PluginErrorCode.DUPLICATE_ID, "$path.$id")
+                        ok = false
+                    } else {
+                        result += PluginWorkflowRef(
+                            id = id,
+                            title = title,
+                            description = description,
+                            capabilities = capabilities,
+                            handlers = handlers
+                        )
+                    }
+                }
+            }
+            return if (ok) result else null
+        }
+
+        private fun readWorkflowCapabilities(
+            raw: JsonElement?,
+            path: String
+        ): PluginWorkflowCapabilitiesRef? {
+            if (raw == null) return PluginWorkflowCapabilitiesRef()
+            val obj = raw as? JsonObject ?: return null.also { invalid(path) }
+            var ok = true
+            obj.keys.filter { it !in WORKFLOW_CAPABILITY_KEYS }.forEach {
+                err(PluginErrorCode.UNSUPPORTED_FIELD, "$path.$it")
+                ok = false
+            }
+
+            fun readBool(key: String, defaultValue: Boolean): Boolean {
+                val elem = obj[key] ?: return defaultValue
+                val value = (elem as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
+                if (value == null) {
+                    invalid("$path.$key")
+                    ok = false
+                    return defaultValue
+                }
+                return value
+            }
+
+            val streaming = readBool("streaming", true)
+            val tools = readBool("tools", true)
+            val compaction = readBool("compaction", false)
+            val titleGeneration = readBool("titleGeneration", false)
+
+            return if (ok) {
+                PluginWorkflowCapabilitiesRef(
+                    streaming = streaming,
+                    tools = tools,
+                    compaction = compaction,
+                    titleGeneration = titleGeneration
+                )
+            } else null
+        }
+
+        private fun readWorkflowHandlers(
+            raw: JsonElement?,
+            path: String
+        ): PluginWorkflowHandlersRef? {
+            if (raw == null) {
+                missing(path)
+                return null
+            }
+            val obj = raw as? JsonObject ?: return null.also { invalid(path) }
+            var ok = true
+            obj.keys.filter { it !in WORKFLOW_HANDLER_KEYS }.forEach {
+                err(PluginErrorCode.UNSUPPORTED_FIELD, "$path.$it")
+                ok = false
+            }
+
+            fun readRequiredHandler(key: String): String? {
+                val elem = obj[key]
+                if (elem == null) {
+                    missing("$path.$key")
+                    ok = false
+                    return null
+                }
+                val value = elem.stringOrNull()?.trim()?.takeIf { HANDLER_NAME.matches(it) }
+                if (value == null) {
+                    invalid("$path.$key")
+                    ok = false
+                }
+                return value
+            }
+
+            fun readOptionalHandler(key: String): String? {
+                val elem = obj[key] ?: return null
+                val value = elem.stringOrNull()?.trim()?.takeIf { HANDLER_NAME.matches(it) }
+                if (value == null) {
+                    invalid("$path.$key")
+                    ok = false
+                }
+                return value
+            }
+
+            val startTurn = readRequiredHandler("startTurn")
+            val cancelTurn = readRequiredHandler("cancelTurn")
+            val compact = readOptionalHandler("compact")
+            val generateTitle = readOptionalHandler("generateTitle")
+
+            return if (ok && startTurn != null && cancelTurn != null) {
+                PluginWorkflowHandlersRef(
+                    startTurn = startTurn,
+                    cancelTurn = cancelTurn,
+                    compact = compact,
+                    generateTitle = generateTitle
+                )
+            } else null
+        }
+
+        /** 缺省视为空列表；每项声明插件提供的外部会话源及 handler 映射。 */
+        private fun readSessions(raw: JsonElement?, path: String): List<PluginExternalSessionRef>? {
+            if (raw == null) return emptyList()
+            val array = raw as? JsonArray ?: return null.also { invalid(path) }
+            if (array.size > MAX_SESSIONS) return null.also { invalid(path) }
+            val result = mutableListOf<PluginExternalSessionRef>()
+            var ok = true
+            array.forEachIndexed { index, element ->
+                val itemPath = "$path[$index]"
+                val item = element as? JsonObject
+                if (item == null) {
+                    invalid(itemPath)
+                    ok = false
+                    return@forEachIndexed
+                }
+                item.keys.filter { it !in SESSION_KEYS }.forEach {
+                    err(PluginErrorCode.UNSUPPORTED_FIELD, "$itemPath.$it")
+                    ok = false
+                }
+                val idRaw = item["id"]
+                val id = if (idRaw == null) {
+                    missing("$itemPath.id")
+                    ok = false
+                    null
+                } else {
+                    idRaw.stringOrNull()?.takeIf { LOCAL_ID.matches(it) } ?: run {
+                        invalid("$itemPath.id")
+                        ok = false
+                        null
+                    }
+                }
+                val titleRaw = item["title"]
+                val title = if (titleRaw == null) {
+                    missing("$itemPath.title")
+                    ok = false
+                    null
+                } else {
+                    parseLocalized(titleRaw, "$itemPath.title", MAX_NAME) ?: run {
+                        ok = false
+                        null
+                    }
+                }
+                val descRaw = item["description"]
+                val description = if (descRaw != null) {
+                    parseLocalized(descRaw, "$itemPath.description", MAX_DESCRIPTION) ?: run {
+                        ok = false
+                        null
+                    }
+                } else {
+                    LocalizedText.single("")
+                }
+                val handlers = readSessionHandlers(item["handlers"], "$itemPath.handlers")
+                if (handlers == null) ok = false
+
+                if (ok && id != null && title != null && description != null && handlers != null) {
+                    if (result.any { it.id == id }) {
+                        err(PluginErrorCode.DUPLICATE_ID, "$path.$id")
+                        ok = false
+                    } else {
+                        result += PluginExternalSessionRef(
+                            id = id,
+                            title = title,
+                            description = description,
+                            handlers = handlers
+                        )
+                    }
+                }
+            }
+            return if (ok) result else null
+        }
+
+        private fun readSessionHandlers(
+            raw: JsonElement?,
+            path: String
+        ): PluginExternalSessionHandlersRef? {
+            if (raw == null) {
+                missing(path)
+                return null
+            }
+            val obj = raw as? JsonObject ?: return null.also { invalid(path) }
+            var ok = true
+            obj.keys.filter { it !in SESSION_HANDLER_KEYS }.forEach {
+                err(PluginErrorCode.UNSUPPORTED_FIELD, "$path.$it")
+                ok = false
+            }
+
+            fun readRequiredHandler(key: String): String? {
+                val elem = obj[key]
+                if (elem == null) {
+                    missing("$path.$key")
+                    ok = false
+                    return null
+                }
+                val value = elem.stringOrNull()?.trim()?.takeIf { HANDLER_NAME.matches(it) }
+                if (value == null) {
+                    invalid("$path.$key")
+                    ok = false
+                }
+                return value
+            }
+
+            fun readOptionalHandler(key: String): String? {
+                val elem = obj[key] ?: return null
+                val value = elem.stringOrNull()?.trim()?.takeIf { HANDLER_NAME.matches(it) }
+                if (value == null) {
+                    invalid("$path.$key")
+                    ok = false
+                }
+                return value
+            }
+
+            val refresh = readOptionalHandler("refresh")
+            val readMessages = readRequiredHandler("readMessages")
+            val createSession = readOptionalHandler("createSession")
+            val deleteSession = readOptionalHandler("deleteSession")
+            val renameSession = readOptionalHandler("renameSession")
+            val pinSession = readOptionalHandler("pinSession")
+
+            return if (ok && readMessages != null) {
+                PluginExternalSessionHandlersRef(
+                    refresh = refresh,
+                    readMessages = readMessages,
+                    createSession = createSession,
+                    deleteSession = deleteSession,
+                    renameSession = renameSession,
+                    pinSession = pinSession
+                )
+            } else null
         }
 
         /** 缺省视为空列表；每项声明 OpenAI 兼容服务地址与模型。 */

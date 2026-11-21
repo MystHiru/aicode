@@ -27,6 +27,9 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import java.time.Duration
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
@@ -65,7 +68,11 @@ class PluginWebBridgeTest {
         val commandEngine: CommandEngine,
         val fileAccess: FileAccessProvider,
         val modelService: PluginModelService,
-        val providerService: PluginProviderService
+        val providerService: PluginProviderService,
+        val hostApiDispatcher: com.aicode.feature.plugin.runtime.PluginHostApiDispatcher,
+        val eventBus: PluginEventBus,
+        val environment: PluginPageEnvironment,
+        val scripts: MutableList<String>
     )
 
     @After
@@ -103,6 +110,21 @@ class PluginWebBridgeTest {
         every { runs.events } returns MutableSharedFlow<AgentRunEvent>()
         val modelService = mockk<PluginModelService>(relaxed = true)
         val providerService = mockk<PluginProviderService>(relaxed = true)
+        val eventBus = PluginEventBus()
+        val hostApiDispatcher = mockk<com.aicode.feature.plugin.runtime.PluginHostApiDispatcher>()
+        coEvery {
+            hostApiDispatcher.dispatch(any(), "bash", any(), any(), any(), any())
+        } returns buildJsonObject {
+            put("output", "ok")
+            put("exitCode", 0)
+            put("truncated", false)
+        }
+        coEvery {
+            hostApiDispatcher.dispatch(any(), "providers.setApiKey", any(), any(), any(), any())
+        } coAnswers {
+            providerService.setApiKey(pluginId, thirdArg())
+        }
+        val scripts = mutableListOf<String>()
         val bridge = PluginWebBridge(
             context = ApplicationProvider.getApplicationContext(),
             page = page,
@@ -110,31 +132,20 @@ class PluginWebBridgeTest {
             languageTag = "zh-CN",
             fileAccess = fileAccess,
             homeResolver = home,
-            commandEngine = engine,
             workspacePath = { "/projects/a" },
-            eventBus = PluginEventBus(),
+            eventBus = eventBus,
             pluginManager = manager,
             pluginRuntimeManager = mockk(relaxed = true),
-            terminalRunner = mockk(relaxed = true),
-            shizukuRunner = mockk(relaxed = true),
-            tipManager = mockk(relaxed = true),
-            overlayManager = mockk(relaxed = true),
-            chatService = mockk(relaxed = true),
             modelService = modelService,
-            providerService = providerService,
             agentRunStateStore = runs,
-            secretStore = mockk(relaxed = true),
-            systemService = mockk(relaxed = true),
-            introspectionService = mockk(relaxed = true),
-            toolService = mockk(relaxed = true),
-            httpService = mockk(relaxed = true),
+            hostApiDispatcher = hostApiDispatcher,
             environment = environment,
             theme = { "light" },
             onClosePage = {},
-            post = {}
+            post = { scripts += it }
         )
         bridges += bridge
-        return Env(bridge, plugins, engine, fileAccess, modelService, providerService)
+        return Env(bridge, plugins, engine, fileAccess, modelService, providerService, hostApiDispatcher, eventBus, environment, scripts)
     }
 
     private suspend fun assertInactive(bridge: PluginWebBridge, method: String, params: JsonObject) {
@@ -148,7 +159,16 @@ class PluginWebBridgeTest {
         val env = env()
         val result = env.bridge.dispatch("bash", buildJsonObject { put("command", "pwd") }) as JsonObject
         assertEquals("ok", result.getValue("output").jsonPrimitive.content)
-        coVerify(exactly = 1) { env.commandEngine.runCommandSyncWithExit("pwd", "/projects/a", any()) }
+        coVerify(exactly = 1) {
+            env.hostApiDispatcher.dispatch(
+                pluginId,
+                "bash",
+                any(),
+                com.aicode.feature.plugin.runtime.PluginHostApiOrigin.PAGE,
+                any(),
+                "page:${env.bridge.javaClass.getDeclaredField("page").let { it.isAccessible = true; (it.get(env.bridge) as com.aicode.feature.plugin.domain.PluginPage).cacheKey } }"
+            )
+        }
     }
 
     @Test
@@ -164,7 +184,16 @@ class PluginWebBridgeTest {
             }
         )
 
-        coVerify(exactly = 1) { env.providerService.setApiKey(pluginId, any()) }
+        coVerify(exactly = 1) {
+            env.hostApiDispatcher.dispatch(
+                pluginId,
+                "providers.setApiKey",
+                any(),
+                com.aicode.feature.plugin.runtime.PluginHostApiOrigin.PAGE,
+                any(),
+                any()
+            )
+        }
     }
 
     @Test
@@ -231,7 +260,142 @@ class PluginWebBridgeTest {
         env.plugins.value = listOf(plugin.copy(record = plugin.record.copy(dependenciesReady = true, dependenciesHash = "deps")))
         assertTrue(env.bridge.isActive)
         env.bridge.dispatch("bash", buildJsonObject { put("command", "pwd") })
-        coVerify(exactly = 1) { env.commandEngine.runCommandSyncWithExit(any(), any(), any()) }
+        coVerify(exactly = 1) {
+            env.hostApiDispatcher.dispatch(
+                pluginId,
+                "bash",
+                any(),
+                com.aicode.feature.plugin.runtime.PluginHostApiOrigin.PAGE,
+                any(),
+                any()
+            )
+        }
+    }
+
+    @Test
+    fun burstEventsShareJavascriptCallsAndKeepTheirOrder() {
+        val env = env()
+        repeat(65) { index ->
+            env.eventBus.publish(pluginId, buildJsonObject { put("name", "event-$index") })
+        }
+        val looper = shadowOf(Looper.getMainLooper())
+        looper.idle()
+        assertTrue(env.scripts.isEmpty())
+
+        looper.idleFor(Duration.ofMillis(16))
+
+        assertEquals(3, env.scripts.size)
+        assertEquals(32, env.scripts.first().split("window.__aicodeEvent(").size - 1)
+        val eventNames = Regex("event-\\d+").findAll(env.scripts.joinToString("\n")).map { it.value }.toList()
+        assertEquals((0 until 65).map { "event-$it" }, eventNames)
+    }
+
+    @Test
+    fun largeEventsAreNotCombinedIntoOversizedJavascriptBatches() {
+        val env = env()
+        repeat(3) { index ->
+            env.eventBus.publish(pluginId, buildJsonObject {
+                put("name", "large-$index")
+                put("payload", "x".repeat(40_000))
+            })
+        }
+
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(16))
+
+        assertEquals(3, env.scripts.size)
+        assertTrue(env.scripts.all { it.length < 64 * 1024 })
+    }
+
+    @Test
+    fun repliesKeepTheirPositionAndRemainSeparateFromEventBatches() {
+        val env = env()
+        env.eventBus.publish(pluginId, buildJsonObject { put("name", "before-reply") })
+        val deliver = PluginWebBridge::class.java.getDeclaredMethod("deliver", String::class.java, JsonObject::class.java)
+        deliver.isAccessible = true
+        deliver.invoke(env.bridge, "request-1", buildJsonObject { put("ok", true) })
+        env.eventBus.publish(pluginId, buildJsonObject { put("name", "after-reply") })
+
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(3, env.scripts.size)
+        assertTrue(env.scripts[0].contains("before-reply"))
+        assertTrue(env.scripts[1].contains("__aicodeResolve"))
+        assertFalse(env.scripts[1].contains("__aicodeEvent"))
+        assertTrue(env.scripts[2].contains("after-reply"))
+    }
+
+    @Test
+    fun postMessageParsesRequestsOffTheCallingThreadAndDeliversAReply() {
+        val env = env()
+        val responseReady = CountDownLatch(1)
+        val pendingScripts = mutableListOf<String>()
+        val handler = mockk<android.os.Handler>()
+        val originalHandler = PluginWebBridge::class.java.getDeclaredField("mainHandler").apply {
+            isAccessible = true
+        }.get(env.bridge)
+        val callerThread = Thread.currentThread()
+        var processingThread: Thread? = null
+        every { handler.removeCallbacks(any()) } returns Unit
+        every { handler.post(any()) } answers {
+            responseReady.countDown()
+            true
+        }
+        val handlerField = PluginWebBridge::class.java.getDeclaredField("mainHandler")
+        handlerField.isAccessible = true
+        handlerField.set(env.bridge, handler)
+        every { env.environment.workspaceName() } answers {
+            processingThread = Thread.currentThread()
+            "workspace"
+        }
+        env.bridge.updateCallbacks({ "light" }, {}, { pendingScripts += it })
+
+        env.bridge.postMessage("""{"id":"request-1","method":"context","params":{}}""")
+        assertTrue(responseReady.await(5, TimeUnit.SECONDS))
+        val flush = PluginWebBridge::class.java.getDeclaredMethod("flushEvents")
+        flush.isAccessible = true
+        flush.invoke(env.bridge)
+
+        assertTrue(processingThread !== callerThread)
+        assertTrue(pendingScripts.single().contains("__aicodeResolve"))
+        assertTrue(pendingScripts.single().contains("request-1"))
+        handlerField.set(env.bridge, originalHandler)
+    }
+
+    @Test
+    fun cachedPageStillReceivesEventsWithoutBeingShown() {
+        val env = env()
+        env.eventBus.publish(pluginId, buildJsonObject { put("name", "background-finished") })
+
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(16))
+
+        assertTrue(env.scripts.single().contains("background-finished"))
+    }
+
+    @Test
+    fun queuedContextEventsAreDiscardedAfterWorkspaceChange() {
+        val env = env()
+        env.eventBus.publish(pluginId, buildJsonObject {
+            put("name", "fs.changed")
+            put("payload", buildJsonObject { put("contextKey", "workspace-a") })
+        })
+        env.eventBus.publish(pluginId, buildJsonObject { put("name", "custom-event") })
+        every { env.environment.contextKey() } returns "workspace-b"
+
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(16))
+
+        assertFalse(env.scripts.single().contains("fs.changed"))
+        assertTrue(env.scripts.single().contains("custom-event"))
+    }
+
+    @Test
+    fun closingBridgeCancelsPendingEventBatches() {
+        val env = env()
+        env.eventBus.publish(pluginId, buildJsonObject { put("name", "pending-event") })
+        env.bridge.close()
+
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+
+        assertTrue(env.scripts.isEmpty())
     }
 
     @Test

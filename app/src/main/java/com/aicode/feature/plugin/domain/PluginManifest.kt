@@ -285,6 +285,98 @@ data class PluginOverlayRef(
     val surfaces: List<PluginOverlaySurfaceRef> = emptyList()
 )
 
+/** `contributes.executionBackends[].capabilities` 声明执行后端具备的能力与工作区行为。 */
+data class PluginExecutionBackendCapabilitiesRef(
+    val filesystem: Boolean = true,
+    val command: Boolean = true,
+    val terminal: Boolean = false,
+    val fileWatch: Boolean = false,
+    val portForward: Boolean = false,
+    val isRemoteEnvironment: Boolean = true,
+    val workspaceDiscovery: String = PluginBackendDiscoveryModes.SCAN,
+    val projectConfigLocation: String = PluginBackendConfigLocations.APP_PRIVATE_DIR
+)
+
+object PluginBackendDiscoveryModes {
+    const val SCAN = "scan"
+    const val REGISTER = "register"
+    const val HYBRID = "hybrid"
+
+    val ALL = setOf(SCAN, REGISTER, HYBRID)
+}
+
+object PluginBackendConfigLocations {
+    const val WORKSPACE_DIR = "workspaceDir"
+    const val APP_PRIVATE_DIR = "appPrivateDir"
+
+    val ALL = setOf(WORKSPACE_DIR, APP_PRIVATE_DIR)
+}
+
+/** `contributes.executionBackends[].handlers` 声明各执行能力对应的 runtime handler 名称。 */
+data class PluginExecutionBackendHandlersRef(
+    val fs: String? = null,
+    val exec: String? = null,
+    val execStream: String? = null,
+    val execHealth: String? = null,
+    val terminal: String? = null,
+    val workspaceList: String? = null,
+    val workspaceCreate: String? = null,
+    val workspaceDelete: String? = null,
+    val workspaceSelect: String? = null
+)
+
+/** `contributes.executionBackends[]` 声明一个插件提供的执行后端。 */
+data class PluginExecutionBackendRef(
+    val id: String,
+    val name: LocalizedText,
+    val description: LocalizedText = LocalizedText.single(""),
+    val capabilities: PluginExecutionBackendCapabilitiesRef = PluginExecutionBackendCapabilitiesRef(),
+    val handlers: PluginExecutionBackendHandlersRef
+)
+
+/** `contributes.workflows[].capabilities` 声明插件工作流的能力集。 */
+data class PluginWorkflowCapabilitiesRef(
+    val streaming: Boolean = true,
+    val tools: Boolean = true,
+    val compaction: Boolean = false,
+    val titleGeneration: Boolean = false
+)
+
+/** `contributes.workflows[].handlers` 声明插件工作流对应的 runtime handler 名称。 */
+data class PluginWorkflowHandlersRef(
+    val startTurn: String,
+    val cancelTurn: String,
+    val compact: String? = null,
+    val generateTitle: String? = null
+)
+
+/** `contributes.workflows[]` 声明一个插件提供的 Agent 工作流。 */
+data class PluginWorkflowRef(
+    val id: String,
+    val title: LocalizedText,
+    val description: LocalizedText = LocalizedText.single(""),
+    val capabilities: PluginWorkflowCapabilitiesRef = PluginWorkflowCapabilitiesRef(),
+    val handlers: PluginWorkflowHandlersRef
+)
+
+/** `contributes.sessions[].handlers` 声明外部会话源对应的 runtime handler 名称。 */
+data class PluginExternalSessionHandlersRef(
+    val refresh: String? = null,
+    val readMessages: String,
+    val createSession: String? = null,
+    val deleteSession: String? = null,
+    val renameSession: String? = null,
+    val pinSession: String? = null
+)
+
+/** `contributes.sessions[]` 声明一个插件提供的外部会话源。 */
+data class PluginExternalSessionRef(
+    val id: String,
+    val title: LocalizedText,
+    val description: LocalizedText = LocalizedText.single(""),
+    val handlers: PluginExternalSessionHandlersRef
+)
+
 /**
  * 已通过结构校验的插件清单（`plugin.json`）。校验只证明格式合法，不代表可信：
  * 安装身份还取决于来源，清单里的 `id` / `publisher` 文本不是身份证明。
@@ -308,6 +400,9 @@ data class PluginManifest(
     val hooks: List<PluginHookRef> = emptyList(),
     val mcp: List<PluginMcpRef> = emptyList(),
     val providers: List<PluginProviderRef> = emptyList(),
+    val executionBackends: List<PluginExecutionBackendRef> = emptyList(),
+    val workflows: List<PluginWorkflowRef> = emptyList(),
+    val sessions: List<PluginExternalSessionRef> = emptyList(),
     val shizuku: PluginShizukuRef? = null,
     val overlay: PluginOverlayRef? = null,
     val backup: PluginBackupRef? = null,
@@ -319,7 +414,9 @@ data class PluginManifest(
     /** 清单声明的贡献总数。 */
     val contributionCount: Int
         get() = skills.size + agents.size + workspaceTools.size + uiEntries.size +
-            tools.size + hooks.size + mcp.size + providers.size + (if (shizuku != null) 1 else 0) +
+            tools.size + hooks.size + mcp.size + providers.size + executionBackends.size +
+            workflows.size + sessions.size +
+            (if (shizuku != null) 1 else 0) +
             (if (overlay != null) 1 + overlay.surfaces.size else 0) + (if (backup != null) 1 else 0) +
             (if (modelAccess != null) 1 else 0) + (if (configPage != null) 1 else 0)
 }

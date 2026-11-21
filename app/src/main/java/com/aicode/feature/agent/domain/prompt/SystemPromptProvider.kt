@@ -13,7 +13,6 @@ import com.aicode.feature.agent.domain.skill.SkillRepository
 import com.aicode.feature.agent.domain.subagent.AgentDefinition
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionRepository
 import com.aicode.feature.agent.domain.subagent.InjectPart
-import com.aicode.feature.settings.data.repository.ExecutionMode
 import com.aicode.feature.settings.data.repository.ExecutionModeHolder
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -125,7 +124,10 @@ class SystemPromptProvider @Inject constructor(
             val entries = try {
                 agentDefinitionRepository.listEnabled()
             } catch (e: Exception) {
-                FileLogger.w(TAG, "扫描子代理定义失败: ${e.message}", e)
+                // 连接身份变化（刚好连上/重连）是瞬态竞态，缓存层已重试过，这里不再当故障上报。
+                if (e !is com.aicode.feature.workspace.domain.RemoteAgentConfigIdentityChangedException) {
+                    FileLogger.w(TAG, "扫描子代理定义失败: ${e.message}", e)
+                }
                 if (e is IOException) throw e
                 return null
             }
@@ -207,10 +209,7 @@ class SystemPromptProvider @Inject constructor(
 
     private inner class EnvironmentSource : PromptSource {
         override fun build(ctx: AgentContext): String =
-            when (executionModeHolder.currentMode()) {
-                ExecutionMode.LOCAL_PROOT -> "本地容器（PRoot）"
-                ExecutionMode.REMOTE_SSH -> "远程 SSH 服务器"
-            }
+            executionModeHolder.currentBackend().environmentDescription()
     }
 
     /** 记忆清单拆分为全局/项目两组纯列表，供 `{{AICODE_MEMORY_GLOBAL}}` / `{{AICODE_MEMORY_PROJECT}}` 变量使用。 */
@@ -261,12 +260,8 @@ class SystemPromptProvider @Inject constructor(
         val environment: String
     )
 
-    private fun cacheEnvironment(): String {
-        if (executionModeHolder.currentMode() != ExecutionMode.REMOTE_SSH) return "local"
-        val config = remoteSshConnection.config ?: return "remote:disconnected"
-        return listOf(config.host, config.port.toString(), config.username, remoteSshConnection.remoteHome.orEmpty(), config.remoteWorkspacePath)
-            .joinToString("\u0000")
-    }
+    private fun cacheEnvironment(): String =
+        executionModeHolder.currentBackend().environmentCacheKey()
 
     private val staticRuleSource = StaticRuleSource()
     private val subAgentBaseSource = SubAgentBaseSource()

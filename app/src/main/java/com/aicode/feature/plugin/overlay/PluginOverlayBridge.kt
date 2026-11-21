@@ -36,6 +36,7 @@ internal class PluginOverlayBridge(
     private val page: PluginPage,
     private val density: Float,
     private val window: PluginOverlayWindow,
+    private val hostApiDispatcher: com.aicode.feature.plugin.runtime.PluginHostApiDispatcher,
     private val onPageMessage: (JsonElement) -> Unit,
     private val onClose: () -> Unit
 ) {
@@ -71,7 +72,14 @@ internal class PluginOverlayBridge(
         scope.cancel()
     }
 
-    private fun dispatch(method: String, params: JsonObject): JsonElement = when (method) {
+    private suspend fun dispatch(method: String, params: JsonObject): JsonElement = when (method) {
+        "permissions.request", "permissions.cancel" -> hostApiDispatcher.dispatch(
+            pluginId = pluginId,
+            method = method,
+            params = params,
+            origin = com.aicode.feature.plugin.runtime.PluginHostApiOrigin.OVERLAY,
+            workspaceRoot = { "" }
+        )
         "context" -> buildJsonObject {
             put("pluginId", pluginId)
             put("overlayId", overlayId)

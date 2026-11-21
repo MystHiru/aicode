@@ -11,6 +11,7 @@ import com.aicode.feature.agent.data.local.entity.LlmCallRecordEntity
 import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.plugin.runtime.PermissionReviewDecision
 import com.aicode.feature.plugin.runtime.PluginHookDispatcher
+import com.aicode.feature.plugin.runtime.ToolDelegation
 import com.aicode.feature.agent.domain.model.AgentImage
 import com.aicode.feature.agent.domain.model.AgentMessage
 import com.aicode.feature.agent.domain.model.AgentMode
@@ -224,6 +225,19 @@ class StatefulAgentWorkflow @Inject constructor(
         if (!config.hasUsableApiKey) throw IllegalStateException("「${config.name}」未填写 API Key")
         if (config.effectiveModel.isBlank()) throw IllegalStateException("「${config.name}」未选择模型")
         return createStandaloneProvider(config, sessionId)
+    }
+
+    private suspend fun getEffectiveProvider(context: AgentContext): AIProvider {
+        val turn = context.turn
+        val config = if (turn?.providerId.isNullOrBlank()) {
+            resolveProviderConfig(context.sessionId)
+        } else {
+            val selected = findProviderConfig(turn.providerId!!)
+            selected?.takeIf { it.isEnabled && it.hasUsableApiKey }
+                ?.copy(selectedModel = turn.model?.takeIf { it.isNotBlank() } ?: selected.effectiveModel)
+        } ?: throw IllegalStateException("尚未配置 AI 供应商，请到设置中添加并选择一个")
+        if (config.effectiveModel.isBlank()) throw IllegalStateException("「${config.name}」未选择模型")
+        return createStandaloneProvider(config, context.sessionId)
     }
 
     /**
@@ -462,6 +476,7 @@ class StatefulAgentWorkflow @Inject constructor(
         val hookAgentName = context.agentDefinition?.name
 
         return channelFlow {
+            val delegations = mutableMapOf<String, ToolDelegation>()
             if (hookSessionId != null) {
                 hookRunId = UUID.randomUUID().toString()
                 hookStarted = true
@@ -502,7 +517,7 @@ class StatefulAgentWorkflow @Inject constructor(
         )
         val providerStartedNs = System.nanoTime()
         FileLogger.memoryCheckpoint(TAG, "provider.start", details = "operation=$providerStartedNs")
-        val aiProvider = getEffectiveProvider(currentContext.sessionId)
+        val aiProvider = getEffectiveProvider(currentContext)
         FileLogger.memoryCheckpoint(
             TAG,
             "provider.ready",
@@ -540,10 +555,14 @@ class StatefulAgentWorkflow @Inject constructor(
             for (effect in effects) {
                 when (effect) {
                     is AgentSideEffect.PersistUser -> {
-                        currentContext.sessionId?.let { sessionId ->
-                            messagePersistenceUseCase.persist(sessionId, com.aicode.feature.agent.presentation.MessageRole.USER,
-                                effect.message.content, id = effect.message.id)
-                            messagePersistenceUseCase.invalidateHistory(sessionId)
+                        if (currentContext.turn != null) {
+                            currentContext.turn.persistence.persistUserContinuation(effect.message)
+                        } else {
+                            currentContext.sessionId?.let { sessionId ->
+                                messagePersistenceUseCase.persist(sessionId, com.aicode.feature.agent.presentation.MessageRole.USER,
+                                    effect.message.content, id = effect.message.id)
+                                messagePersistenceUseCase.invalidateHistory(sessionId)
+                            }
                         }
                     }
                     is AgentSideEffect.CallLlm -> {
@@ -556,12 +575,20 @@ class StatefulAgentWorkflow @Inject constructor(
                                 ContextTokenEstimator.estimate(systemPrompt, state.messages, currentTools)
                             }
                             val predictedInput = ContextTokenEstimator.calibrated(estimate, baselineEstimate, baselineUsage)
-                            val compaction = contextCompactor.compactIfNeeded(state.messages, compactionProvider, context.sessionId,
-                                windowProvider = aiProvider, systemPrompt = systemPrompt, tools = currentTools,
-                                currentInputTokens = predictedInput) { event ->
-                                if (event is AgentEvent.CompactionFailed) compactionAttemptFailed = true
-                                send(event)
-                            }
+                            val compaction = contextCompactor.compactIfNeeded(
+                                state.messages,
+                                compactionProvider,
+                                currentContext.sessionId.takeIf { currentContext.turn == null },
+                                windowProvider = aiProvider,
+                                systemPrompt = systemPrompt,
+                                tools = currentTools,
+                                currentInputTokens = predictedInput,
+                                persistence = currentContext.turn?.persistence,
+                                onEvent = { event ->
+                                    if (event is AgentEvent.CompactionFailed) compactionAttemptFailed = true
+                                    send(event)
+                                }
+                            )
                             compactedMessages = compaction.messages
                             if (compaction.compacted) {
                                 state = state.copy(messages = compaction.messages)
@@ -611,7 +638,7 @@ class StatefulAgentWorkflow @Inject constructor(
 
                         try {
                             // 发送前按实际模型的视觉能力处理图片（同 execute 路径）。
-                            val supportsVision = activeModelSupportsVision(currentContext.sessionId)
+                            val supportsVision = activeModelSupportsVision(currentContext)
                             val messagesToSend = sanitizeImagesForModel(compactedMessages, supportsVision)
                             providerInUse.completeStream(systemPrompt, messagesToSend, currentTools, currentContext.reasoningEffort)
                                 .collect { stream.onChunk(it) }
@@ -628,9 +655,18 @@ class StatefulAgentWorkflow @Inject constructor(
                             // 将本轮 reasoning 附加到 AIResponse，以便 reduce 时存入 AssistantMessage 并在下一轮回传
                             if (aiResponse.stopReason == "model_context_window_exceeded" && !overflowRecoveryAttempted) {
                                 overflowRecoveryAttempted = true
-                                val recovery = contextCompactor.compactIfNeeded(state.messages, compactionProvider,
-                                    currentContext.sessionId, force = true, windowProvider = aiProvider,
-                                    systemPrompt = systemPrompt, tools = currentTools, currentInputTokens = predictedInput) { send(it) }
+                                val recovery = contextCompactor.compactIfNeeded(
+                                    state.messages,
+                                    compactionProvider,
+                                    currentContext.sessionId.takeIf { currentContext.turn == null },
+                                    force = true,
+                                    windowProvider = aiProvider,
+                                    systemPrompt = systemPrompt,
+                                    tools = currentTools,
+                                    currentInputTokens = predictedInput,
+                                    onEvent = { event -> send(event) },
+                                    persistence = currentContext.turn?.persistence
+                                )
                                 if (recovery.compacted) {
                                     state = state.copy(messages = recovery.messages)
                                     baselineUsage = 0
@@ -679,9 +715,18 @@ class StatefulAgentWorkflow @Inject constructor(
                         } catch (e: Exception) {
                             if (!overflowRecoveryAttempted && stream.text.isEmpty() && stream.reasoning.isEmpty() && isContextOverflow(e)) {
                                 overflowRecoveryAttempted = true
-                                val recovery = contextCompactor.compactIfNeeded(state.messages, compactionProvider,
-                                    currentContext.sessionId, force = true, windowProvider = aiProvider,
-                                    systemPrompt = systemPrompt, tools = currentTools, currentInputTokens = predictedInput) { send(it) }
+                                val recovery = contextCompactor.compactIfNeeded(
+                                    state.messages,
+                                    compactionProvider,
+                                    currentContext.sessionId.takeIf { currentContext.turn == null },
+                                    force = true,
+                                    windowProvider = aiProvider,
+                                    systemPrompt = systemPrompt,
+                                    tools = currentTools,
+                                    currentInputTokens = predictedInput,
+                                    onEvent = { event -> send(event) },
+                                    persistence = currentContext.turn?.persistence
+                                )
                                 if (recovery.compacted) {
                                     state = state.copy(messages = recovery.messages)
                                     baselineUsage = 0
@@ -730,7 +775,27 @@ class StatefulAgentWorkflow @Inject constructor(
                                 // 与适配器同源算一次「实际会发什么」：落库后能在统计页分辨
                                 // 「选了但没生效」「被降级」这些静默问题。
                                 val reasoningPlan = reasoningPlanFor(providerInUse, currentContext.reasoningEffort)
-                                llmCallRecordDao.insert(
+                                if (currentContext.turn != null) {
+                                    currentContext.turn.persistence.recordLlmCall(
+                                        LlmCallStats(
+                                            providerId = providerInUse.providerId.ifBlank { null },
+                                            model = providerInUse.model,
+                                            kind = callKind,
+                                            inputTokens = usage?.inputTokens ?: 0,
+                                            outputTokens = usage?.outputTokens ?: 0,
+                                            cachedInputTokens = usage?.cachedInputTokens ?: 0,
+                                            durationMillis = durationMillis,
+                                            status = when {
+                                                callCompleted -> "success"
+                                                callError != null -> "error"
+                                                else -> "cancelled"
+                                            },
+                                            errorMessage = callError,
+                                            stopReason = usage?.stopReason,
+                                            createdAt = callStartWall
+                                        )
+                                    )
+                                } else llmCallRecordDao.insert(
                                     LlmCallRecordEntity(
                                         sessionId = currentContext.sessionId,
                                         providerId = providerInUse.providerId.ifBlank { null },
@@ -799,10 +864,15 @@ class StatefulAgentWorkflow @Inject constructor(
                                 sessionId = currentContext.sessionId,
                                 runId = hookRunId,
                                 scope = hookScope,
-                                agentName = hookAgentName
+                                agentName = hookAgentName,
+                                excludedPluginId = hookDecision?.delegation?.hook?.pluginId
                             )
                         }
 
+                        delegations.remove(toolCall.id)
+                        if (checkResult.approved) {
+                            hookDecision?.delegation?.let { delegations[toolCall.id] = it }
+                        }
                         if (!checkResult.approved) {
                             val rawResult = ToolResult.Error(checkResult.denyReason, checkResult.errorCode).toTransportString()
                             send(AgentEvent.ToolCallFinished(toolCall.id, toolCall.name, rawResult, true, argsPreview))
@@ -815,6 +885,7 @@ class StatefulAgentWorkflow @Inject constructor(
                         // 整批取消：已批准未执行的工具补发完成事件（内容为未执行），
                         // 让 ViewModel 清理 runningTool 并 REPLACE 掉「执行中」占位消息。
                         effect.toolCalls.forEach { toolCall ->
+                            delegations.remove(toolCall.id)
                             send(
                                 AgentEvent.ToolCallFinished(
                                     id = toolCall.id,
@@ -834,10 +905,12 @@ class StatefulAgentWorkflow @Inject constructor(
                         val toolCalls = effect.toolCalls
                         val toolStartedAt = ConcurrentHashMap<String, Long>()
                         toolCalls.forEach { toolCall ->
-                            if (toolCall.name == "editFile" || toolCall.name == "writeFile") {
+                            if (toolCall.id !in delegations && (toolCall.name == "editFile" || toolCall.name == "writeFile")) {
                                 (toolCall.arguments["path"] as? JsonPrimitive)?.contentOrNull?.let { path ->
                                     currentContext.sessionId?.let { sid ->
-                                        checkpointManager.beforeFileModified(sid, path)
+                                        if (currentContext.turn == null || currentContext.turn.sessionRef is SessionRef.Room) {
+                                            checkpointManager.beforeFileModified(sid, path)
+                                        }
                                     }
                                 }
                             }
@@ -861,8 +934,11 @@ class StatefulAgentWorkflow @Inject constructor(
                                             agentName = hookAgentName
                                         )
                                         val run: suspend () -> ToolRunResult = {
+                                            val delegation = delegations[toolCall.id]
                                             val tool = toolRegistry.getTool(toolCall.name)
-                                            if (tool is StreamingAgentTool) {
+                                            if (delegation != null) {
+                                                runToolDelegate(delegation, hookRunId, toolCall) { send(it) }
+                                            } else if (tool is StreamingAgentTool) {
                                                 runToolStream(tool, toolCall, currentContext) { send(it) }
                                             } else {
                                                 runToolSync(tool, toolCall, currentContext)
@@ -881,6 +957,7 @@ class StatefulAgentWorkflow @Inject constructor(
                         // 串行处理 mode 切换并组装批量结果。
                         val batchResults = mutableListOf<ToolBatchResult>()
                         toolCalls.forEachIndexed { index, toolCall ->
+                            delegations.remove(toolCall.id)
                             val runResult = runResults.getOrNull(index)
                                 ?: ToolRunResult(ToolResult.Error("工具未执行", "TOOL_NOT_EXECUTED").toTransportString(), true)
                             var rawResult = runResult.raw
@@ -915,19 +992,17 @@ class StatefulAgentWorkflow @Inject constructor(
                                 }
                             }
                             if (!isError && hookSessionId != null) {
-                                toolResultSuccessData(rawResult)?.let { data ->
-                                    val transform = pluginHookDispatcher.afterToolCall(
-                                        sessionId = hookSessionId,
-                                        runId = hookRunId,
-                                        callId = toolCall.id,
-                                        toolName = toolCall.name,
-                                        mode = currentContext.mode.name,
-                                        scope = hookScope,
-                                        agentName = hookAgentName,
-                                        data = data
-                                    )
-                                    transform.data?.let { rawResult = replaceToolResultData(rawResult, it) }
-                                }
+                                val transform = pluginHookDispatcher.afterToolCall(
+                                    sessionId = hookSessionId,
+                                    runId = hookRunId,
+                                    callId = toolCall.id,
+                                    toolName = toolCall.name,
+                                    mode = currentContext.mode.name,
+                                    scope = hookScope,
+                                    agentName = hookAgentName,
+                                    data = { toolResultSuccessData(rawResult) }
+                                )
+                                transform.data?.let { rawResult = replaceToolResultData(rawResult, it) }
                             }
                             batchResults.add(ToolBatchResult(toolCall.id, toolCall.name, rawResult, isError, runResult.attachments, runResult.images))
                         }
@@ -1049,9 +1124,10 @@ class StatefulAgentWorkflow @Inject constructor(
      * UI 端反复重启打字机协程。按时间窗口合并，窗口内只保留最新累积文本，到窗口边界才发送，
      * 把下游事件频率压到 ~16/s；打字机渲染本身有 100ms 节流，少发中间态无感知。
      */
-    private class StreamAccumulator(
+    internal class StreamAccumulator(
         private val callStartElapsed: Long,
         private val responseMessageId: String,
+        private val materialize: (StringBuilder) -> String = { it.toString() },
         private val emit: suspend (AgentEvent) -> Unit
     ) {
         private companion object {
@@ -1068,8 +1144,8 @@ class StatefulAgentWorkflow @Inject constructor(
         var ttfbElapsed: Long? = null
         var retryAttempts = 0
 
-        private var pendingText: String? = null
-        private var pendingReasoning: String? = null
+        private var textDirty = false
+        private var reasoningDirty = false
         private var lastTextSentAt = 0L
         private var lastReasoningSentAt = 0L
 
@@ -1078,7 +1154,7 @@ class StatefulAgentWorkflow @Inject constructor(
                 is AIStreamChunk.TextDelta -> {
                     markTtfb()
                     text.append(chunk.text)
-                    pendingText = text.toString()
+                    textDirty = true
                     val now = SystemClock.elapsedRealtime()
                     if (now - lastTextSentAt >= DELTA_THROTTLE_MS) {
                         flushText()
@@ -1089,7 +1165,7 @@ class StatefulAgentWorkflow @Inject constructor(
                     // 思考内容也算首字（推理模型先吐思考再吐正文）
                     markTtfb()
                     reasoning.append(chunk.text)
-                    pendingReasoning = reasoning.toString()
+                    reasoningDirty = true
                     val now = SystemClock.elapsedRealtime()
                     if (now - lastReasoningSentAt >= DELTA_THROTTLE_MS) {
                         flushReasoning()
@@ -1133,22 +1209,22 @@ class StatefulAgentWorkflow @Inject constructor(
         private fun reset() {
             text.setLength(0)
             reasoning.setLength(0)
-            pendingText = null
-            pendingReasoning = null
+            textDirty = false
+            reasoningDirty = false
             lastTextSentAt = 0L
             lastReasoningSentAt = 0L
         }
 
         private suspend fun flushText() {
-            val t = pendingText ?: return
-            pendingText = null
-            emit(AgentEvent.AssistantDelta(t, responseMessageId))
+            if (!textDirty) return
+            textDirty = false
+            emit(AgentEvent.AssistantDelta(materialize(text), responseMessageId))
         }
 
         private suspend fun flushReasoning() {
-            val t = pendingReasoning ?: return
-            pendingReasoning = null
-            emit(AgentEvent.ReasoningDelta(t, responseMessageId))
+            if (!reasoningDirty) return
+            reasoningDirty = false
+            emit(AgentEvent.ReasoningDelta(materialize(reasoning), responseMessageId))
         }
     }
 
@@ -1182,8 +1258,38 @@ class StatefulAgentWorkflow @Inject constructor(
         }
     }
 
-    private suspend fun activeModelSupportsVision(sessionId: String?): Boolean {
-        val config = resolveProviderConfig(sessionId) ?: return false
+    private suspend fun runToolDelegate(
+        delegation: ToolDelegation,
+        runId: String,
+        toolCall: ToolCall,
+        onEvent: suspend (AgentEvent) -> Unit
+    ): ToolRunResult = withContext(Dispatchers.IO) {
+        val live = StringBuilder()
+        var lastEmitMs = 0L
+        val result = pluginHookDispatcher.executeDelegatedTool(
+            delegation, runId, toolCall.id, toolCall.name, JsonObject(toolCall.arguments)
+        ) { chunk ->
+            live.append(chunk).append('\n')
+            if (live.length > LIVE_TAIL_CHARS) live.delete(0, live.length - LIVE_TAIL_CHARS)
+            val now = System.currentTimeMillis()
+            if (now - lastEmitMs >= PROGRESS_INTERVAL_MS) {
+                lastEmitMs = now
+                onEvent(AgentEvent.ToolCallProgress(toolCall.id, toolCall.name, live.toString()))
+            }
+        }
+        val processed = toolOutputStore.process(toolCall.name, toolCall.id, result)
+        ToolRunResult(processed.toTransportString(), processed is ToolResult.Error)
+    }
+
+    private suspend fun activeModelSupportsVision(context: AgentContext): Boolean {
+        val turn = context.turn
+        val config = if (turn?.providerId.isNullOrBlank()) {
+            resolveProviderConfig(context.sessionId)
+        } else {
+            findProviderConfig(turn.providerId!!)?.copy(
+                selectedModel = turn.model?.takeIf { it.isNotBlank() } ?: turn.model.orEmpty()
+            )
+        } ?: return false
         val metadata = modelMetadataService.resolve(config.id, config.type, config.effectiveModel)
         return metadata.supportsVision
     }
@@ -1520,7 +1626,8 @@ class StatefulAgentWorkflow @Inject constructor(
         sessionId: String?,
         runId: String,
         scope: String,
-        agentName: String?
+        agentName: String?,
+        excludedPluginId: String? = null
     ): PermissionCheckResult {
         if (tool == null) {
             return PermissionCheckResult(true)
@@ -1561,7 +1668,8 @@ class StatefulAgentWorkflow @Inject constructor(
                         agentName = agentName,
                         callId = callId,
                         toolName = tool.name,
-                        arguments = JsonObject(arguments)
+                        arguments = JsonObject(arguments),
+                        excludedPluginId = excludedPluginId
                     )
                     when (review.decision) {
                         PermissionReviewDecision.ALLOW -> return PermissionCheckResult(true)

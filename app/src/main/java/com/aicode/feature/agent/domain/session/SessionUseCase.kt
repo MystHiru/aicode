@@ -8,6 +8,9 @@ import com.aicode.feature.agent.domain.model.AgentMode
 import com.aicode.feature.agent.domain.model.GoalStatus
 import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.agent.presentation.MessageRole
+import com.aicode.feature.workspace.domain.model.WorkspaceRef
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -60,6 +63,59 @@ class SessionUseCase @Inject constructor(
             model = model,
             reasoningEffort = reasoningEffort
         )
+    }
+
+    fun newSessionEntity(
+        workspaceRef: WorkspaceRef,
+        workspacePath: String,
+        providerId: String? = null,
+        model: String? = null,
+        reasoningEffort: String = ReasoningEffort.MEDIUM.name
+    ): ChatSessionEntity = newSessionEntity(workspacePath, providerId, model, reasoningEffort).copy(
+        backendInstanceId = workspaceRef.backendInstanceId,
+        workspaceId = workspaceRef.workspaceId
+    )
+
+    fun getSessionsOfWorkspace(workspaceRef: WorkspaceRef) =
+        chatSessionDao.getAllSessionsByWorkspaceRef(workspaceRef.backendInstanceId, workspaceRef.workspaceId)
+
+    fun getRootSessionsOfWorkspace(workspaceRef: WorkspaceRef) =
+        chatSessionDao.getRootSessionsByWorkspaceRef(workspaceRef.backendInstanceId, workspaceRef.workspaceId)
+
+    suspend fun deleteSessionsByWorkspace(workspaceRef: WorkspaceRef): Int {
+        val sessions = chatSessionDao.getAllSessionsByWorkspaceRefOnce(workspaceRef.backendInstanceId, workspaceRef.workspaceId)
+        if (sessions.isEmpty()) return 0
+        sessions.forEach { agentMessageDao.deleteBySession(it.id) }
+        chatSessionDao.deleteByWorkspaceRef(workspaceRef.backendInstanceId, workspaceRef.workspaceId)
+        return sessions.size
+    }
+
+    suspend fun getFirstSessionOfWorkspace(workspaceRef: WorkspaceRef): ChatSessionEntity? =
+        chatSessionDao.getRootSessionsByWorkspaceRefOnce(workspaceRef.backendInstanceId, workspaceRef.workspaceId).firstOrNull()
+
+    suspend fun getMostRecentSessionOfWorkspace(workspaceRef: WorkspaceRef): ChatSessionEntity? =
+        chatSessionDao.getLatestRootSessionByWorkspaceRef(workspaceRef.backendInstanceId, workspaceRef.workspaceId)
+
+    suspend fun getEmptySessionOfWorkspace(workspaceRef: WorkspaceRef): ChatSessionEntity? =
+        chatSessionDao.getEmptyRootSessionByWorkspaceRef(workspaceRef.backendInstanceId, workspaceRef.workspaceId)
+
+    suspend fun recycleEmptySessions(workspaceRef: WorkspaceRef, keepId: String? = null): Int {
+        var count = 0
+        chatSessionDao.getRootSessionsByWorkspaceRefOnce(workspaceRef.backendInstanceId, workspaceRef.workspaceId).forEach { session ->
+            if (session.id != keepId && !agentMessageDao.hasMessages(session.id)) {
+                deleteSession(session.id)
+                count++
+            }
+        }
+        return count
+    }
+
+    suspend fun getLegacySessionsByWorkspace(workspacePath: String): List<ChatSessionEntity> =
+        chatSessionDao.getLegacySessionsByWorkspaceOnce(workspacePath)
+
+    suspend fun claimLegacySessions(sessionIds: List<String>, workspaceRef: WorkspaceRef): Int {
+        if (sessionIds.isEmpty()) return 0
+        return chatSessionDao.claimLegacySessions(sessionIds, workspaceRef.backendInstanceId, workspaceRef.workspaceId)
     }
 
     fun deriveTitle(request: String): String {
@@ -142,6 +198,8 @@ class SessionUseCase @Inject constructor(
             id = UUID.randomUUID().toString(),
             title = title,
             workspacePath = parent.workspacePath,
+            backendInstanceId = parent.backendInstanceId,
+            workspaceId = parent.workspaceId,
             createdAt = now,
             updatedAt = now,
             // 默认继承父会话 mode：权限引擎按会话 mode 判定写拦截，默认 BUILD 会让 PLAN
@@ -186,6 +244,10 @@ class SessionUseCase @Inject constructor(
         return chatSessionDao.getById(id)
     }
 
+    suspend fun getSessionById(id: String, workspaceRef: WorkspaceRef): ChatSessionEntity? {
+        return chatSessionDao.getByIdAndWorkspaceRef(id, workspaceRef.backendInstanceId, workspaceRef.workspaceId)
+    }
+
     suspend fun updateMode(sessionId: String, mode: String) {
         val s = chatSessionDao.getById(sessionId) ?: return
         val newMode = runCatching { AgentMode.valueOf(mode) }.getOrNull() ?: return
@@ -205,6 +267,14 @@ class SessionUseCase @Inject constructor(
 
     suspend fun updateReasoningEffort(sessionId: String, effort: String) {
         chatSessionDao.updateReasoningEffort(sessionId, effort)
+    }
+
+    suspend fun updateWorkflow(id: String, workflowId: String?, workflowState: String? = null) {
+        chatSessionDao.updateWorkflow(id, workflowId, workflowState)
+    }
+
+    suspend fun updateWorkflowState(id: String, workflowState: String?) {
+        chatSessionDao.updateWorkflowState(id, workflowState)
     }
 
     /**
@@ -230,5 +300,45 @@ class SessionUseCase @Inject constructor(
 
     suspend fun isSessionEmpty(sessionId: String): Boolean {
         return !agentMessageDao.hasMessages(sessionId)
+    }
+
+    fun getAllStandardSessionsFlow(): Flow<List<ChatSessionEntity>> =
+        chatSessionDao.getAllStandardSessionsFlow()
+
+    fun getAllSessionsByWorkspaces(workspacePaths: List<String>): Flow<List<ChatSessionEntity>> {
+        val paths = workspacePaths.filter { it.isNotBlank() }.distinct()
+        if (paths.isEmpty()) return flowOf(emptyList())
+        return chatSessionDao.getAllSessionsByWorkspaces(paths)
+    }
+
+    /**
+     * 将指定的根会话（连同其子代理会话）迁移到 [targetWorkspacePath]。
+     * 仅处理当前存在、属于根会话（`parentId == null`）且不在目标工作区的会话；不修改 `updatedAt`。
+     * 若迁入了空会话，按目标工作区最多保留一个空会话的规则回收多余空会话（优先保留 [preferredEmptyId] 或首个迁入空会话）。
+     * 返回实际迁移的根会话实体列表（迁移前快照）。
+     */
+    suspend fun moveSessionsToWorkspace(
+        sessionIds: Collection<String>,
+        targetWorkspacePath: String,
+        preferredEmptyId: String? = null
+    ): List<ChatSessionEntity> {
+        if (sessionIds.isEmpty() || targetWorkspacePath.isBlank()) return emptyList()
+        val movable = sessionIds.distinct().mapNotNull { id ->
+            chatSessionDao.getById(id)?.takeIf {
+                it.parentId == null &&
+                    it.backendInstanceId == null &&
+                    it.workspaceId == null &&
+                    it.workspacePath != targetWorkspacePath
+            }
+        }
+        if (movable.isEmpty()) return emptyList()
+        val movableIds = movable.map { it.id }
+        chatSessionDao.moveSessionsToWorkspace(movableIds, targetWorkspacePath)
+        val movedEmptyIds = movable.filter { !agentMessageDao.hasMessages(it.id) }.map { it.id }
+        if (movedEmptyIds.isNotEmpty()) {
+            val keepEmpty = preferredEmptyId?.takeIf { it in movedEmptyIds } ?: movedEmptyIds.first()
+            recycleEmptySessions(targetWorkspacePath, keepId = keepEmpty)
+        }
+        return movable
     }
 }
