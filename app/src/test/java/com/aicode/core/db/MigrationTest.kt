@@ -56,6 +56,7 @@ class MigrationTest {
         helper.createDatabase(dbName, AgentDatabase.SCHEMA_VERSION).close()
 
         val db = Room.databaseBuilder(context, AgentDatabase::class.java, dbName)
+            .addMigrations(MIGRATION_68_69)
             .addMigrations(*MigrationLoader.loadMigrations(context))
             .build()
         // 打开即触发 Room 的 identity/schema 校验，entity 与迁移产物不符会抛异常
@@ -86,6 +87,7 @@ class MigrationTest {
         }.close()
 
         val db = Room.databaseBuilder(context, AgentDatabase::class.java, dbName)
+            .addMigrations(MIGRATION_68_69)
             .addMigrations(*MigrationLoader.loadMigrations(context))
             .build()
         val columns = mutableSetOf<String>()
@@ -109,6 +111,7 @@ class MigrationTest {
         helper.createDatabase(dbName, 58).close()
 
         val db = Room.databaseBuilder(context, AgentDatabase::class.java, dbName)
+            .addMigrations(MIGRATION_68_69)
             .addMigrations(*MigrationLoader.loadMigrations(context))
             .build()
         val tables = mutableSetOf<String>()
@@ -121,5 +124,38 @@ class MigrationTest {
             "迁移 59 应新增 backup_targets 表，实际表：$tables",
             tables.contains("backup_targets")
         )
+    }
+
+    /**
+     * 老库的 user_version 停在 66，migration_history 记着本分支的 66_add_root_grants，
+     * 新编号的 66（websocket）/ 67（fastMode）永远不会被 Room 执行。68→69 的条件补列
+     * 必须把这两列补回来，否则迁移后的列集合校验直接失败。
+     */
+    @Test
+    fun migrate_66_to_69_repairs_skipped_columns() {
+        helper.createDatabase(dbName, 66).apply {
+            execSQL(
+                "CREATE TABLE IF NOT EXISTS migration_history (" +
+                        "version INTEGER PRIMARY KEY, script_name TEXT, executed_at INTEGER)"
+            )
+            execSQL("INSERT OR REPLACE INTO migration_history VALUES (66, '66_add_root_grants.sql', 0)")
+        }.close()
+
+        val db = Room.databaseBuilder(context, AgentDatabase::class.java, dbName)
+            .addMigrations(MIGRATION_68_69)
+            .addMigrations(*MigrationLoader.loadMigrations(context))
+            .build()
+        val columns = mutableSetOf<String>()
+        db.openHelper.writableDatabase
+            .query("PRAGMA table_info(`ai_providers`)")
+            .use { cursor -> while (cursor.moveToNext()) columns += cursor.getString(1) }
+        val sessionColumns = mutableSetOf<String>()
+        db.openHelper.writableDatabase
+            .query("PRAGMA table_info(`chat_sessions`)")
+            .use { cursor -> while (cursor.moveToNext()) sessionColumns += cursor.getString(1) }
+        db.close()
+
+        assertTrue("升级后 ai_providers 应补回 useResponseWebSocket，实际：$columns", columns.contains("useResponseWebSocket"))
+        assertTrue("升级后 chat_sessions 应补回 fastMode，实际：$sessionColumns", sessionColumns.contains("fastMode"))
     }
 }

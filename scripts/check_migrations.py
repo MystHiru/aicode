@@ -24,6 +24,12 @@ MIGRATIONS_REL = "app/src/main/assets/migrations"
 DB_REL = "app/src/main/java/com/aicode/feature/agent/data/local/database/AgentDatabase.kt"
 MIGRATIONS_DIR = os.path.join(ROOT, MIGRATIONS_REL)
 DB_FILE = os.path.join(ROOT, DB_REL)
+# Kotlin 迁移只允许写在这两个位置：Room 的 addMigrations 注册入口与 core/db 下的迁移实现。
+KOTLIN_MIGRATION_FILES = [
+    DB_REL,
+    "app/src/main/java/com/aicode/core/db/MigrationRepair.kt",
+]
+SCHEMA_DIR = os.path.join(ROOT, "app/schemas/com.aicode.feature.agent.data.local.database.AgentDatabase")
 
 errors = []
 notes = []
@@ -52,11 +58,36 @@ for name in sorted(os.listdir(MIGRATIONS_DIR)):
 
 if versions:
     all_vers = sorted(versions)
-    expected = list(range(all_vers[0], all_vers[-1] + 1))
-    if all_vers != expected:
-        missing = [v for v in expected if v not in set(all_vers)]
-        errors.append("迁移版本不连续：缺失 %s，现有 %s" % (missing, all_vers))
-    notes.append("本地迁移版本 %d..%d，共 %d 个" % (all_vers[0], all_vers[-1], len(all_vers)))
+    notes.append("本地文件式迁移版本 %d..%d，共 %d 个" % (all_vers[0], all_vers[-1], len(all_vers)))
+
+# ---------- 1b. Kotlin 迁移（文件式表达不了的按列条件补列等） ----------
+import glob
+
+kotlin_migs = {}  # to_version -> (file, from, to)
+for rel in KOTLIN_MIGRATION_FILES:
+    path = os.path.join(ROOT, rel)
+    if not os.path.isfile(path):
+        continue
+    with open(path, encoding="utf-8", errors="replace") as f:
+        src = f.read()
+    for frm, to in re.findall(r"Migration\(\s*(\d+)\s*,\s*(\d+)\s*\)", src):
+        frm, to = int(frm), int(to)
+        if to in kotlin_migs:
+            errors.append("Kotlin 迁移目标版本 %d 重复：%s 与 %s" % (to, kotlin_migs[to][0], rel))
+        kotlin_migs[to] = (rel, frm, to)
+for to, (rel, frm, _) in sorted(kotlin_migs.items()):
+    if to != frm + 1:
+        errors.append("Kotlin 迁移 %s:%d→%d 必须满足 to = from + 1" % (rel, frm, to))
+    if to in versions:
+        errors.append("版本 %d 同时有 SQL 文件（%s）与 Kotlin 迁移（%s），一个版本只能二选一" % (to, versions[to], rel))
+    notes.append("Kotlin 迁移 %d→%d（%s）" % (frm, to, rel))
+
+all_versions = sorted(set(versions) | set(kotlin_migs))
+if all_versions:
+    expected = list(range(all_versions[0], all_versions[-1] + 1))
+    if all_versions != expected:
+        missing = [v for v in expected if v not in set(all_versions)]
+        errors.append("迁移版本不连续：缺失 %s，现有 %s" % (missing, all_versions))
 
 # ---------- 2. SCHEMA_VERSION ----------
 with open(DB_FILE, encoding="utf-8") as f:
@@ -65,8 +96,8 @@ m = re.search(r"const val SCHEMA_VERSION = (\d+)", db_src)
 schema_ver = int(m.group(1)) if m else None
 if schema_ver is None:
     errors.append("在 %s 中找不到 SCHEMA_VERSION" % DB_REL)
-elif versions and schema_ver != max(versions):
-    errors.append("SCHEMA_VERSION=%d 与最大迁移版本 %d 不一致" % (schema_ver, max(versions)))
+elif all_versions and schema_ver != max(all_versions):
+    errors.append("SCHEMA_VERSION=%d 与最大迁移版本 %d 不一致" % (schema_ver, max(all_versions)))
 
 # ---------- 3. AutoMigration 与文件式迁移的衔接 ----------
 auto_migs = [
@@ -85,6 +116,48 @@ if auto_migs and max_file is not None and auto_migs[0][0] != max_file:
         "@AutoMigration 起始版本 %d 必须衔接文件式迁移最大版本 %d（一个版本只能二选一）"
         % (auto_migs[0][0], max_file)
     )
+
+# ---------- 3b. ADD COLUMN 必须有实体字段 ----------
+# 迁移里 ADD COLUMN 的物理列若没在实体声明，Room 在迁移后的列集合校验会直接失败
+# （多一列即崩，整个升级事务回滚）。只检查出现在最新 schema 里的列，
+# 被后续迁移重建表去掉的历史列（如 apiPath）不参与。
+schema_jsons = sorted(
+    (int(os.path.basename(p)[:-5]), p)
+    for p in glob.glob(os.path.join(SCHEMA_DIR, "*.json"))
+    if os.path.basename(p)[:-5].isdigit()
+)
+latest_columns = set()
+if schema_jsons:
+    import json
+
+    with open(schema_jsons[-1][1], encoding="utf-8") as f:
+        schema_doc = json.load(f)
+    for table in schema_doc.get("database", {}).get("entities", []):
+        for field in table.get("fields", []):
+            latest_columns.add(field.get("columnName"))
+
+entity_sources = []
+for dirpath, _, filenames in os.walk(os.path.join(ROOT, "app/src/main/java")):
+    for name in filenames:
+        if name.endswith(".kt"):
+            with open(os.path.join(dirpath, name), encoding="utf-8", errors="replace") as f:
+                entity_sources.append(f.read())
+entity_blob = "\n".join(entity_sources)
+
+for ver, name in sorted(versions.items()):
+    with open(os.path.join(MIGRATIONS_DIR, name), encoding="utf-8", errors="replace") as f:
+        sql = f.read()
+    for column in re.findall(r"ADD\s+COLUMN\s+`?(\w+)`?", sql, flags=re.IGNORECASE):
+        if column.upper() == "IF" or column not in latest_columns:
+            continue
+        declared = re.search(r"val\s+%s\s*:" % re.escape(column), entity_blob) or re.search(
+            r'@ColumnInfo\(\s*name\s*=\s*"%s"' % re.escape(column), entity_blob
+        )
+        if not declared:
+            errors.append(
+                "迁移 %s 加了列 %s，但实体里没有对应字段；Room 迁移后列集合校验会失败"
+                % (name, column)
+            )
 
 # ---------- 4. 已发布冻结校验 ----------
 _, tags_out = git(["for-each-ref", "--sort=-creatordate", "--format=%(refname:short)", "refs/tags/v*"])
@@ -130,6 +203,19 @@ elif versions and published_max > 0:
                     "已发布迁移不可修改或复用。若是 hotfix 合流后 main 未后移，"
                     "请把该迁移重编号为 %d+1 及之后的连续号再提交。" % (ver, name, tag, tag_name, published_max)
                 )
+    # 内容搬家：同一段 SQL 在本地不同编号出现，说明只是改了编号，老用户库里的
+    # migration_history 仍指向旧编号，被跳过的迁移永远不会补。
+    by_content = {}
+    for ver, name in versions.items():
+        with open(os.path.join(MIGRATIONS_DIR, name), encoding="utf-8", errors="replace") as f:
+            by_content.setdefault(norm(f.read()), []).append((ver, name))
+    for content, entries in by_content.items():
+        if len(entries) > 1:
+            errors.append(
+                "迁移内容重复（疑似只改了编号）：%s；同一段 SQL 不要在不同版本重复，"
+                "否则老库的 migration_history 与 user_version 会对不上"
+                % "、".join("%d（%s）" % e for e in entries)
+            )
     notes.append("已发布版本号上限（全部 tag 最大 SCHEMA_VERSION）= %d" % published_max)
 
 # ---------- 输出 ----------

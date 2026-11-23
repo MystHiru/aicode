@@ -120,7 +120,8 @@ object AgentModule {
             context,
             AgentDatabase::class.java,
             AgentDatabase.DATABASE_NAME
-        ).addMigrations(*MigrationLoader.loadMigrations(context))
+        ).addMigrations(com.aicode.core.db.MIGRATION_68_69)
+            .addMigrations(*MigrationLoader.loadMigrations(context))
             .build()
     }
 

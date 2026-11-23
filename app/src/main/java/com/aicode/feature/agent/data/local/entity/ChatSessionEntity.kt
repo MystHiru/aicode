@@ -31,6 +31,8 @@ data class ChatSessionEntity(
     val goalStartInputTokens: Int = 0,
     val goalStartOutputTokens: Int = 0,
     val reasoningEffort: String = ReasoningEffort.MEDIUM.name,
+    /** 快模式；迁移 67 加的物理列，实体必须声明，否则迁移后 Room 列集合校验失败。 */
+    val fastMode: Boolean = false,
     val providerId: String? = null,
     val model: String? = null,
     val totalInputTokens: Int = 0,
