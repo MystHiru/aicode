@@ -18,7 +18,10 @@ import com.aicode.feature.plugin.data.PluginDevSettingsRepository
 import com.aicode.feature.plugin.data.PluginOverlayPermissionRepository
 import com.aicode.feature.plugin.data.PluginShizukuPermissionRepository
 import com.aicode.feature.plugin.data.PluginStoreSettingsRepository
+import com.aicode.feature.plugin.data.index.NoMatchingReleaseException
+import com.aicode.feature.plugin.data.index.PluginIndexClient
 import com.aicode.feature.plugin.data.index.PluginIndexSourceRepository
+import com.aicode.feature.plugin.data.index.PluginPackageIntegrityException
 import com.aicode.feature.plugin.domain.PluginManifestParser
 import com.aicode.feature.plugin.domain.ManifestParseResult
 import com.aicode.feature.plugin.domain.InstalledPlugin
@@ -28,6 +31,7 @@ import com.aicode.feature.plugin.domain.PluginErrorCode
 import com.aicode.feature.plugin.domain.PluginInstallOrigin
 import com.aicode.feature.plugin.domain.PluginInstallResult
 import com.aicode.feature.plugin.domain.PluginManager
+import com.aicode.feature.plugin.domain.PluginManifest
 import com.aicode.feature.plugin.domain.PluginPreview
 import com.aicode.feature.plugin.domain.PluginPreviewResult
 import com.aicode.feature.plugin.domain.PluginPage
@@ -62,6 +66,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -86,6 +91,10 @@ sealed interface PluginImportState {
 
     data object Reading : PluginImportState
 
+    data object Downloading : PluginImportState
+
+    data class StoreFailed(val error: PluginStoreError) : PluginImportState
+
     /**
      * 包已通过校验，等待使用者确认。
      */
@@ -97,12 +106,7 @@ sealed interface PluginImportState {
         val sourceDirName: String? = null,
         /** 在线安装的来源；本地导入保持默认 local。 */
         val origin: PluginInstallOrigin = PluginInstallOrigin(),
-        /** 非官方在线安装需要使用者手动输入该插件的源码仓库地址。 */
-        val expectedRepository: String? = null,
-        /** 展示用来源名称，例如「AiCode Plugins」。 */
-        val sourceLabel: String? = null,
-        /** 来源是否在宿主官方白名单内；只有它为 true 时跳过手输仓库。 */
-        val officialSource: Boolean = false
+        internal val isListingCurrent: (() -> Boolean)? = null
     ) : PluginImportState
 
     data class Failed(val errors: List<PluginError>) : PluginImportState
@@ -166,6 +170,7 @@ class PluginsViewModel @Inject constructor(
     private val tipManager: PluginTipManager,
     private val devSettingsRepository: PluginDevSettingsRepository,
     private val indexSourceRepository: PluginIndexSourceRepository,
+    private val indexClient: PluginIndexClient,
     private val storeSettingsRepository: PluginStoreSettingsRepository,
     private val pageEnvironment: PluginPageEnvironment,
     private val chatService: PluginChatService,
@@ -213,6 +218,7 @@ class PluginsViewModel @Inject constructor(
 
     private val _importState = MutableStateFlow<PluginImportState>(PluginImportState.Idle)
     val importState: StateFlow<PluginImportState> = _importState.asStateFlow()
+    private var storeDownloadJob: Job? = null
 
     private val _dependencyStates = MutableStateFlow<Map<String, PluginDependencyUiState>>(emptyMap())
     val dependencyStates: StateFlow<Map<String, PluginDependencyUiState>> = _dependencyStates.asStateFlow()
@@ -228,8 +234,13 @@ class PluginsViewModel @Inject constructor(
     private val _downloadMirror = MutableStateFlow("")
     val downloadMirror: StateFlow<String> = _downloadMirror.asStateFlow()
 
+    /** 自动更新开关：打开商店拉到新版本后，贡献未变化的插件自动安装。 */
+    private val _autoUpdatePlugins = MutableStateFlow(false)
+    val autoUpdatePlugins: StateFlow<Boolean> = _autoUpdatePlugins.asStateFlow()
+
     private var indexSourceSaveJob: Job? = null
     private var downloadMirrorSaveJob: Job? = null
+    private val autoUpdateAttempted = mutableSetOf<String>()
 
     /** 开发者目录固定挂在容器 `~/.aicode/plugin-dev`，每个子目录是一个插件项目。 */
     val devRootPath: String = "~/.aicode/plugin-dev"
@@ -270,11 +281,13 @@ class PluginsViewModel @Inject constructor(
                 _downloadMirror.value = storeSettingsRepository.downloadMirror.first()
             }
         }
+        viewModelScope.launch {
+            storeSettingsRepository.autoUpdatePlugins.collect { _autoUpdatePlugins.value = it }
+        }
     }
 
     fun import(uri: Uri) {
-        if (_importState.value !is PluginImportState.Idle && _importState.value !is PluginImportState.Failed) return
-        _importState.value = PluginImportState.Reading
+        if (!_importState.compareAndSet(PluginImportState.Idle, PluginImportState.Reading)) return
         viewModelScope.launch(Dispatchers.IO) {
             val result = try {
                 context.contentResolver.openInputStream(uri)?.use { manager.preview(it) }
@@ -298,17 +311,25 @@ class PluginsViewModel @Inject constructor(
     fun confirmInstall() {
         val state = _importState.value as? PluginImportState.Preview ?: return
         if (state.installing) return
-        _importState.value = state.copy(installing = true, error = null)
+        if (!_importState.compareAndSet(state, state.copy(installing = true, error = null))) return
         viewModelScope.launch(Dispatchers.IO) {
-            when (val result = manager.install(state.preview.token, state.origin)) {
+            val sourceChanged = installSourceChanged(state.preview, state.origin)
+            val result = manager.install(
+                state.preview.token,
+                state.origin,
+                isCurrent = { state.isListingCurrent?.invoke() != false }
+            ) {
+                if (sourceChanged) {
+                    val id = state.preview.manifest.id
+                    shizukuPermissionRepository.revoke(id)
+                    overlayPermissionRepository.revoke(id)
+                    backupPermissionRepository.revoke(id)
+                }
+            }
+            when (result) {
                 is PluginInstallResult.Installed -> {
                     pluginRuntimeManager.closePlugin(result.pluginId)
-                    if (installSourceChanged(state.preview, state.origin)) {
-                        // 来源变了就不沿用旧包拿到的高危授权，启用状态保持原样
-                        shizukuPermissionRepository.revoke(result.pluginId)
-                        overlayPermissionRepository.revoke(result.pluginId)
-                        overlayManager.closePlugin(result.pluginId)
-                    }
+                    if (sourceChanged) overlayManager.closePlugin(result.pluginId)
                     syncProviders(result.pluginId)
                     pluginHookDispatcher.dispatchPluginInstalled(
                         result.pluginId,
@@ -323,45 +344,137 @@ class PluginsViewModel @Inject constructor(
                     }
                     _importState.value = PluginImportState.Idle
                 }
-                is PluginInstallResult.Failed -> _importState.update { current ->
-                    (current as? PluginImportState.Preview)?.copy(installing = false, error = result.error) ?: current
+                is PluginInstallResult.Failed -> {
+                    if (result.error.code == PluginErrorCode.PREVIEW_EXPIRED) {
+                        manager.discard(state.preview.token)
+                        _importState.value = if (state.isListingCurrent != null) {
+                            PluginImportState.StoreFailed(PluginStoreError(PluginStoreErrorCode.LISTING_CHANGED))
+                        } else {
+                            PluginImportState.Failed(listOf(result.error))
+                        }
+                    } else {
+                        _importState.value = state.copy(installing = false, error = result.error)
+                    }
                 }
             }
         }
     }
 
-    /** 在线商店已完成下载与包校验后，把暂存包交给统一预览/安装弹层。 */
-    fun showPreview(storePreview: PluginStorePreview) {
-        showPreview(
-            preview = storePreview.preview,
-            origin = storePreview.origin,
-            expectedRepository = storePreview.expectedRepository,
-            sourceLabel = storePreview.sourceLabel,
-            officialSource = storePreview.officialSource
-        )
+    /**
+     * 自动更新只处理「贡献未变化」的版本：新增/删除/改名工具、hook、MCP、供应商等都需要人工确认，
+     * 静默安装会绕过商店预览里的权限与清单核对。
+     */
+    private fun canAutoUpdate(preview: PluginPreview): Boolean {
+        val installed = manager.plugins.value.firstOrNull { it.id == preview.manifest.id } ?: return false
+        val previous = installed.manifest ?: return false
+        return contributionSignature(previous) == contributionSignature(preview.manifest)
     }
 
-    fun showPreview(
-        preview: PluginPreview,
-        origin: PluginInstallOrigin,
-        expectedRepository: String?,
-        sourceLabel: String?,
-        officialSource: Boolean
-    ) {
-        if (_importState.value !is PluginImportState.Idle && _importState.value !is PluginImportState.Failed) return
-        _importState.value = PluginImportState.Preview(
-            preview = preview,
-            origin = origin,
-            expectedRepository = expectedRepository,
-            sourceLabel = sourceLabel,
-            officialSource = officialSource
-        )
+    private fun contributionSignature(manifest: PluginManifest): String = listOf(
+        manifest.skills,
+        manifest.agents,
+        manifest.workspaceTools,
+        manifest.uiEntries,
+        manifest.runtime,
+        manifest.tools,
+        manifest.hooks,
+        manifest.mcp,
+        manifest.providers,
+        manifest.executionBackends,
+        manifest.workflows,
+        manifest.sessions,
+        manifest.shizuku,
+        manifest.overlay,
+        manifest.backup,
+        manifest.modelAccess,
+        manifest.configPage
+    ).joinToString("\u0000")
+
+    /** 打开商店拉到更新列表后调用：逐个走现有安装链（下载、SHA-256、清单核对），贡献未变才自动确认。 */
+    internal fun autoUpdateFromStore(items: List<PluginStoreItem>) {
+        if (!_autoUpdatePlugins.value || items.isEmpty()) return
+        if (_importState.value !is PluginImportState.Idle) return
+        // 同一版本只自动尝试一次：停在预览或失败后回到 Idle 时不能反复重试。
+        val item = items.firstOrNull { "${it.plugin.id}@${it.plugin.version}" !in autoUpdateAttempted } ?: return
+        autoUpdateAttempted += "${item.plugin.id}@${item.plugin.version}"
+        installFromStore(item, isListingCurrent = { true }, autoIfSafe = true)
+    }
+
+    internal fun installFromStore(item: PluginStoreItem, isListingCurrent: () -> Boolean, autoIfSafe: Boolean = false) {
+        if (!isListingCurrent() || !item.compatible) return
+        val installed = manager.plugins.value.firstOrNull { it.id == item.plugin.id }?.record
+        val wasInstalled = installed != null
+        if (wasInstalled && !item.canUpdate(installed)) return
+        if (!_importState.compareAndSet(PluginImportState.Idle, PluginImportState.Downloading)) return
+        storeDownloadJob = viewModelScope.launch {
+            try {
+                val asset = indexClient.resolvePackage(item.plugin)
+                val bytes = indexClient.download(asset, allowMirror = !item.official)
+                val current = manager.plugins.value.firstOrNull { it.id == item.plugin.id }?.record
+                if (!isListingCurrent() || wasInstalled != (current != null) ||
+                    (current != null && !item.canUpdate(current))
+                ) {
+                    _importState.value = PluginImportState.StoreFailed(PluginStoreError(PluginStoreErrorCode.LISTING_CHANGED))
+                    return@launch
+                }
+                _importState.value = PluginImportState.Reading
+                when (val result = bytes.inputStream().use { manager.preview(it) }) {
+                    is PluginPreviewResult.Failed -> _importState.value = PluginImportState.Failed(result.errors)
+                    is PluginPreviewResult.Ready -> {
+                        val preview = result.preview
+                        val installedNow = manager.plugins.value.firstOrNull { it.id == item.plugin.id }?.record
+                        val code = when {
+                            !item.matchesPackage(preview.manifest, asset.version) -> PluginStoreErrorCode.PACKAGE_CHECK_FAILED
+                            !isListingCurrent() || wasInstalled != (preview.installedVersion != null) ||
+                                (wasInstalled && !item.canUpdate(installedNow)) -> PluginStoreErrorCode.LISTING_CHANGED
+                            else -> null
+                        }
+                        if (code != null) {
+                            manager.discard(preview.token)
+                            _importState.value = PluginImportState.StoreFailed(PluginStoreError(code))
+                        } else {
+                            val official = item.official && !asset.direct
+                            _importState.value = PluginImportState.Preview(
+                                preview = preview,
+                                origin = PluginInstallOrigin(
+                                    kind = PluginInstallOrigin.KIND_INDEX,
+                                    sourceId = item.source.id,
+                                    sourceName = item.source.name,
+                                    indexUrl = item.source.indexUrl,
+                                    repository = item.plugin.repository,
+                                    official = official
+                                ),
+                                isListingCurrent = isListingCurrent
+                            )
+                            if (autoIfSafe && canAutoUpdate(preview)) {
+                                confirmInstall()
+                            }
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ensureActive()
+                FileLogger.w(TAG, "读取商店插件失败: ${item.plugin.id}", e)
+                val code = when (e) {
+                    is NoMatchingReleaseException -> PluginStoreErrorCode.NO_COMPATIBLE_RELEASE
+                    is PluginPackageIntegrityException -> PluginStoreErrorCode.PACKAGE_CHECK_FAILED
+                    else -> PluginStoreErrorCode.DOWNLOAD_FAILED
+                }
+                _importState.value = PluginImportState.StoreFailed(PluginStoreError(code))
+            }
+        }
     }
 
     /** 关闭预览 / 错误提示；预览中的暂存包同时丢弃。 */
     fun dismissImport() {
         val state = _importState.value
-        if (state is PluginImportState.Preview && state.installing) return
+        if (state == PluginImportState.Reading || (state is PluginImportState.Preview && state.installing)) return
+        if (state == PluginImportState.Downloading) {
+            storeDownloadJob?.cancel()
+            storeDownloadJob = null
+        }
         _importState.value = PluginImportState.Idle
         if (state is PluginImportState.Preview) {
             viewModelScope.launch { manager.discard(state.preview.token) }
@@ -388,6 +501,13 @@ class PluginsViewModel @Inject constructor(
         downloadMirrorSaveJob = viewModelScope.launch(Dispatchers.IO) {
             delay(SETTINGS_SAVE_DEBOUNCE_MS)
             storeSettingsRepository.setDownloadMirror(text)
+        }
+    }
+
+    fun setAutoUpdatePlugins(enabled: Boolean) {
+        _autoUpdatePlugins.value = enabled
+        viewModelScope.launch(Dispatchers.IO) {
+            storeSettingsRepository.setAutoUpdatePlugins(enabled)
         }
     }
 
@@ -425,8 +545,7 @@ class PluginsViewModel @Inject constructor(
 
     /** 从开发目录打 zip 后走现有预览流程，安装仍需使用者在预览里确认。 */
     fun installDevProject(project: PluginDevProject) {
-        if (_importState.value !is PluginImportState.Idle && _importState.value !is PluginImportState.Failed) return
-        _importState.value = PluginImportState.Reading
+        if (!_importState.compareAndSet(PluginImportState.Idle, PluginImportState.Reading)) return
         viewModelScope.launch(Dispatchers.IO) {
             val zip = File(context.cacheDir, "plugin-dev-${project.dirName}.zip")
             val result = try {

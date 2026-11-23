@@ -394,7 +394,7 @@ internal fun ModelTestDetailBottomSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = MaterialTheme.semanticColors.cardSurface
+        containerColor = sheetSurface()
     ) {
         Column(
             modifier = Modifier

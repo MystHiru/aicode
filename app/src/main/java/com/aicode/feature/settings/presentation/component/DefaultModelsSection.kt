@@ -22,8 +22,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import com.aicode.core.ui.AdaptiveModalBottomSheet
@@ -68,6 +70,7 @@ import compose.icons.feathericons.Camera
 import compose.icons.feathericons.Cpu
 import compose.icons.feathericons.Image
 import compose.icons.feathericons.Minimize2
+import compose.icons.feathericons.Settings
 import compose.icons.feathericons.Sliders
 import compose.icons.feathericons.Type
 import compose.icons.feathericons.Zap
@@ -379,7 +382,8 @@ internal fun ModelSelectionSheet(
     onDismiss: () -> Unit,
     onTestModel: ((provider: AIProviderConfig, model: String) -> Unit)? = null,
     testingModels: Set<String> = emptySet(),
-    testResults: Map<String, ModelTestResult> = emptyMap()
+    testResults: Map<String, ModelTestResult> = emptyMap(),
+    onManageProviders: (() -> Unit)? = null
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val context = LocalContext.current
@@ -391,7 +395,7 @@ internal fun ModelSelectionSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         sheetGesturesEnabled = true,
-        containerColor = settingsPageBackground()
+        containerColor = sheetSurface()
     ) {
         Column(
             modifier = Modifier
@@ -403,7 +407,7 @@ internal fun ModelSelectionSheet(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = Spacing.lg, vertical = Spacing.md),
+                    .padding(vertical = Spacing.md),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
@@ -420,6 +424,24 @@ internal fun ModelSelectionSheet(
                         modifier = Modifier.clickable { onClear() }
                     )
                 }
+                onManageProviders?.let { manage ->
+                    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+                        IconButton(
+                            onClick = {
+                                onDismiss()
+                                manage()
+                            },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = FeatherIcons.Settings,
+                                contentDescription = stringResource(R.string.model_sheet_manage_providers),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
             }
 
             ModelSearchField(
@@ -429,16 +451,53 @@ internal fun ModelSelectionSheet(
             )
 
             val activeProviders = providers.filter { it.isEnabled && it.models.isNotEmpty() }
+            val query = searchQuery.trim()
+            // 搜供应商名时列出它的全部模型；否则只留模型名命中的行。
+            val visibleGroups = activeProviders.mapNotNull { provider ->
+                val matchesProvider = query.isNotEmpty() && provider.name.contains(query, ignoreCase = true)
+                val models = if (query.isEmpty() || matchesProvider) provider.models
+                else provider.models.filter { it.contains(query, ignoreCase = true) }
+                if (models.isEmpty()) null else provider to models
+            }
             if (activeProviders.isEmpty()) {
+                SettingsGroup {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 300.dp)
+                            .padding(Spacing.lg),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = noModelsText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = Spacing.lg)
+                        )
+                        onManageProviders?.let { manage ->
+                            Spacer(Modifier.height(Spacing.lg))
+                            Button(
+                                onClick = {
+                                    onDismiss()
+                                    manage()
+                                }
+                            ) {
+                                Text(stringResource(R.string.model_sheet_add_provider))
+                            }
+                        }
+                    }
+                }
+            } else if (visibleGroups.isEmpty()) {
                 SettingsGroup {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 360.dp),
+                            .heightIn(min = 180.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = noModelsText,
+                            text = stringResource(R.string.model_sheet_search_empty),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(Spacing.lg)
@@ -449,49 +508,44 @@ internal fun ModelSelectionSheet(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 360.dp, max = 420.dp),
+                        .heightIn(max = 420.dp),
                     verticalArrangement = Arrangement.spacedBy(Spacing.sm)
                 ) {
-                    activeProviders.forEach { provider ->
-                        val filteredModels = provider.models.filter {
-                            searchQuery.isBlank() || it.contains(searchQuery, ignoreCase = true)
-                        }
-                        if (filteredModels.isNotEmpty()) {
-                            // 搜索时强制展开，否则用折叠状态：用户搜到名字却看不到结果会很困惑。
-                            val expanded = searchQuery.isNotBlank() || provider.id !in collapsedProviderIds
-                            item(key = "header_${provider.id}") {
-                                CollapsibleGroupHeader(
-                                    text = "${provider.name} (${filteredModels.size})",
-                                    expanded = expanded,
-                                    onToggle = {
-                                        val updated = if (provider.id in collapsedProviderIds) {
-                                            collapsedProviderIds - provider.id
-                                        } else {
-                                            collapsedProviderIds + provider.id
-                                        }
-                                        collapsedProviderIds = updated
-                                        collapseStore.save(updated)
+                    visibleGroups.forEach { (provider, filteredModels) ->
+                        // 搜索时强制展开，否则用折叠状态：用户搜到名字却看不到结果会很困惑。
+                        val expanded = searchQuery.isNotBlank() || provider.id !in collapsedProviderIds
+                        item(key = "header_${provider.id}") {
+                            CollapsibleGroupHeader(
+                                text = "${provider.name} (${filteredModels.size})",
+                                expanded = expanded,
+                                onToggle = {
+                                    val updated = if (provider.id in collapsedProviderIds) {
+                                        collapsedProviderIds - provider.id
+                                    } else {
+                                        collapsedProviderIds + provider.id
                                     }
-                                )
-                            }
-                            if (expanded) {
-                                item(key = "card_${provider.id}") {
-                                    SettingsGroup {
-                                        filteredModels.forEachIndexed { index, model ->
-                                            if (index > 0) {
-                                                SettingsDivider()
-                                            }
-                                            val testKey = modelMetadataKey(provider.id, model)
-                                            ModelSelectionRow(
-                                                model = model,
-                                                selected = provider.id == currentProviderId && model == currentModel,
-                                                metadata = modelMetadata[testKey],
-                                                onClick = { onSelect(provider.id, model) },
-                                                onTest = onTestModel?.let { test -> { test(provider, model) } },
-                                                testing = testKey in testingModels,
-                                                result = if (onTestModel != null) testResults[testKey] else null
-                                            )
+                                    collapsedProviderIds = updated
+                                    collapseStore.save(updated)
+                                }
+                            )
+                        }
+                        if (expanded) {
+                            item(key = "card_${provider.id}") {
+                                SettingsGroup {
+                                    filteredModels.forEachIndexed { index, model ->
+                                        if (index > 0) {
+                                            SettingsDivider()
                                         }
+                                        val testKey = modelMetadataKey(provider.id, model)
+                                        ModelSelectionRow(
+                                            model = model,
+                                            selected = provider.id == currentProviderId && model == currentModel,
+                                            metadata = modelMetadata[testKey],
+                                            onClick = { onSelect(provider.id, model) },
+                                            onTest = onTestModel?.let { test -> { test(provider, model) } },
+                                            testing = testKey in testingModels,
+                                            result = if (onTestModel != null) testResults[testKey] else null
+                                        )
                                     }
                                 }
                             }

@@ -105,6 +105,12 @@ data class ChatSearchHit(
     val timestamp: Long
 )
 
+internal class PendingChatScroll(
+    val sessionId: String,
+    val messageId: String,
+    val minimumMessageLimit: Int,
+)
+
 /** 侧边栏聊天记录搜索状态：当前关键词与命中的扁平结果（按时间倒序）。 */
 @Immutable
 data class ChatSearchState(
@@ -276,6 +282,9 @@ fun CharSequence.hasVisibleContent(): Boolean {
     }
     return false
 }
+
+internal fun AgentUIMessage.hasRenderableChatContent(): Boolean =
+    role != MessageRole.ASSISTANT || content.hasVisibleContent() || !reasoning.isNullOrEmpty() || attachments.isNotEmpty()
 
 /**
  * 运行中工具的实时累积输出。仅存内存、不落库：用于在该工具消息气泡里实时叠加显示

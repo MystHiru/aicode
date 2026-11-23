@@ -1,6 +1,7 @@
 package com.aicode.feature.plugin.presentation
 
 import android.widget.Toast
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +28,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -40,17 +42,27 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicode.R
+import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.THUMBNAIL_MAX_EDGE
+import com.aicode.core.ui.decodeSampledBitmap
+import com.aicode.feature.plugin.data.PluginRecord
+import com.aicode.feature.plugin.data.index.PluginIndexDefaults
+import com.aicode.feature.plugin.data.index.PluginTags
 import com.aicode.feature.settings.presentation.component.LazyGroupItem
 import com.aicode.feature.settings.presentation.component.McpPill
 import com.aicode.feature.settings.presentation.component.ModelSearchField
@@ -64,23 +76,22 @@ import compose.icons.FeatherIcons
 import compose.icons.feathericons.Book
 import compose.icons.feathericons.ChevronRight
 import compose.icons.feathericons.CloudOff
+import compose.icons.feathericons.Download
 import compose.icons.feathericons.Github
 import compose.icons.feathericons.Globe
 import compose.icons.feathericons.Package
 import compose.icons.feathericons.Server
+import compose.icons.feathericons.Settings
 import compose.icons.feathericons.ShoppingBag
 import compose.icons.feathericons.Tag
-
-/** 非官方徽标固定用黄色，与主题主色区分开。 */
-private val UnofficialBadgeBackground = Color(0xFFFFE082)
-private val UnofficialBadgeText = Color(0xFF5C4300)
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun PluginStoreSection(
-    onShowPreview: (PluginStorePreview) -> Unit,
     onOpenDetail: (PluginStoreItem) -> Unit,
-    viewModel: PluginStoreViewModel = hiltViewModel()
+    viewModel: PluginStoreViewModel
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
@@ -88,12 +99,6 @@ internal fun PluginStoreSection(
     val languageTag = currentLanguageTag()
     var searchQuery by rememberSaveable { mutableStateOf("") }
 
-    LaunchedEffect(state.preview) {
-        state.preview?.let { preview ->
-            onShowPreview(preview)
-            viewModel.consumePreview()
-        }
-    }
     LaunchedEffect(viewModel) {
         viewModel.refreshResult.collect { failed ->
             val message = if (failed > 0) {
@@ -114,12 +119,12 @@ internal fun PluginStoreSection(
                 item.plugin.name.resolve(languageTag).lowercase().contains(query) ||
                     item.plugin.id.lowercase().contains(query) ||
                     item.plugin.author.lowercase().contains(query) ||
+                    item.source.name.lowercase().contains(query) ||
                     item.plugin.description.resolve(languageTag).lowercase().contains(query)
             }
         }
     }
-    // 安装/下载错误归属具体插件，只在该插件详情页展示；整页错误只处理索引错误。
-    val indexError = state.error?.takeIf { it.pluginId == null }
+    val indexError = state.error
 
     PullToRefreshBox(
         isRefreshing = state.refreshing,
@@ -185,6 +190,8 @@ internal fun PluginStoreSection(
                                 StorePluginRow(
                                     item = item,
                                     languageTag = languageTag,
+                                    viewModel = viewModel,
+                                    refreshVersion = state.logoRefreshVersion,
                                     onClick = { onOpenDetail(item) }
                                 )
                             }
@@ -200,9 +207,60 @@ internal fun PluginStoreSection(
 private fun pluginVersionText(version: String?): String =
     version?.let { "v$it" } ?: stringResource(R.string.plugins_store_version_latest)
 
+/** 商店图标：优先读磁盘缓存即时显示，过期后后台刷新；无图或失败时回退到通用图标。 */
+@Composable
+private fun StorePluginLogo(
+    url: String?,
+    viewModel: PluginStoreViewModel,
+    iconSize: Dp,
+    shape: Shape,
+    refreshVersion: Long
+) {
+    val bitmap = remember(url) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(url, refreshVersion) {
+        val imageUrl = url?.takeIf { it.startsWith("https://", ignoreCase = true) }
+            ?: return@LaunchedEffect
+        val cached = viewModel.readPluginLogoCache(imageUrl)
+        val cachedBitmap = cached?.let { entry ->
+            withContext(Dispatchers.IO) { decodeSampledBitmap(entry.file.absolutePath, THUMBNAIL_MAX_EDGE) }
+        }
+        bitmap.value = cachedBitmap
+        if (cached?.isFresh == true) return@LaunchedEffect
+
+        val refreshed = viewModel.refreshPluginLogo(imageUrl) ?: return@LaunchedEffect
+        if (cachedBitmap == null || refreshed.lastModified != cached.lastModified) {
+            bitmap.value = withContext(Dispatchers.IO) {
+                decodeSampledBitmap(refreshed.file.absolutePath, THUMBNAIL_MAX_EDGE)
+            }
+        }
+    }
+    val loaded = bitmap.value
+    if (loaded != null) {
+        Image(
+            bitmap = loaded,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize().clip(shape)
+        )
+    } else {
+        Icon(
+            imageVector = FeatherIcons.Package,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(iconSize)
+        )
+    }
+}
+
 /** 商店列表与已安装列表同版式：图标 + 名称 + 描述；商店不需要开关，点击进入独立详情页。 */
 @Composable
-private fun StorePluginRow(item: PluginStoreItem, languageTag: String, onClick: () -> Unit) {
+private fun StorePluginRow(
+    item: PluginStoreItem,
+    languageTag: String,
+    viewModel: PluginStoreViewModel,
+    refreshVersion: Long,
+    onClick: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -219,11 +277,12 @@ private fun StorePluginRow(item: PluginStoreItem, languageTag: String, onClick: 
                 ),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = FeatherIcons.Package,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(22.dp)
+            StorePluginLogo(
+                url = item.plugin.logo,
+                viewModel = viewModel,
+                iconSize = 22.dp,
+                shape = RoundedCornerShape(8.dp),
+                refreshVersion = refreshVersion
             )
         }
 
@@ -245,9 +304,10 @@ private fun StorePluginRow(item: PluginStoreItem, languageTag: String, onClick: 
                 if (!item.official) {
                     Spacer(modifier = Modifier.width(6.dp))
                     McpPill(
-                        text = stringResource(R.string.plugins_store_badge_unofficial),
-                        textColor = UnofficialBadgeText,
-                        backgroundColor = UnofficialBadgeBackground
+                        text = if (item.source.id == PluginIndexDefaults.VANTA_ID) "Vanta"
+                        else stringResource(R.string.plugins_store_badge_unofficial),
+                        textColor = MaterialTheme.semanticColors.onWarningContainer,
+                        backgroundColor = MaterialTheme.semanticColors.warningContainer
                     )
                 }
             }
@@ -276,24 +336,17 @@ private fun StorePluginRow(item: PluginStoreItem, languageTag: String, onClick: 
 @Composable
 internal fun PluginStoreDetailSection(
     item: PluginStoreItem,
-    onShowPreview: (PluginStorePreview) -> Unit,
+    installed: PluginRecord?,
+    onManageInstalled: () -> Unit,
+    onInstall: (PluginStoreItem, () -> Boolean) -> Unit,
     viewModel: PluginStoreViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val latest = state.items.firstOrNull {
-        it.source.id == item.source.id && it.plugin.id == item.plugin.id
-    } ?: item
+    val available = state.currentListing(item)
+    val latest = available ?: item
     val context = LocalContext.current
     val languageTag = currentLanguageTag()
-    val installing = state.installingPluginId == latest.plugin.id
-
-    LaunchedEffect(state.preview) {
-        // 预览是全局单槽状态；只弹出当前插件的预览，避免 A 的安装结果覆盖到 B 的详情页。
-        val preview = state.preview?.takeIf { it.preview.manifest.id == latest.plugin.id }
-            ?: return@LaunchedEffect
-        onShowPreview(preview)
-        viewModel.consumePreview()
-    }
+    val canUpdate = available?.canUpdate(installed) == true
 
     Column(
         modifier = Modifier
@@ -302,7 +355,59 @@ internal fun PluginStoreDetailSection(
             .padding(horizontal = Spacing.lg)
             .padding(top = Spacing.md, bottom = Spacing.xl)
     ) {
-        StoreHeaderCard(item = latest, languageTag = languageTag)
+        StoreHeaderCard(
+            item = latest,
+            languageTag = languageTag,
+            viewModel = viewModel,
+            refreshVersion = state.logoRefreshVersion
+        )
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(top = Spacing.md),
+            verticalArrangement = Arrangement.spacedBy(Spacing.xs)
+        ) {
+            if (installed == null || canUpdate) {
+                Button(
+                    onClick = { available?.let { selection -> onInstall(selection) { viewModel.isCurrent(selection) } } },
+                    enabled = available?.compatible == true,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (available?.compatible == true) {
+                        Icon(FeatherIcons.Download, contentDescription = null, modifier = Modifier.size(Spacing.lg))
+                        Spacer(Modifier.width(Spacing.sm))
+                    }
+                    Text(
+                        when {
+                            available == null -> stringResource(R.string.plugins_store_unavailable)
+                            !available.compatible -> available.plugin.minAppVersion?.let { minimum ->
+                                stringResource(R.string.plugins_store_requires_min_version, minimum)
+                            } ?: stringResource(R.string.plugins_store_incompatible)
+                            canUpdate -> stringResource(R.string.plugins_store_update)
+                            else -> stringResource(R.string.plugins_store_install)
+                        }
+                    )
+                }
+            }
+            if (installed != null) {
+                if (canUpdate) {
+                    OutlinedButton(onClick = onManageInstalled, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.plugins_manage_installed))
+                    }
+                } else {
+                    Button(onClick = onManageInstalled, modifier = Modifier.fillMaxWidth()) {
+                        Icon(FeatherIcons.Settings, contentDescription = null, modifier = Modifier.size(Spacing.lg))
+                        Spacer(Modifier.width(Spacing.sm))
+                        Text(stringResource(R.string.plugins_manage_installed))
+                    }
+                }
+                if (available != null && !available.matchesInstalledSource(installed)) {
+                    Text(
+                        text = stringResource(R.string.plugins_store_update_other_source),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
 
         SettingsGroupHeader(text = stringResource(R.string.plugins_section_info))
         SettingsGroup {
@@ -316,14 +421,19 @@ internal fun PluginStoreDetailSection(
                 SettingsRow(
                     icon = FeatherIcons.Package,
                     title = stringResource(R.string.plugins_store_detail_tags),
-                    trailing = { StoreInfoValue(latest.plugin.tags.joinToString(" · ")) }
+                    subtitle = latest.plugin.tags.map { storeTagLabel(it) }.joinToString(" · ")
                 )
             }
             SettingsDivider()
             SettingsRow(
                 icon = FeatherIcons.Server,
                 title = stringResource(R.string.plugins_store_detail_index_source),
-                trailing = { StoreInfoValue(latest.source.name) }
+                trailing = {
+                    StoreInfoValue(
+                        if (latest.source.official) latest.source.name
+                        else stringResource(R.string.plugins_store_detail_index_source_community, latest.source.name)
+                    )
+                }
             )
             SettingsDivider()
             SettingsRow(
@@ -348,58 +458,19 @@ internal fun PluginStoreDetailSection(
                 )
             }
         }
-
-        Button(
-            onClick = { viewModel.install(latest) },
-            enabled = latest.compatible && !installing &&
-                (latest.installedVersion == null || latest.updateAvailable),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = Spacing.lg)
-        ) {
-            if (installing) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.onPrimary
-                )
-                Spacer(modifier = Modifier.width(Spacing.sm))
-            }
-            Text(
-                when {
-                    installing -> stringResource(R.string.plugins_installing)
-                    !latest.compatible -> latest.plugin.minAppVersion?.let { minimum ->
-                        stringResource(R.string.plugins_store_requires_min_version, minimum)
-                    } ?: stringResource(R.string.plugins_store_incompatible)
-                    latest.installedVersion != null && !latest.updateAvailable ->
-                        stringResource(R.string.plugins_store_installed)
-                    latest.updateAvailable -> stringResource(R.string.plugins_store_update)
-                    else -> stringResource(R.string.plugins_store_install)
-                }
-            )
-        }
-        val installError = state.error?.takeIf {
-            it.pluginId == latest.plugin.id &&
-                (it.code == PluginStoreErrorCode.DOWNLOAD_FAILED ||
-                    it.code == PluginStoreErrorCode.NO_COMPATIBLE_RELEASE ||
-                    it.code == PluginStoreErrorCode.PREVIEW_FAILED)
-        }
-        if (installError != null) {
-            Text(
-                text = storeErrorMessage(installError),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(top = Spacing.sm, start = Spacing.xs, end = Spacing.xs)
-            )
-        }
     }
 }
 
 @Composable
-private fun StoreHeaderCard(item: PluginStoreItem, languageTag: String) {
+private fun StoreHeaderCard(
+    item: PluginStoreItem,
+    languageTag: String,
+    viewModel: PluginStoreViewModel,
+    refreshVersion: Long
+) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(Radius.lg),
         color = MaterialTheme.semanticColors.cardSurface
     ) {
         Row(
@@ -412,16 +483,17 @@ private fun StoreHeaderCard(item: PluginStoreItem, languageTag: String) {
                 modifier = Modifier
                     .size(48.dp)
                     .background(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(12.dp)
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(Radius.mdLarge)
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = FeatherIcons.Package,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(26.dp)
+                StorePluginLogo(
+                    url = item.plugin.logo,
+                    viewModel = viewModel,
+                    iconSize = 26.dp,
+                    shape = RoundedCornerShape(12.dp),
+                    refreshVersion = refreshVersion
                 )
             }
             Spacer(modifier = Modifier.width(Spacing.lg))
@@ -439,11 +511,12 @@ private fun StoreHeaderCard(item: PluginStoreItem, languageTag: String) {
                         modifier = Modifier.weight(1f, fill = false)
                     )
                     if (!item.official) {
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(Spacing.xs))
                         McpPill(
-                            text = stringResource(R.string.plugins_store_badge_unofficial),
-                            textColor = UnofficialBadgeText,
-                            backgroundColor = UnofficialBadgeBackground
+                            text = if (item.source.id == PluginIndexDefaults.VANTA_ID) "Vanta"
+                            else stringResource(R.string.plugins_store_badge_unofficial),
+                            textColor = MaterialTheme.semanticColors.onWarningContainer,
+                            backgroundColor = MaterialTheme.semanticColors.warningContainer
                         )
                     }
                 }
@@ -467,6 +540,20 @@ private fun StoreHeaderCard(item: PluginStoreItem, languageTag: String) {
         }
     }
 }
+
+@Composable
+private fun storeTagLabel(tag: String): String = stringResource(
+    when (tag) {
+        PluginTags.PROVIDER -> R.string.plugins_store_tag_provider
+        PluginTags.TOOL -> R.string.common_tool
+        PluginTags.SKILL -> R.string.settings_skills
+        PluginTags.AGENT -> R.string.settings_subagents
+        PluginTags.MCP -> R.string.settings_mcp
+        PluginTags.UI -> R.string.plugins_store_tag_ui
+        PluginTags.INTEGRATION -> R.string.plugins_store_tag_integration
+        else -> R.string.common_other
+    }
+)
 
 @Composable
 private fun StoreInfoValue(text: String) {
@@ -501,11 +588,11 @@ private fun StoreErrorState(
 }
 
 @Composable
-private fun storeErrorMessage(error: PluginStoreError): String = when (error.code) {
+internal fun storeErrorMessage(error: PluginStoreError): String = when (error.code) {
     PluginStoreErrorCode.NETWORK -> stringResource(R.string.plugins_store_error_network)
     PluginStoreErrorCode.INVALID_INDEX -> stringResource(R.string.plugins_store_error_invalid)
     PluginStoreErrorCode.NO_COMPATIBLE_RELEASE -> stringResource(R.string.plugins_store_error_no_release)
     PluginStoreErrorCode.DOWNLOAD_FAILED -> stringResource(R.string.plugins_store_error_download)
-    PluginStoreErrorCode.PREVIEW_FAILED -> error.pluginError?.let { pluginErrorMessage(it) }
-        ?: stringResource(R.string.plugins_store_error_preview)
+    PluginStoreErrorCode.PACKAGE_CHECK_FAILED -> stringResource(R.string.plugins_store_error_package_check)
+    PluginStoreErrorCode.LISTING_CHANGED -> stringResource(R.string.plugins_store_error_listing_changed)
 }

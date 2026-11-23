@@ -4,11 +4,10 @@ import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -16,14 +15,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SheetValue
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -31,27 +30,22 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicode.R
+import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.AdaptiveModalBottomSheet
-import com.aicode.core.ui.AppTextField
-import com.aicode.core.ui.dialogTextFieldColors
 import com.aicode.feature.plugin.domain.PluginError
 import com.aicode.feature.plugin.domain.PluginErrorCode
+import com.aicode.feature.settings.presentation.component.SettingsDivider
 import com.aicode.feature.settings.presentation.component.SettingsGroup
 import com.aicode.feature.settings.presentation.component.SettingsGroupHeader
-import java.net.URI
+import com.aicode.feature.settings.presentation.component.SettingsRow
+import compose.icons.FeatherIcons
+import compose.icons.feathericons.Github
+import compose.icons.feathericons.Package
 
 /** 单次最多逐条列出的导入问题数，其余折叠成「还有 N 个问题」。 */
 private const val MAX_LISTED_ERRORS = 5
-
-/** 只做明确的等价归一：去空白、末尾斜杠与 .git 后缀，scheme/host 小写。 */
-private fun normalizeRepositoryInput(raw: String): String {
-    val text = raw.trim().trimEnd('/').removeSuffix(".git")
-    return runCatching {
-        val uri = URI(text)
-        "${uri.scheme.lowercase()}://${uri.host.lowercase()}${uri.path.orEmpty().trimEnd('/')}"
-    }.getOrDefault(text)
-}
 
 /** 导入流程的全部弹层：读取中、失败列表、预览与授权确认。放在设置页底部与其他对话框并列。 */
 @Composable
@@ -60,6 +54,18 @@ internal fun PluginImportHost(viewModel: PluginsViewModel) {
     when (val current = state) {
         PluginImportState.Idle -> Unit
         PluginImportState.Reading -> ProgressDialog(R.string.plugins_reading)
+        PluginImportState.Downloading -> ProgressDialog(
+            R.string.plugins_store_downloading,
+            onCancel = viewModel::dismissImport
+        )
+        is PluginImportState.StoreFailed -> AlertDialog(
+            onDismissRequest = viewModel::dismissImport,
+            title = { Text(stringResource(R.string.plugins_import_failed_title)) },
+            text = { Text(storeErrorMessage(current.error)) },
+            confirmButton = {
+                TextButton(onClick = viewModel::dismissImport) { Text(stringResource(R.string.common_got_it)) }
+            }
+        )
         is PluginImportState.Failed -> ImportFailedDialog(current.errors, onDismiss = viewModel::dismissImport)
         is PluginImportState.Preview -> PluginPreviewSheet(
             state = current,
@@ -70,12 +76,16 @@ internal fun PluginImportHost(viewModel: PluginsViewModel) {
 }
 
 @Composable
-private fun ProgressDialog(@StringRes titleRes: Int) {
+private fun ProgressDialog(@StringRes titleRes: Int, onCancel: (() -> Unit)? = null) {
     AlertDialog(
-        onDismissRequest = {},
+        onDismissRequest = { onCancel?.invoke() },
         title = { Text(stringResource(titleRes)) },
         text = { CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp) },
-        confirmButton = {}
+        confirmButton = {
+            if (onCancel != null) {
+                TextButton(onClick = onCancel) { Text(stringResource(R.string.common_cancel)) }
+            }
+        }
     )
 }
 
@@ -113,134 +123,121 @@ private fun PluginPreviewSheet(
     val preview = state.preview
     val manifest = preview.manifest
     val languageTag = currentLanguageTag()
-    val expectedRepository = state.expectedRepository
-    val requiresManualRepository = expectedRepository != null && !state.officialSource
-    var repositoryInput by rememberSaveable(state.preview.token) { mutableStateOf("") }
-    val repositoryMatches = !requiresManualRepository ||
-        normalizeRepositoryInput(repositoryInput) == normalizeRepositoryInput(expectedRepository.orEmpty())
+    val source = state.origin.sourceName?.let { name ->
+        stringResource(
+            if (state.origin.official) R.string.plugins_install_source_official
+            else R.string.plugins_install_source_community,
+            name
+        )
+    } ?: stringResource(
+        if (state.sourceDirName != null) R.string.plugins_origin_development else R.string.plugins_origin_local
+    )
+    val sourceChanged = installSourceChanged(preview, state.origin)
+    val installing by rememberUpdatedState(state.installing)
 
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = MaterialTheme.colorScheme.surface
+        sheetState = rememberModalBottomSheetState(
+            skipPartiallyExpanded = true,
+            confirmValueChange = { it != SheetValue.Hidden || !installing }
+        ),
+        sheetGesturesEnabled = !state.installing
     ) {
+        Text(
+            text = stringResource(R.string.plugins_preview_title),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.sm)
+        )
         Column(
             modifier = Modifier
+                .weight(1f, fill = false)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = Spacing.lg)
-                .padding(bottom = Spacing.xl),
+                .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
             verticalArrangement = Arrangement.spacedBy(Spacing.sm)
         ) {
-            Text(
-                text = stringResource(R.string.plugins_preview_title),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
+            PluginHeaderCard(
+                name = manifest.name.resolve(languageTag),
+                subtitle = stringResource(R.string.plugins_item_subtitle, manifest.version.toString(), manifest.publisher),
+                description = manifest.description.resolve(languageTag),
+                icon = preview.content.icon
             )
-            Text(
-                text = manifest.name.resolve(languageTag),
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = stringResource(R.string.plugins_item_subtitle, manifest.version.toString(), manifest.publisher),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            state.sourceLabel?.let { source ->
-                Text(
-                    text = if (state.officialSource) {
-                        stringResource(R.string.plugins_install_source_official, source)
-                    } else {
-                        stringResource(R.string.plugins_install_source_community, source)
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            SettingsGroup {
+                SettingsRow(icon = FeatherIcons.Package, title = stringResource(R.string.plugins_info_origin), subtitle = source)
+                SettingsDivider()
+                SettingsRow(
+                    icon = FeatherIcons.Github,
+                    title = stringResource(R.string.plugins_store_detail_source),
+                    subtitle = manifest.repository
                 )
             }
-            if (installSourceChanged(preview, state.origin)) {
-                Text(
-                    text = stringResource(R.string.plugins_install_source_changed),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error
-                )
+
+            if (!state.origin.official || sourceChanged) {
+                val semantic = MaterialTheme.semanticColors
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(Radius.mdLarge),
+                    color = semantic.warningContainer,
+                    contentColor = semantic.onWarningContainer
+                ) {
+                    Column(
+                        modifier = Modifier.padding(Spacing.md),
+                        verticalArrangement = Arrangement.spacedBy(Spacing.xs)
+                    ) {
+                        if (!state.origin.official) {
+                            Text(
+                                text = stringResource(
+                                    if (preview.content.providers.isNotEmpty()) R.string.plugins_install_third_party_provider_notice
+                                    else R.string.plugins_install_untrusted_notice
+                                ),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        if (sourceChanged) {
+                            Text(
+                                text = stringResource(R.string.plugins_install_source_changed),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
             }
-            Text(
-                text = manifest.description.resolve(languageTag),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
 
             SettingsGroupHeader(text = stringResource(R.string.plugins_preview_contents))
             SettingsGroup {
-                PluginContentRows(
-                    content = preview.content,
-                    languageTag = languageTag,
-                    active = true
-                )
+                PluginContentRows(content = preview.content, languageTag = languageTag, active = true)
             }
-
-            if (requiresManualRepository) {
-                SettingsGroupHeader(text = stringResource(R.string.plugins_install_repository_header))
-                Text(
-                    text = stringResource(R.string.plugins_install_repository_reason),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = expectedRepository.orEmpty(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                AppTextField(
-                    value = repositoryInput,
-                    onValueChange = { repositoryInput = it },
-                    label = stringResource(R.string.plugins_install_repository_label),
-                    placeholder = "https://github.com/owner/repo",
-                    colors = dialogTextFieldColors(),
-                    isError = repositoryInput.isNotBlank() && !repositoryMatches,
-                    supportingText = {
-                        Text(
-                            text = stringResource(
-                                if (repositoryInput.isBlank() || repositoryMatches) {
-                                    R.string.plugins_install_repository_hint
-                                } else {
-                                    R.string.plugins_install_repository_mismatch
-                                }
-                            )
-                        )
-                    }
-                )
-            }
-
-            state.error?.let { error ->
-                Text(
-                    text = pluginErrorMessage(error),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = Spacing.sm),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = onDismiss, enabled = !state.installing) {
-                    Text(stringResource(R.string.common_cancel))
+        }
+        Surface(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface) {
+            Column(modifier = Modifier.padding(horizontal = Spacing.lg).padding(top = Spacing.sm, bottom = Spacing.lg)) {
+                state.error?.let { error ->
+                    Text(
+                        text = pluginErrorMessage(error),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
                 }
-                Spacer(Modifier.width(Spacing.sm))
-                Button(onClick = onInstall, enabled = !state.installing && repositoryMatches) {
-                    if (state.installing) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text(
-                            stringResource(
-                                if (preview.installedVersion != null) R.string.plugins_install_replace
-                                else R.string.plugins_install
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onDismiss, enabled = !state.installing) {
+                        Text(stringResource(R.string.common_cancel))
+                    }
+                    Button(onClick = onInstall, enabled = !state.installing) {
+                        if (state.installing) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text(
+                                stringResource(
+                                    if (state.isListingCurrent != null && preview.installedVersion != null) R.string.plugins_store_update
+                                    else if (preview.installedVersion != null) R.string.plugins_install_replace
+                                    else R.string.plugins_install
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }

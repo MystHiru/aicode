@@ -26,23 +26,37 @@ data class PluginIndexSource(
     val id: String,
     val name: String,
     val indexUrl: String,
-    val official: Boolean,
+    val builtIn: Boolean = false,
     val lastFetchedAt: Long = 0
 ) {
-    val rootUrl: String get() = indexUrl.substringBeforeLast('/') + "/"
+    val official: Boolean get() = builtIn && id == PluginIndexDefaults.OFFICIAL_ID
 }
 
 object PluginIndexDefaults {
     const val OFFICIAL_URL = "https://raw.githubusercontent.com/jieapi/AiCode-Plugins-Store/main/index.json"
     const val OFFICIAL_NAME = "AiCode Plugins"
     const val OFFICIAL_ID = "aicode.official"
+    const val VANTA_URL = "https://raw.githubusercontent.com/Hye-steam/Vanta-Plugins-Store/main/index.json"
+    const val VANTA_NAME = "Vanta Plugin Store"
+    const val VANTA_ID = "vanta.community"
 
     val official = PluginIndexSource(
         id = OFFICIAL_ID,
         name = OFFICIAL_NAME,
         indexUrl = OFFICIAL_URL,
-        official = true
+        builtIn = true
     )
+
+    val vanta = PluginIndexSource(
+        id = VANTA_ID,
+        name = VANTA_NAME,
+        indexUrl = VANTA_URL,
+        builtIn = true
+    )
+
+    val builtIns = listOf(official, vanta)
+    val builtInIds = builtIns.map { it.id }.toSet()
+    val builtInUrls = builtIns.map { it.indexUrl }.toSet()
 }
 
 @Serializable
@@ -57,8 +71,7 @@ private data class StoredSource(
 private data class StoredSources(val sources: List<StoredSource> = emptyList())
 
 /**
- * 索引来源的持久化。官方来源永远由宿主常量提供且固定排在最前；
- * 自定义来源只有一个按行编辑的地址列表，列表顺序就是商店里各来源条目的叠加顺序。
+ * 内置索引按 AiCode、Vanta 的顺序显示，自定义索引随后按输入顺序排列。
  */
 @Singleton
 class PluginIndexSourceRepository @Inject constructor(
@@ -69,40 +82,38 @@ class PluginIndexSourceRepository @Inject constructor(
             runCatching { PluginIndexJson.decodeFromString<StoredSources>(raw) }.getOrNull()
         } ?: StoredSources()
         buildList {
-            add(
-                PluginIndexDefaults.official.copy(
-                    lastFetchedAt = stored.sources.firstOrNull { it.id == PluginIndexDefaults.OFFICIAL_ID }?.lastFetchedAt ?: 0
-                )
-            )
+            for (source in PluginIndexDefaults.builtIns) {
+                val fetched = stored.sources.firstOrNull { it.id == source.id }?.lastFetchedAt ?: 0
+                add(source.copy(lastFetchedAt = fetched))
+            }
             stored.sources
-                .filter { it.id != PluginIndexDefaults.OFFICIAL_ID }
+                .filterNot { it.id in PluginIndexDefaults.builtInIds || it.indexUrl in PluginIndexDefaults.builtInUrls }
                 .map { it.toModel() }
                 .forEach(::add)
         }
     }
 
-    /** 自定义来源地址，顺序即展示顺序；官方来源不在其中。 */
+    /** 自定义来源地址，顺序即展示顺序；两个内置来源不在其中。 */
     val customIndexUrls: Flow<List<String>> = sources.map { list ->
-        list.filterNot { it.official }.map { it.indexUrl }
+        list.filterNot { it.builtIn }.map { it.indexUrl }
     }
 
     /** 用输入行整体替换自定义来源；空行、无效地址与重复地址会被忽略，其余保持输入顺序。 */
     suspend fun setCustomSources(lines: List<String>): Result<Unit> = runCatching {
-        val existing = sources.first().filterNot { it.official }.associateBy { it.indexUrl }
+        val existing = sources.first().filterNot { it.builtIn }.associateBy { it.indexUrl }
         val next = linkedMapOf<String, PluginIndexSource>()
         lines.forEach { raw ->
             val url = runCatching { normalizeIndexUrl(raw) }.getOrNull() ?: return@forEach
-            if (url in next) return@forEach
+            if (url in next || url in PluginIndexDefaults.builtInUrls) return@forEach
             next[url] = existing[url] ?: PluginIndexSource(
                 id = sourceId(url),
                 name = defaultName(url),
-                indexUrl = url,
-                official = false
+                indexUrl = url
             )
         }
         updateStored { stored ->
-            val officialEntries = stored.sources.filter { it.id == PluginIndexDefaults.OFFICIAL_ID }
-            stored.copy(sources = officialEntries + next.values.map { it.toStored() })
+            val builtInEntries = stored.sources.filter { it.id in PluginIndexDefaults.builtInIds }
+            stored.copy(sources = builtInEntries + next.values.map { it.toStored() })
         }
     }
 
@@ -115,15 +126,10 @@ class PluginIndexSourceRepository @Inject constructor(
                         if (it.id == id) it.copy(lastFetchedAt = fetchedAt) else it
                     }
                 )
-                id == PluginIndexDefaults.OFFICIAL_ID -> stored.copy(
-                    sources = stored.sources + StoredSource(
-                        id = PluginIndexDefaults.OFFICIAL_ID,
-                        name = PluginIndexDefaults.OFFICIAL_NAME,
-                        indexUrl = PluginIndexDefaults.OFFICIAL_URL,
-                        lastFetchedAt = fetchedAt
-                    )
-                )
-                else -> stored
+                else -> {
+                    val source = PluginIndexDefaults.builtIns.firstOrNull { it.id == id } ?: return@updateStored stored
+                    stored.copy(sources = stored.sources + source.copy(lastFetchedAt = fetchedAt).toStored())
+                }
             }
         }
     }
@@ -141,7 +147,6 @@ class PluginIndexSourceRepository @Inject constructor(
         id = id,
         name = name,
         indexUrl = indexUrl,
-        official = false,
         lastFetchedAt = lastFetchedAt
     )
 

@@ -1,17 +1,25 @@
 package com.aicode.feature.plugin.data.index
 
 import android.content.Context
+import android.graphics.BitmapFactory
+import com.aicode.core.util.FileLogger
 import com.aicode.feature.plugin.data.PluginStoreSettingsRepository
 import com.aicode.feature.plugin.domain.SemVer
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.net.URI
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.decodeFromString
@@ -19,28 +27,39 @@ import kotlinx.serialization.Serializable
 import okhttp3.CacheControl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.ResponseBody
 
 data class PluginIndexSnapshot(
     val index: PluginIndexDocument,
-    val stale: Boolean,
     val fetchedAt: Long
 )
+
+/** 商店列表图标：文件、是否仍在 TTL 内、最后修改时间（供 UI 判断要不要刷新）。 */
+data class PluginLogoCacheEntry(
+    val file: File,
+    val isFresh: Boolean,
+    val lastModified: Long
+)
+
+internal const val PLUGIN_LOGO_CACHE_TTL_MS = 7L * 24 * 60 * 60 * 1000
+
+internal fun isPluginLogoCacheFresh(lastModified: Long, now: Long): Boolean =
+    now - lastModified < PLUGIN_LOGO_CACHE_TTL_MS
 
 data class PluginReleaseAsset(
     val version: String,
     val name: String,
     val url: String,
-    val size: Long
-)
-
-data class DownloadedPluginPackage(
-    val file: File,
-    val asset: PluginReleaseAsset
+    val size: Long?,
+    val sha256: String? = null,
+    val direct: Boolean = false
 )
 
 class PluginIndexException(message: String, cause: Throwable? = null) : IOException(message, cause)
 
 class NoMatchingReleaseException(message: String) : IOException(message)
+
+internal class PluginPackageIntegrityException(message: String) : IOException(message)
 
 @Singleton
 class PluginIndexClient @Inject constructor(
@@ -54,27 +73,53 @@ class PluginIndexClient @Inject constructor(
         .callTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .cache(null)
         .build()
+    private val https = http.newBuilder().followSslRedirects(false).build()
 
     private val cacheRoot = File(context.filesDir, "plugin-index-cache")
+    private val logoCacheRoot = File(context.cacheDir, "plugin-store-icons")
+    private val logoRefreshLocks = ConcurrentHashMap<String, Mutex>()
 
     private val hostAppVersion: SemVer? = runCatching {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName?.let(SemVer::parse)
     }.getOrNull()
 
+    suspend fun readCachedIndex(source: PluginIndexSource): PluginIndexSnapshot? = withContext(Dispatchers.IO) {
+        val file = cacheFile(source)
+        readCache(source, file)?.let { PluginIndexSnapshot(it, file.lastModified()) }
+    }
+
+    suspend fun readPluginLogoCache(url: String): PluginLogoCacheEntry? = withContext(Dispatchers.IO) {
+        logoCacheFile(url)?.let(::logoCacheEntry)
+    }
+
+    suspend fun refreshPluginLogo(url: String): PluginLogoCacheEntry? = withContext(Dispatchers.IO) {
+        val file = logoCacheFile(url) ?: return@withContext null
+        val lock = logoRefreshLocks.computeIfAbsent(url) { Mutex() }
+        lock.withLock {
+            logoCacheEntry(file)?.takeIf { it.isFresh } ?: run {
+                try {
+                    downloadLogo(url, file)
+                } catch (_: IOException) {
+                    return@withLock logoCacheEntry(file)
+                }
+                logoCacheEntry(file)
+            }
+        }
+    }
+
     suspend fun fetchIndex(source: PluginIndexSource, forceRefresh: Boolean = false): PluginIndexSnapshot =
         withContext(Dispatchers.IO) {
-            val cached = cacheFile(source)
-            val url = accelerated(source.indexUrl)
-            val bytes = try {
-                getBytes(url, MAX_INDEX_BYTES, noCache = forceRefresh)
+            // 内置索引提供校验元数据，不能让第三方镜像替换它。
+            val url = if (source.builtIn) source.indexUrl else accelerated(source.indexUrl)
+            val bytes = getBytes(url, MAX_INDEX_BYTES, noCache = forceRefresh, httpsOnly = source.builtIn)
+            val index = parseIndex(source, bytes)
+            ensureActive()
+            try {
+                writeCache(cacheFile(source), bytes)
             } catch (e: IOException) {
-                if (forceRefresh) throw e
-                val fallback = readCache(cached) ?: throw e
-                return@withContext PluginIndexSnapshot(fallback, stale = true, fetchedAt = cached.lastModified())
+                FileLogger.w("PluginIndexClient", "保存插件索引缓存失败: ${source.id}", e)
             }
-            val index = PluginIndexParser.parse(bytes)
-            writeCache(cached, bytes)
-            PluginIndexSnapshot(index, stale = false, fetchedAt = System.currentTimeMillis())
+            PluginIndexSnapshot(index, fetchedAt = System.currentTimeMillis())
         }
 
     fun isCompatible(plugin: PluginIndexPlugin): Boolean {
@@ -91,10 +136,20 @@ class PluginIndexClient @Inject constructor(
     }
 
     /**
-     * 解析插件对应的 Release 资产。
-     * version 为空时取 latest Release 中 `{id}_*.zip` 的最高版本；有 version 时精确查找 `{id}_{version}.zip`。
+     * 直链绑定索引里的具体版本；否则按 GitHub Release 资产名查找。
      */
-    suspend fun resolveRelease(plugin: PluginIndexPlugin): PluginReleaseAsset = withContext(Dispatchers.IO) {
+    suspend fun resolvePackage(plugin: PluginIndexPlugin): PluginReleaseAsset = withContext(Dispatchers.IO) {
+        plugin.packageUrl?.let { url ->
+            val version = plugin.version ?: throw NoMatchingReleaseException("直链插件缺少版本: ${plugin.id}")
+            return@withContext PluginReleaseAsset(
+                version = version,
+                name = assetName(plugin.id, version),
+                url = url,
+                size = plugin.packageSize,
+                sha256 = plugin.packageSha256,
+                direct = true
+            )
+        }
         val (owner, repo) = parseGitHubRepo(plugin.repository)
             ?: throw NoMatchingReleaseException("不是 GitHub 仓库: ${plugin.repository}")
         val expectedName = plugin.version?.let { assetName(plugin.id, it) }
@@ -126,14 +181,21 @@ class PluginIndexClient @Inject constructor(
         )
     }
 
-    suspend fun download(asset: PluginReleaseAsset): DownloadedPluginPackage = withContext(Dispatchers.IO) {
-        if (asset.size <= 0 || asset.size > MAX_ARCHIVE_BYTES) {
-            throw PluginIndexException("资产大小非法: ${asset.size}")
+    suspend fun download(asset: PluginReleaseAsset, allowMirror: Boolean): ByteArray = withContext(Dispatchers.IO) {
+        val expectedSize = asset.size
+        if (expectedSize != null && expectedSize !in 1..MAX_PLUGIN_ARCHIVE_BYTES) {
+            throw PluginPackageIntegrityException("资产大小非法: $expectedSize")
         }
-        val bytes = getBytes(accelerated(asset.url), asset.size, noCache = true, expectedSize = asset.size)
-        val file = File(context.cacheDir, "plugin-${sha256(bytes).take(16)}.zip")
-        file.writeBytes(bytes)
-        DownloadedPluginPackage(file, asset)
+        val url = if (allowMirror && !asset.direct) accelerated(asset.url) else asset.url
+        val bytes = getBytes(
+            url,
+            MAX_PLUGIN_ARCHIVE_BYTES,
+            noCache = true,
+            expectedSize = expectedSize,
+            httpsOnly = url == asset.url
+        )
+        verifyPackageHash(bytes, asset.sha256)
+        bytes
     }
 
     /** 配置了镜像加速时给 GitHub 地址加上前缀；其他主机的索引仓库保持原地址。 */
@@ -169,15 +231,14 @@ class PluginIndexClient @Inject constructor(
             .header("User-Agent", "aicode-plugin-index")
             .header("X-GitHub-Api-Version", "2022-11-28")
             .build()
-        http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw NoMatchingReleaseException("GitHub Release 请求失败: HTTP ${response.code}")
-            }
-            val body = response.body?.string() ?: throw NoMatchingReleaseException("GitHub Release 响应为空")
+        https.newCall(request).execute().use { response ->
+            if (response.code == 404) throw NoMatchingReleaseException("GitHub Release 不存在")
+            if (!response.isSuccessful) throw IOException("GitHub Release 请求失败: HTTP ${response.code}")
+            val body = response.body ?: throw IOException("GitHub Release 响应为空")
             return try {
-                PluginIndexJson.decodeFromString<T>(body)
-            } catch (e: Exception) {
-                throw NoMatchingReleaseException("GitHub Release 响应解析失败")
+                PluginIndexJson.decodeFromString<T>(readStoreBody(body, MAX_RELEASE_RESPONSE_BYTES, null).decodeToString())
+            } catch (e: kotlinx.serialization.SerializationException) {
+                throw IOException("GitHub Release 响应解析失败", e)
             }
         }
     }
@@ -186,52 +247,94 @@ class PluginIndexClient @Inject constructor(
         url: String,
         maxBytes: Long,
         noCache: Boolean,
-        expectedSize: Long? = null
+        expectedSize: Long? = null,
+        httpsOnly: Boolean = false
     ): ByteArray {
+        if (httpsOnly && !isSecureStoreUrl(url)) throw IOException("插件商店请求必须使用 HTTPS")
         val builder = Request.Builder().url(url).header("User-Agent", "aicode-plugin-index")
         if (noCache) builder.cacheControl(CacheControl.Builder().noCache().build())
-        http.newCall(builder.build()).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("HTTP ${response.code}: $url")
-            val body = response.body ?: throw IOException("空响应: $url")
-            val declared = body.contentLength()
-            if (declared > maxBytes) throw IOException("响应超过大小限制: $url")
-            if (expectedSize != null && declared > 0 && declared != expectedSize) {
-                throw IOException("响应大小 $declared 与声明 $expectedSize 不一致")
-            }
-            val stream = body.byteStream()
-            val output = java.io.ByteArrayOutputStream(if (declared in 1..maxBytes) declared.toInt() else 8192)
-            val buffer = ByteArray(64 * 1024)
-            var total = 0L
-            while (true) {
-                val read = stream.read(buffer)
-                if (read < 0) break
-                total += read
-                if (total > maxBytes) throw IOException("响应超过大小限制: $url")
-                output.write(buffer, 0, read)
-            }
-            if (expectedSize != null && total != expectedSize) {
-                throw IOException("响应大小 $total 与声明 $expectedSize 不一致")
-            }
-            return output.toByteArray()
+        val client = if (httpsOnly) https else http
+        client.newCall(builder.build()).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("HTTP ${response.code}: ${response.request.url.host}")
+            val body = response.body ?: throw IOException("空响应")
+            return readStoreBody(body, maxBytes, expectedSize)
         }
     }
+
+    private fun logoCacheFile(url: String): File? {
+        if (url.length > MAX_LOGO_URL_LENGTH) return null
+        val uri = runCatching { URI(url) }.getOrNull() ?: return null
+        if (uri.scheme != "https" || uri.host.isNullOrBlank() || uri.userInfo != null) return null
+        val key = sha256Hex(url.toByteArray(Charsets.UTF_8))
+        return File(logoCacheRoot, "$key.img")
+    }
+
+    private fun logoCacheEntry(file: File): PluginLogoCacheEntry? {
+        if (!file.isFile || file.length() == 0L) return null
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        runCatching { BitmapFactory.decodeFile(file.absolutePath, options) }
+        if (options.outWidth <= 0 || options.outHeight <= 0) {
+            file.delete()
+            return null
+        }
+        val lastModified = file.lastModified()
+        return PluginLogoCacheEntry(
+            file = file,
+            isFresh = isPluginLogoCacheFresh(lastModified, System.currentTimeMillis()),
+            lastModified = lastModified
+        )
+    }
+
+    private suspend fun downloadLogo(url: String, file: File) {
+        val bytes = withContext(Dispatchers.IO) {
+            getBytes(accelerated(url), MAX_LOGO_BYTES, noCache = true)
+        }
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) }
+        if (options.outWidth <= 0 || options.outHeight <= 0) throw IOException("插件图标格式无效")
+
+        file.parentFile?.mkdirs()
+        val temp = File(file.parentFile, "${file.name}.tmp")
+        try {
+            FileOutputStream(temp).use { output ->
+                output.write(bytes)
+                output.fd.sync()
+            }
+            if (!temp.renameTo(file)) throw IOException("无法写入插件图标缓存")
+        } finally {
+            temp.delete()
+        }
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     private fun cacheFile(source: PluginIndexSource): File = File(File(cacheRoot, source.id), "index.json")
 
     private fun writeCache(file: File, bytes: ByteArray) {
         file.parentFile?.mkdirs()
-        val temp = File(file.parentFile, "${file.name}.tmp")
-        temp.writeBytes(bytes)
-        temp.renameTo(file)
+        val temp = File.createTempFile("index-", ".tmp", file.parentFile)
+        try {
+            temp.writeBytes(bytes)
+            if (!temp.renameTo(file)) throw IOException("无法替换索引缓存")
+        } finally {
+            temp.delete()
+        }
     }
 
-    private fun readCache(file: File): PluginIndexDocument? {
-        if (!file.isFile) return null
-        return runCatching { PluginIndexParser.parse(file.readBytes()) }.getOrNull()
+    private fun readCache(source: PluginIndexSource, file: File): PluginIndexDocument? {
+        if (!file.isFile || file.length() > MAX_INDEX_BYTES) return null
+        return runCatching { parseIndex(source, file.readBytes()) }.getOrNull()
     }
 
-    private fun sha256(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+    private fun parseIndex(source: PluginIndexSource, bytes: ByteArray): PluginIndexDocument {
+        var skipped = 0
+        val index = PluginIndexParser.parse(bytes, skipInvalidPlugins = source.id == PluginIndexDefaults.VANTA_ID) {
+            skipped++
+        }
+        if (skipped > 0) FileLogger.w("PluginIndexClient", "索引 ${source.id} 跳过 $skipped 个无效条目")
+        return index
+    }
 
     @Serializable
     private data class GitHubRelease(
@@ -257,6 +360,43 @@ class PluginIndexClient @Inject constructor(
             "codeload.github.com"
         )
         const val MAX_INDEX_BYTES = 2L * 1024 * 1024
-        const val MAX_ARCHIVE_BYTES = 16L * 1024 * 1024
+        const val MAX_RELEASE_RESPONSE_BYTES = 16L * 1024 * 1024
+        const val MAX_LOGO_BYTES = 5L * 1024 * 1024
+        const val MAX_LOGO_URL_LENGTH = 1024
+    }
+}
+
+internal fun readStoreBody(body: ResponseBody, maxBytes: Long, expectedSize: Long?): ByteArray {
+    val limit = minOf(maxBytes, expectedSize ?: maxBytes)
+    val declared = body.contentLength()
+    if (expectedSize != null && declared >= 0 && declared != expectedSize) {
+        throw PluginPackageIntegrityException("响应大小 $declared 与声明 $expectedSize 不一致")
+    }
+    if (declared > maxBytes) throw IOException("响应超过大小限制")
+    val stream = body.byteStream()
+    val output = ByteArrayOutputStream(if (declared in 1..limit) declared.toInt() else 8192)
+    val buffer = ByteArray(64 * 1024)
+    var total = 0L
+    while (true) {
+        val read = stream.read(buffer)
+        if (read < 0) break
+        total += read
+        if (total > limit) {
+            if (expectedSize != null && total > expectedSize) throw PluginPackageIntegrityException("响应超过声明大小")
+            throw IOException("响应超过大小限制")
+        }
+        output.write(buffer, 0, read)
+    }
+    if (expectedSize != null && total != expectedSize) {
+        throw PluginPackageIntegrityException("响应大小 $total 与声明 $expectedSize 不一致")
+    }
+    return output.toByteArray()
+}
+
+internal fun verifyPackageHash(bytes: ByteArray, expectedSha256: String?) {
+    if (expectedSha256 == null) return
+    val actual = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+    if (!expectedSha256.equals(actual, ignoreCase = true)) {
+        throw PluginPackageIntegrityException("插件包 SHA-256 校验失败")
     }
 }

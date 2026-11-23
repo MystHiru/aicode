@@ -3,22 +3,24 @@ package com.aicode.feature.plugin.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aicode.core.util.FileLogger
-import com.aicode.feature.plugin.data.index.NoMatchingReleaseException
+import com.aicode.feature.plugin.data.PluginRecord
+import com.aicode.feature.plugin.data.SOURCE_DEVELOPMENT
 import com.aicode.feature.plugin.data.index.PluginIndexClient
 import com.aicode.feature.plugin.data.index.PluginIndexException
 import com.aicode.feature.plugin.data.index.PluginIndexPlugin
 import com.aicode.feature.plugin.data.index.PluginIndexSource
-import com.aicode.feature.plugin.data.index.PluginOfficialRepositories
+import com.aicode.feature.plugin.data.index.PluginLogoCacheEntry
 import com.aicode.feature.plugin.data.index.PluginIndexSourceRepository
-import com.aicode.feature.plugin.domain.PluginError
+import com.aicode.feature.plugin.data.index.PluginOfficialRepositories
 import com.aicode.feature.plugin.domain.PluginInstallOrigin
+import com.aicode.feature.plugin.domain.PluginManifest
 import com.aicode.feature.plugin.domain.PluginManager
-import com.aicode.feature.plugin.domain.PluginPreview
-import com.aicode.feature.plugin.domain.PluginPreviewResult
 import com.aicode.feature.plugin.domain.SemVer
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -31,48 +33,41 @@ import kotlinx.coroutines.launch
 data class PluginStoreItem(
     val plugin: PluginIndexPlugin,
     val source: PluginIndexSource,
-    val installedVersion: String?,
-    val updateAvailable: Boolean,
     val compatible: Boolean,
-    /** 插件源码仓库是否归属 AiCode 官方账号。 */
+    val installedVersion: String? = null,
+    val updateAvailable: Boolean = false
+) {
     val official: Boolean
-)
-
-data class PluginStorePreview(
-    val preview: PluginPreview,
-    val origin: PluginInstallOrigin,
-    val expectedRepository: String?,
-    val sourceLabel: String,
-    val officialSource: Boolean
-)
+        get() = source.official && plugin.packageUrl == null && PluginOfficialRepositories.isOfficial(plugin.repository)
+}
 
 enum class PluginStoreErrorCode {
     NETWORK,
     INVALID_INDEX,
     NO_COMPATIBLE_RELEASE,
     DOWNLOAD_FAILED,
-    PREVIEW_FAILED
+    PACKAGE_CHECK_FAILED,
+    LISTING_CHANGED
 }
 
 data class PluginStoreError(
     val code: PluginStoreErrorCode,
-    val detail: String? = null,
-    val pluginError: PluginError? = null,
-    /** 安装/下载错误所属的插件；索引错误为 null。 */
-    val pluginId: String? = null
+    val detail: String? = null
 )
 
 data class PluginStoreUiState(
     /** 首次读取来源前就显示加载态，避免先闪一下空列表。 */
     val loading: Boolean = true,
     val refreshing: Boolean = false,
+    /** 递增后商店列表重新读取图标（下拉刷新 / 重新进商店时用）。 */
+    val logoRefreshVersion: Long = 0,
     val sources: List<PluginIndexSource> = emptyList(),
+    /** 所有来源的候选条目；只展示去重后的 [items]。 */
+    val allItems: List<PluginStoreItem> = emptyList(),
     val items: List<PluginStoreItem> = emptyList(),
-    /** 每个已安装插件可用的最高版本更新条目；供已安装页展示「可更新」。 */
+    /** 可从原来源安装的更新；供已安装页展示「可更新」。 */
     val updatesByPluginId: Map<String, PluginStoreItem> = emptyMap(),
-    val error: PluginStoreError? = null,
-    val installingPluginId: String? = null,
-    val preview: PluginStorePreview? = null
+    val error: PluginStoreError? = null
 )
 
 @HiltViewModel
@@ -91,7 +86,7 @@ class PluginStoreViewModel @Inject constructor(
 
     /** 来源地址列表变化时才重新拉取；markFetched 等只改时间戳的写入不会触发加载。 */
     private var loadedUrls: List<String>? = null
-    private var loadToken = 0
+    private var loadJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -106,201 +101,140 @@ class PluginStoreViewModel @Inject constructor(
         }
         viewModelScope.launch {
             manager.plugins.collect { installed ->
-                val versions = installed.associate { it.id to it.record.version }
-                _state.update { current ->
-                    val updatedItems = current.items.map { item ->
-                        val version = versions[item.plugin.id]
-                        item.copy(
-                            installedVersion = version,
-                            updateAvailable = isNewer(item.plugin.version, version)
-                        )
-                    }
-                    current.copy(
-                        items = updatedItems,
-                        updatesByPluginId = updatesOf(updatedItems)
-                    )
-                }
+                val records = installed.associate { it.id to it.record }
+                _state.update { it.withCatalog(it.allItems, records) }
             }
         }
     }
 
     fun refresh() {
+        _state.update { it.copy(logoRefreshVersion = it.logoRefreshVersion + 1) }
         loadAll(force = true)
     }
 
-    /** 按来源顺序依次拉取，条目也按来源顺序叠加；单个来源失败时保留它上次的条目。 */
+    /** 进入商店页时调用：后台拉最新索引，列表先展示本地缓存。 */
+    fun openStore() {
+        if (_state.value.loading) return
+        refresh()
+    }
+
+    suspend fun readPluginLogoCache(url: String): PluginLogoCacheEntry? =
+        client.readPluginLogoCache(url)
+
+    suspend fun refreshPluginLogo(url: String): PluginLogoCacheEntry? =
+        client.refreshPluginLogo(url)
+
+    internal fun isCurrent(item: PluginStoreItem): Boolean = _state.value.isListingCurrent(item)
+
     private fun loadAll(force: Boolean) {
         val sources = _state.value.sources
         if (sources.isEmpty()) return
-        val token = ++loadToken
-        _state.update { it.copy(loading = true, refreshing = it.items.isNotEmpty(), error = null) }
-        viewModelScope.launch(Dispatchers.IO) {
-            val installed = manager.plugins.value.associate { it.id to it.record.version }
-            val previous = _state.value.items.groupBy { it.source.id }
+        loadJob?.cancel()
+        val configured = sources.map { it.indexUrl }.toSet()
+        val previous = _state.value.allItems.filter { it.source.indexUrl in configured }.groupBy { it.source.indexUrl }
+        publishCatalog(sources.flatMap { previous[it.indexUrl].orEmpty() }, loading = true)
+        loadJob = viewModelScope.launch {
+            val cached = sources.associate { source ->
+                val items = client.readCachedIndex(source)?.let { snapshot ->
+                    snapshot.index.plugins.map { PluginStoreItem(it, source, client.isCompatible(it)) }
+                }
+                source.indexUrl to (items ?: previous[source.indexUrl].orEmpty())
+            }
+            publishCatalog(sources.flatMap { cached.getValue(it.indexUrl) }, loading = true)
             val items = mutableListOf<PluginStoreItem>()
             var firstError: PluginStoreError? = null
             var failureCount = 0
-            sources.forEach { source ->
-                val result = runCatching { client.fetchIndex(source, forceRefresh = force) }
-                if (token != loadToken) return@launch
-                result.onSuccess { snapshot ->
-                    items += snapshot.index.plugins.map { plugin ->
-                        val installedVersion = installed[plugin.id]
-                        PluginStoreItem(
-                            plugin = plugin,
-                            source = source,
-                            installedVersion = installedVersion,
-                            updateAvailable = isNewer(plugin.version, installedVersion),
-                            compatible = client.isCompatible(plugin),
-                            official = PluginOfficialRepositories.isOfficial(plugin.repository)
-                        )
-                    }
-                    if (!snapshot.stale) {
-                        sourceRepository.markFetched(source.id, snapshot.fetchedAt)
-                    }
-                }.onFailure { e ->
+            for (source in sources) {
+                val snapshot = try {
+                    client.fetchIndex(source, forceRefresh = force)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
                     FileLogger.w(TAG, "读取插件索引失败: ${source.id}", e)
                     failureCount++
                     if (firstError == null) {
                         firstError = PluginStoreError(
-                            code = if (e is PluginIndexException) {
-                                PluginStoreErrorCode.INVALID_INDEX
-                            } else {
-                                PluginStoreErrorCode.NETWORK
-                            },
+                            code = if (e is PluginIndexException) PluginStoreErrorCode.INVALID_INDEX
+                            else PluginStoreErrorCode.NETWORK,
                             detail = e.message
                         )
                     }
-                    items += previous[source.id].orEmpty()
+                    items += cached.getValue(source.indexUrl)
+                    continue
+                }
+                items += snapshot.index.plugins.map { PluginStoreItem(it, source, client.isCompatible(it)) }
+                try {
+                    sourceRepository.markFetched(source.id, snapshot.fetchedAt)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: java.io.IOException) {
+                    FileLogger.w(TAG, "保存索引刷新时间失败: ${source.id}", e)
                 }
             }
-            _state.update {
-                it.copy(
-                    loading = false,
-                    refreshing = false,
-                    items = items,
-                    updatesByPluginId = updatesOf(items),
-                    error = firstError
-                )
-            }
-            if (force || failureCount > 0) {
-                _refreshResult.tryEmit(failureCount)
-            }
+            ensureActive()
+            publishCatalog(items, loading = false, error = firstError)
+            if (force || failureCount > 0) _refreshResult.tryEmit(failureCount)
         }
     }
 
-    fun install(item: PluginStoreItem) {
-        if (!item.compatible) return
-        if (_state.value.installingPluginId != null) return
-        _state.update { it.copy(installingPluginId = item.plugin.id, error = null) }
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val asset = client.resolveRelease(item.plugin)
-                val packageFile = client.download(asset)
-                val result = packageFile.file.inputStream().use { manager.preview(it) }
-                when (result) {
-                    is PluginPreviewResult.Ready -> {
-                        val preview = result.preview
-                        val manifestVersion = preview.manifest.version.toString()
-                        if (preview.manifest.id != item.plugin.id ||
-                            preview.manifest.publisher != item.plugin.author ||
-                            preview.manifest.repository != item.plugin.repository ||
-                            asset.version != manifestVersion
-                        ) {
-                            manager.discard(preview.token)
-                            _state.update {
-                                it.copy(
-                                    installingPluginId = null,
-                                    error = PluginStoreError(
-                                        code = PluginStoreErrorCode.PREVIEW_FAILED,
-                                        pluginId = item.plugin.id
-                                    )
-                                )
-                            }
-                            return@launch
-                        }
-                        val official = item.official
-                        _state.update {
-                            it.copy(
-                                installingPluginId = null,
-                                preview = PluginStorePreview(
-                                    preview = preview,
-                                    origin = PluginInstallOrigin(
-                                        kind = PluginInstallOrigin.KIND_INDEX,
-                                        sourceId = item.source.id,
-                                        sourceName = item.source.name,
-                                        indexUrl = item.source.indexUrl,
-                                        repository = item.plugin.repository,
-                                        official = official
-                                    ),
-                                    expectedRepository = if (official) null else item.plugin.repository,
-                                    sourceLabel = item.source.name,
-                                    officialSource = official
-                                )
-                            )
-                        }
-                    }
-                    is PluginPreviewResult.Failed -> _state.update {
-                        it.copy(
-                            installingPluginId = null,
-                            error = PluginStoreError(
-                                code = PluginStoreErrorCode.PREVIEW_FAILED,
-                                pluginError = result.errors.firstOrNull(),
-                                pluginId = item.plugin.id
-                            )
-                        )
-                    }
-                }
-            } catch (e: NoMatchingReleaseException) {
-                _state.update {
-                    it.copy(
-                        installingPluginId = null,
-                        error = PluginStoreError(
-                            code = PluginStoreErrorCode.NO_COMPATIBLE_RELEASE,
-                            detail = e.message,
-                            pluginId = item.plugin.id
-                        )
-                    )
-                }
-            } catch (e: Exception) {
-                FileLogger.w(TAG, "下载插件失败: ${item.plugin.id}", e)
-                _state.update {
-                    it.copy(
-                        installingPluginId = null,
-                        error = PluginStoreError(
-                            code = PluginStoreErrorCode.DOWNLOAD_FAILED,
-                            detail = e.message,
-                            pluginId = item.plugin.id
-                        )
-                    )
-                }
-            }
+    private fun publishCatalog(items: List<PluginStoreItem>, loading: Boolean, error: PluginStoreError? = null) {
+        val records = manager.plugins.value.associate { it.id to it.record }
+        _state.update {
+            it.withCatalog(items, records).copy(loading = loading, refreshing = loading && items.isNotEmpty(), error = error)
         }
     }
-
-    fun consumePreview() {
-        _state.update { it.copy(preview = null) }
-    }
-
-    private fun isNewer(candidate: String?, installed: String?): Boolean {
-        if (candidate == null || installed == null) return false
-        val left = SemVer.parse(candidate) ?: return false
-        val right = SemVer.parse(installed) ?: return false
-        return left > right
-    }
-
-    /** 每个插件取一个可用的最高版本，同一插件出现在多个来源时只提示一次。 */
-    private fun updatesOf(items: List<PluginStoreItem>): Map<String, PluginStoreItem> =
-        items.asSequence()
-            .filter { it.updateAvailable && it.compatible }
-            .groupBy { it.plugin.id }
-            .mapValues { (_, candidates) ->
-                candidates.maxByOrNull { item ->
-                    item.plugin.version?.let(SemVer::parse) ?: SemVer(0, 0, 0)
-                }!!
-            }
 
     private companion object {
         const val TAG = "PluginStoreViewModel"
     }
+}
+
+internal fun PluginStoreUiState.withCatalog(
+    candidates: List<PluginStoreItem>,
+    records: Map<String, PluginRecord>
+): PluginStoreUiState {
+    val visible = candidates.groupBy { it.plugin.id }.map { (id, entries) ->
+        val installed = records[id]
+        val item = entries.firstOrNull { it.matchesInstalledSource(installed) } ?: entries.first()
+        item.copy(installedVersion = installed?.version, updateAvailable = item.canUpdate(installed))
+    }
+    return copy(
+        allItems = candidates,
+        items = visible,
+        updatesByPluginId = visible.filter { it.updateAvailable }.associateBy { it.plugin.id }
+    )
+}
+
+internal fun PluginStoreItem.matchesInstalledSource(installed: PluginRecord?): Boolean =
+    installed != null && installed.id == plugin.id && installed.sourceKind != SOURCE_DEVELOPMENT &&
+        installed.origin == PluginInstallOrigin.KIND_INDEX && installed.indexUrl == source.indexUrl &&
+        installed.repository == plugin.repository
+
+internal fun PluginStoreItem.canUpdate(installed: PluginRecord?): Boolean {
+    if (!compatible || installed == null || !matchesInstalledSource(installed)) return false
+    val installedVersion = SemVer.parse(installed.version) ?: return false
+    val availableVersion = plugin.version?.let(SemVer::parse) ?: return false
+    return availableVersion > installedVersion
+}
+
+internal fun PluginStoreUiState.currentListing(selection: PluginStoreItem): PluginStoreItem? =
+    items.firstOrNull {
+        it.source.indexUrl == selection.source.indexUrl && it.plugin.id == selection.plugin.id &&
+            it.plugin.repository == selection.plugin.repository
+    }
+
+internal fun PluginStoreUiState.isListingCurrent(selection: PluginStoreItem): Boolean =
+    currentListing(selection)?.let {
+        it.plugin == selection.plugin && it.compatible && it.official == selection.official
+    } == true
+
+internal fun PluginStoreItem.matchesPackage(manifest: PluginManifest, version: String): Boolean {
+    // 只硬校验 id 与 version：社区商店索引普遍把 repository 写成商店地址，包内
+    // manifest 写的却是作者自己的仓库（实测同一插件两处不同），用 repository 做
+    // 硬条件会把正常插件全部挡下。publisher 仅在双方都非空时忽略大小写比对，
+    // 作为轻量防错位检查，作者别名不一致不阻断安装。
+    if (manifest.id != plugin.id) return false
+    if (manifest.version != SemVer.parse(version)) return false
+    return manifest.publisher.isBlank() || plugin.author.isBlank() ||
+        manifest.publisher.equals(plugin.author, ignoreCase = true)
 }

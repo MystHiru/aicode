@@ -39,7 +39,11 @@ data class PluginIndexPlugin(
     val license: String? = null,
     val tags: List<String> = emptyList(),
     val version: String? = null,
-    @SerialName("min_app_version") val minAppVersion: String? = null
+    @SerialName("min_app_version") val minAppVersion: String? = null,
+    /** 直接下载的插件包；缺省时按 repository 的 GitHub Release 查找。 */
+    @SerialName("package_url") val packageUrl: String? = null,
+    @SerialName("package_size") val packageSize: Long? = null,
+    @SerialName("package_sha256") val packageSha256: String? = null
 )
 
 /**

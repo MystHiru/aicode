@@ -35,6 +35,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -181,16 +182,34 @@ internal data class ChatRenderItem(
     /** 是否渲染消息自带的思考块；思考已抽为独立过程项时传 false。 */
     val reasoningVisible: Boolean = true,
     val groupMember: Boolean = false,
+    // 常显项之前的过程项数量；展开时按此位置交错输出，仍共用一个折叠头。
+    val precedingProcessItems: Int? = null,
 )
 
 /** 消息条数超过此值后，渲染项列表改在后台线程重建。 */
 private const val ASYNC_CHAT_ITEMS_THRESHOLD = 120
 
-private class AsyncChatItems(
+internal class ChatTimelineSnapshot(
     val sessionId: String?,
+    val generation: Any,
     val messages: List<AgentUIMessage>,
     val items: List<ChatRenderItem>,
 )
+
+internal fun resolveChatTimeline(
+    sessionId: String?,
+    messagesReady: Boolean,
+    useAsyncItems: Boolean,
+    previous: ChatTimelineSnapshot?,
+    buildSynchronously: () -> ChatTimelineSnapshot,
+): ChatTimelineSnapshot? = when {
+    !messagesReady -> null
+    useAsyncItems -> previous?.takeIf { it.sessionId == sessionId }
+    else -> buildSynchronously()
+}
+
+private fun StreamingAssistantMessage.hasRenderableStream(): Boolean =
+    content.hasVisibleContent() || reasoning.hasVisibleContent()
 
 internal fun reconcileStreamingAssistants(
     previous: List<StreamingAssistantMessage>,
@@ -201,7 +220,7 @@ internal fun reconcileStreamingAssistants(
     if (current == null || current.sessionId != sessionId) return emptyList()
     val renderedIds = renderedMessages.mapTo(HashSet()) { it.id }
     val pending = previous.filter {
-        it.sessionId == sessionId && it.messageId !in renderedIds
+        it.sessionId == sessionId && it.messageId !in renderedIds && it.hasRenderableStream()
     }.associateTo(LinkedHashMap()) {
         it.messageId to if (it.messageId == current.messageId) it else it.copy(settled = true)
     }
@@ -219,11 +238,11 @@ internal fun canAcknowledgeStreamingAssistant(
     if (!messagesReady || current == null || current.sessionId != sessionId ||
         !current.settled || !current.persisted) return false
     val renderedIds = renderedMessages.mapTo(HashSet()) { it.id }
-    if (previous.any { it.sessionId == sessionId && it.messageId != current.messageId && it.messageId !in renderedIds }) {
-        return false
-    }
-    return current.messageId in renderedIds ||
-        (!current.content.hasVisibleContent() && !current.reasoning.hasVisibleContent())
+    if (previous.any {
+            it.sessionId == sessionId && it.messageId != current.messageId &&
+                it.messageId !in renderedIds && it.hasRenderableStream()
+        }) return false
+    return current.messageId in renderedIds || !current.hasRenderableStream()
 }
 
 /** 工具调用分组头 item 的 contentType。 */
@@ -249,7 +268,8 @@ internal fun turnKeyOf(firstMessageId: String): String = "turn:$firstMessageId"
  *
  * 取块尾消息 id 而非块首：窗口继续向前补加载时新消息插在块首，块尾不变、key 保持稳定。
  */
-internal fun leadingHeadKey(lastMessage: AgentUIMessage): String = "turn:head:${lastMessage.id}"
+internal fun leadingHeadKey(lastMessage: AgentUIMessage, sessionId: String? = null): String =
+    if (sessionId == null) "turn:head:${lastMessage.id}" else "turn:head:session:$sessionId:${lastMessage.id}"
 
 /**
  * 整轮任务折叠头 item 的渲染状态。非空即表示这是一条「执行中 / 已完成」头行。
@@ -337,7 +357,18 @@ private fun messageRenderItems(message: AgentUIMessage): List<ChatRenderItem> {
 
 internal fun findChatMessageIndex(items: List<ChatRenderItem>, messageId: String): Int =
     items.indexOfFirst { it.key == messageId }.takeIf { it >= 0 }
-        ?: items.indexOfFirst { it.message.id == messageId && it.contentType != REASONING_CONTENT_TYPE }
+        ?: items.indexOfFirst { it.message.id == messageId && it.turnHeader == null && it.contentType != REASONING_CONTENT_TYPE }
+
+internal fun collapsedTurnForSearchHit(
+    items: List<ChatRenderItem>,
+    turnKeys: Map<String, String>,
+    messageId: String,
+): String? {
+    val key = turnKeys[messageId] ?: return null
+    return items.firstNotNullOfOrNull { item ->
+        item.turnHeader?.takeIf { it.key == key && !it.expanded }?.key
+    }
+}
 
 internal fun reconcileTurnKeys(
     messages: List<AgentUIMessage>,
@@ -347,11 +378,7 @@ internal fun reconcileTurnKeys(
     val (leading, turns) = splitChatTurns(messages)
     if (leading.isNotEmpty()) {
         val key = leading.asReversed().firstNotNullOfOrNull { previousKeys[it.id] }
-            ?: if (turns.isEmpty() && sessionId != null) {
-                "turn:head:session:$sessionId"
-            } else {
-                leadingHeadKey(leading.last())
-            }
+            ?: leadingHeadKey(leading.last(), sessionId)
         leading.forEach { put(it.id, key) }
     }
     for (turn in turns) {
@@ -370,9 +397,8 @@ internal fun reconcileTurnKeys(
  * 三件事：**整轮任务折叠**、长文拆块、**连续工具调用分组**。
  *
  * 先按「用户消息 → 下一个用户消息之前」切成轮（见 [splitChatTurns]）：每轮依次产出「用户消息 →
- * 轮头（携带过程项，仅当该轮有过程或正在运行）→ 常显项与结果」。过程项先归入轮头，展开时转换为
- * 独立列表项；只有带附件的工具常显（见 [isPersistentInTurn]），后台通知与压缩卡片属过程性提示、
- * 随过程折叠。
+ * 轮头（携带过程项，仅当该轮有过程或正在运行）→ 常显项与结果」。展开时，过程项与常显项
+ * 按时间顺序排成独立列表项。工具和助手的附件常显，后台通知与压缩卡片随过程折叠。
  * 结果 = 轮内最后一条有可见正文的普通助手消息（其思考抽为过程项）。
  *
  * 轮首之前剩下的散消息同样按「一轮过程」处理：消息按条数截断加载，窗口边界常切在某一轮中间，
@@ -395,19 +421,15 @@ internal fun buildChatItems(
     val items = ArrayList<ChatRenderItem>(messages.size)
     val (leading, turns) = splitChatTurns(messages)
     if (leading.isNotEmpty()) {
-        // 没有轮首时，分页窗口两端都可能随工具输出移动，只能用所属会话保持展开标识稳定。
-        val headKey = turnKeys[leading.last().id] ?: if (turns.isEmpty() && sessionId != null) {
-            "turn:head:session:$sessionId"
-        } else {
-            leadingHeadKey(leading.last())
-        }
+        // 只有与上一窗口重叠的半轮才能复用旧 key。同一会话可以有多个互不重叠的半轮。
+        val headKey = turnKeys[leading.last().id] ?: leadingHeadKey(leading.last(), sessionId)
         // 这一截通常结尾就是上一轮的最终回复（窗口从某一轮中间切开）：它照旧常显，
         // 只有它的思考与更早的过程步骤折进折叠头，与完整轮次的呈现一致。
         val running = headKey == activeTurnKey
         val resultId = if (running) null else leading.last().takeIf { it.isResultCandidate() }?.id
-        val process = buildTurnProcessItems(leading, resultId, groupOverrides)
-        if (process.isNotEmpty()) {
-            items += ChatRenderItem(
+        items += buildTurnItems(
+            leading, resultId, groupOverrides,
+            header = ChatRenderItem(
                 message = leading.last(),
                 key = "$headKey#header",
                 contentType = TURN_HEADER_CONTENT_TYPE,
@@ -417,10 +439,8 @@ internal fun buildChatItems(
                     running = running,
                     expanded = turnOverrides[headKey] ?: running,
                 ),
-                turnProcess = process,
-            )
-        }
-        items += buildTurnPersistentItems(leading, resultId)
+            ),
+        )
     }
     for (turn in turns) {
         items += messageRenderItems(turn.userMessage)
@@ -430,11 +450,9 @@ internal fun buildChatItems(
         val stableTurnKey = turnKeys[turn.userMessage.id] ?: turn.key
         val running = stableTurnKey == activeTurnKey
         val resultId = if (running) null else turn.messages.lastOrNull { it.isResultCandidate() }?.id
-        // 过程与常显项分开构建，展开时由主列表逐项组合。
-        val process = buildTurnProcessItems(turn.messages, resultId, groupOverrides)
-        val expanded = turnOverrides[stableTurnKey] ?: running
-        if (process.isNotEmpty() || running) {
-            items += ChatRenderItem(
+        items += buildTurnItems(
+            turn.messages, resultId, groupOverrides,
+            header = ChatRenderItem(
                 message = turn.userMessage,
                 key = "$stableTurnKey#header",
                 contentType = TURN_HEADER_CONTENT_TYPE,
@@ -442,43 +460,49 @@ internal fun buildChatItems(
                     key = stableTurnKey,
                     endMessageId = endAssistant?.id,
                     running = running,
-                    expanded = expanded,
+                    expanded = turnOverrides[stableTurnKey] ?: running,
                 ),
-                turnProcess = process,
-            )
-        }
-        items += buildTurnPersistentItems(turn.messages, resultId)
+            ),
+            keepEmptyHeader = running,
+        )
     }
     return items
 }
 
 internal fun flattenChatProcesses(items: List<ChatRenderItem>): List<ChatRenderItem> = buildList {
-    for (item in items) {
-        if (item.turnHeader == null) {
-            add(item)
-            continue
-        }
-        add(item.copy(turnProcess = emptyList()))
-        if (!item.turnHeader.expanded) continue
-        for (child in item.turnProcess) {
-            val group = child.toolGroup
-            if (group == null) {
-                add(child)
-            } else {
-                add(child)
-                if (child.groupExpanded) {
-                    group.forEach { member ->
-                        add(ChatRenderItem(
-                            message = member,
-                            key = member.id,
-                            contentType = member.role.name,
-                            groupMember = true,
-                        ))
-                    }
+    var process = emptyList<ChatRenderItem>()
+    var processIndex = 0
+
+    fun appendProcessUntil(end: Int) {
+        while (processIndex < end) {
+            val child = process[processIndex++]
+            add(child)
+            if (child.groupExpanded) {
+                child.toolGroup?.forEach { member ->
+                    add(ChatRenderItem(
+                        message = member,
+                        key = member.id,
+                        contentType = member.role.name,
+                        groupMember = true,
+                    ))
                 }
             }
         }
     }
+
+    for (item in items) {
+        val before = item.precedingProcessItems
+        if (before != null) {
+            appendProcessUntil(minOf(before, process.size))
+            add(item)
+        } else {
+            appendProcessUntil(process.size)
+            process = if (item.turnHeader?.expanded == true) item.turnProcess else emptyList()
+            processIndex = 0
+            add(if (item.turnHeader != null) item.copy(turnProcess = emptyList()) else item)
+        }
+    }
+    appendProcessUntil(process.size)
 }
 
 /** 一轮任务：轮首用户消息 + 其后的全部消息（助手 / 工具 / 压缩卡片等）。 */
@@ -536,15 +560,17 @@ private fun AgentUIMessage.isResultCandidate(): Boolean =
  * 轮内「过程」项（保持原序）：思考、连续工具调用分组、中间助手正文、后台通知条与压缩卡片。
  * 挂在轮头 item 内一起展开。
  *
- * 结果消息的思考归过程（抽为一个 [REASONING_CONTENT_TYPE] 项）；带附件工具常显、
- * 不进过程，由 [buildTurnPersistentItems] 单独产出。
+ * 最终正文和带附件的消息留在轮头外，思考仍归过程。
  */
-private fun buildTurnProcessItems(
+private fun buildTurnItems(
     messages: List<AgentUIMessage>,
     resultId: String?,
     groupOverrides: Map<String, Boolean>,
+    header: ChatRenderItem,
+    keepEmptyHeader: Boolean = false,
 ): List<ChatRenderItem> {
-    val out = ArrayList<ChatRenderItem>(messages.size)
+    val process = ArrayList<ChatRenderItem>(messages.size)
+    val persistent = ArrayList<ChatRenderItem>()
     var i = 0
     while (i < messages.size) {
         val message = messages[i]
@@ -554,10 +580,10 @@ private fun buildTurnProcessItems(
             val members = messages.subList(i, j).toList()
             // 只有一条工具时不折成「1 次工具调用」，直接当普通工具行显示。
             if (members.size == 1) {
-                out += messageRenderItems(members.first())
+                process += messageRenderItems(members.first())
             } else {
                 val key = toolGroupKey(members.first())
-                out += ChatRenderItem(
+                process += ChatRenderItem(
                     message = members.first(),
                     key = key,
                     contentType = TOOL_GROUP_CONTENT_TYPE,
@@ -571,47 +597,31 @@ private fun buildTurnProcessItems(
             continue
         }
         when {
-            message.isPersistentInTurn() -> Unit
-            message.id == resultId -> {
-                if (!message.reasoning.isNullOrEmpty()) {
-                    out += ChatRenderItem(
-                        message = message,
-                        key = "${message.id}#reasoning",
-                        contentType = REASONING_CONTENT_TYPE,
-                    )
-                }
+            message.isPersistentInTurn() -> {
+                persistent += messageRenderItems(message).map { it.copy(precedingProcessItems = process.size) }
             }
             message.role == MessageRole.ASSISTANT && !message.isSystemCardInTurn() -> {
                 if (!message.reasoning.isNullOrEmpty()) {
-                    out += ChatRenderItem(
+                    process += ChatRenderItem(
                         message = message,
                         key = "${message.id}#reasoning",
                         contentType = REASONING_CONTENT_TYPE,
                     )
                 }
-                out += messageRenderItems(message).map { it.copy(reasoningVisible = false) }
+                if (message.id == resultId || message.attachments.isNotEmpty()) {
+                    persistent += messageRenderItems(message).map {
+                        it.copy(reasoningVisible = false, precedingProcessItems = process.size)
+                    }
+                } else {
+                    process += messageRenderItems(message).map { it.copy(reasoningVisible = false) }
+                }
             }
-            else -> out += messageRenderItems(message)
+            else -> process += messageRenderItems(message)
         }
         i++
     }
-    return out
-}
-
-/** 轮内「常显」项（保持原序）：结果正文（拆块，不重复渲染思考）与带附件的工具行。 */
-private fun buildTurnPersistentItems(
-    messages: List<AgentUIMessage>,
-    resultId: String?,
-): List<ChatRenderItem> {
-    val out = ArrayList<ChatRenderItem>()
-    for (message in messages) {
-        if (message.id == resultId) {
-            messageRenderItems(message).forEach { out += it.copy(reasoningVisible = false) }
-        } else if (message.isPersistentInTurn()) {
-            out += messageRenderItems(message)
-        }
-    }
-    return out
+    if (process.isEmpty() && !keepEmptyHeader) return persistent
+    return listOf(header.copy(turnProcess = process)) + persistent
 }
 
 /** 超过该长度（字符）的助手正文拆成多条有界 chunk。 */
@@ -730,16 +740,19 @@ fun AIChatPanel(
     onboardingStep: OnboardingStep? = null,
     onSelectModelInOnboarding: (() -> Unit)? = null,
     onDismissModelSheetInOnboarding: (() -> Unit)? = null,
+    /** 模型弹层里的「管理供应商」入口：宿主传了才显示，点击后跳到设置页的供应商列表。 */
+    onOpenProviderSettings: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val agentState by viewModel.agentState.collectAsStateWithLifecycle()
     val messagesState by viewModel.messagesState.collectAsStateWithLifecycle()
-    val messages = messagesState.messages
     val pendingScroll by viewModel.pendingScrollMessage.collectAsStateWithLifecycle()
     // 子代理卡片：状态与动作经 CompositionLocal 下发给 task 工具行，避免逐层透传。
     val subAgentCards by viewModel.subAgentCards.collectAsStateWithLifecycle()
 
     val currentSessionId by viewModel.currentSessionId.collectAsStateWithLifecycle()
+    val messagesReady = messagesState.loaded && messagesState.sessionId == currentSessionId
+    val messages = if (messagesReady) messagesState.messages else emptyList()
     // 工具卡片入场调度：只排本次浏览期间新追加到尾部的 TOOL 消息，逐个错开淡入。
     // 换会话时调度器重建，新会话的存量消息不入场。
     val entryScheduler = remember(currentSessionId) { MessageEntryScheduler() }
@@ -751,7 +764,6 @@ fun AIChatPanel(
     val sessionOutputTokens = currentSession?.totalOutputTokens ?: 0
     val sessionLastInputTokens = currentSession?.lastInputTokens ?: 0
     val contextUsages by viewModel.contextUsages.collectAsStateWithLifecycle()
-    val messagesReady = messagesState.loaded && messagesState.sessionId == currentSessionId
     val runningTool by viewModel.runningTool.collectAsStateWithLifecycle()
     val isCompacting by viewModel.isCompacting.collectAsStateWithLifecycle()
     val retryState by viewModel.retryState.collectAsStateWithLifecycle()
@@ -892,31 +904,36 @@ fun AIChatPanel(
     }
     SideEffect { turnKeyHistory.putAll(stableTurnKeys) }
     val activeTurnKey = if (isBusy) messages.lastOrNull()?.let { stableTurnKeys[it.id] } else null
-    // 长会话里重建整张列表要遍历全部消息（拆轮、分组、拆块），在主线程上做会卡住每次落库与补载历史。
-    // 超过阈值后改在后台算，算完前继续显示上一版（LazyColumn 与它的条数一直自洽）；
-    // 切换会话后的首版仍同步算，避免短暂显示上一个会话的内容。
+    // 列表与用于流式交接的消息一起提交；首屏没有同会话快照时，不在界面线程重建长列表。
     val chatItemsKey = remember(messages, toolGroupOverrideSnapshot, turnOverrideSnapshot, activeTurnKey, currentSessionId, stableTurnKeys) { Any() }
-    val buildItems = {
-        flattenChatProcesses(buildChatItems(
+    val timelineSessionId = currentSessionId
+    val buildTimeline = {
+        ChatTimelineSnapshot(timelineSessionId, chatItemsKey, messages, flattenChatProcesses(buildChatItems(
             messages = messages,
             groupOverrides = toolGroupOverrideSnapshot,
             turnOverrides = turnOverrideSnapshot,
             activeTurnKey = activeTurnKey,
-            sessionId = currentSessionId,
+            sessionId = timelineSessionId,
             turnKeys = stableTurnKeys,
-        ))
+        )))
     }
     val useAsyncItems = messages.size > ASYNC_CHAT_ITEMS_THRESHOLD
-    var asyncItems by remember { mutableStateOf<AsyncChatItems?>(null) }
-    LaunchedEffect(chatItemsKey, useAsyncItems) {
-        if (!useAsyncItems) return@LaunchedEffect
-        val sessionId = currentSessionId
-        val built = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { buildItems() }
-        asyncItems = AsyncChatItems(sessionId, messages, built)
+    var previousTimeline by remember(timelineSessionId, messagesReady) { mutableStateOf<ChatTimelineSnapshot?>(null) }
+    LaunchedEffect(chatItemsKey, messagesReady, useAsyncItems) {
+        if (!messagesReady || !useAsyncItems) return@LaunchedEffect
+        previousTimeline = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { buildTimeline() }
     }
-    val readyAsyncItems = asyncItems?.takeIf { useAsyncItems && it.sessionId == currentSessionId }
-    val chatItems = readyAsyncItems?.items ?: remember(chatItemsKey) { buildItems() }
-    val renderedMessages = readyAsyncItems?.messages ?: messages
+    val previous = if (useAsyncItems) previousTimeline else null
+    val renderedTimeline = remember(chatItemsKey, messagesReady, useAsyncItems, previous) {
+        resolveChatTimeline(timelineSessionId, messagesReady, useAsyncItems, previous, buildTimeline)
+    }
+    if (!useAsyncItems && renderedTimeline != null) {
+        SideEffect { previousTimeline = renderedTimeline }
+    }
+    val timelineReady = renderedTimeline != null
+    val timelineCurrent = renderedTimeline?.generation === chatItemsKey
+    val chatItems = renderedTimeline?.items.orEmpty()
+    val renderedMessages = renderedTimeline?.messages.orEmpty()
     // 每轮任务的总耗时（用户发送 → 本轮 AI 收工）与 token 合计，都只挂在轮末助手气泡下方
     val taskDurations = remember(messages, isBusy) {
         computeTaskDurations(messages, lastTurnFinished = !isBusy)
@@ -1199,10 +1216,10 @@ fun AIChatPanel(
         reconcileStreamingAssistants(retainedAssistants, streamingAssistant, renderedMessages, currentSessionId)
     }
     SideEffect { retainedAssistants = streamingAssistants }
-    LaunchedEffect(streamingAssistant, renderedMessages, currentSessionId, messagesReady, streamingAssistants) {
+    LaunchedEffect(streamingAssistant, renderedMessages, currentSessionId, timelineReady, streamingAssistants) {
         val assistant = streamingAssistant
         if (assistant != null && canAcknowledgeStreamingAssistant(
-                assistant, streamingAssistants, renderedMessages, currentSessionId, messagesReady
+                assistant, streamingAssistants, renderedMessages, currentSessionId, timelineReady
             )) {
             viewModel.acknowledgeRenderedAssistant(assistant.sessionId, assistant.messageId)
         }
@@ -1267,8 +1284,9 @@ fun AIChatPanel(
 
     // key 必须带上 inputBarReservePx：闭包捕获的是创建时的值，用无 key 的 remember 会让
     // 判定永远停在首帧的兜底留白（156dp）上，面板展开把悬浮层顶高后仍按旧安全区算。
-    val isAtBottom by remember(inputBarReservePx) {
+    val isAtBottom by remember(inputBarReservePx, timelineReady) {
         derivedStateOf {
+            if (!timelineReady) return@derivedStateOf false
             val layout = listState.layoutInfo
             // 列表还没测量（首帧、或消息未就绪期间 LazyColumn 未挂载）时 layoutInfo 为空、
             // canScrollForward 恒 false。此时不能判「在底部」——从别的页面返回的首帧会因此
@@ -1295,13 +1313,13 @@ fun AIChatPanel(
 
     // 回底按钮的显示门槛：只用「不在底部」会让流式增长的那一两帧（校准循环还没把视口拉回）
     // 也算离底，按钮跟着闪。要求离底超过半个视口，用户真的翻上去看历史时才出现。
-    // messagesReady / messages.isEmpty() 与 totalItemsCount 是同一枚硬币的两面：layoutInfo 是
+    // timelineReady / messages.isEmpty() 与 totalItemsCount 是同一枚硬币的两面：layoutInfo 是
     // 「最后一次布局 pass」的产物，LazyColumn 卸载（空会话 WelcomeState、加载占位）后不会自动
     // 清空——旧会话翻历史后切到空会话，残留布局会让按钮悬在新会话上。totalItemsCount 再拦截
     // 「新列表尚未按当前消息重测」（layout 开始前 layoutInfo 仍是旧会话的）那一帧。
-    val isFarFromBottom by remember(inputBarReservePx, messagesReady, messages.size, renderedItemCount) {
+    val isFarFromBottom by remember(inputBarReservePx, timelineReady, messages.size, renderedItemCount) {
         derivedStateOf {
-            if (!messagesReady || messages.isEmpty()) return@derivedStateOf false
+            if (!timelineReady || messages.isEmpty()) return@derivedStateOf false
             if (!listState.canScrollForward) return@derivedStateOf false
             val layout = listState.layoutInfo
             val lastVisible = layout.visibleItemsInfo.lastOrNull()
@@ -1390,8 +1408,8 @@ fun AIChatPanel(
 
     // 只在「跟随中且内容可能还在动」时逐帧校准。原来是无条件 while(true)，followBottom
     // 为 false 也只 continue、帧回调照旧注册，等于让主线程全程每帧醒一次（空闲也在耗电）。
-    LaunchedEffect(listState, messagesReady) {
-        if (!messagesReady) return@LaunchedEffect
+    LaunchedEffect(listState, currentSessionId, timelineReady) {
+        if (!timelineReady) return@LaunchedEffect
         snapshotFlow { followBottom && (busyState.value || listState.isScrollInProgress) }
             .collectLatest { active ->
                 if (active) {
@@ -1412,12 +1430,15 @@ fun AIChatPanel(
 
     // 内容变化信号旁路：文本/思考/消息条数变化时立即校准一次，不等下一帧——
     // 与常驻校准循环互为补充，覆盖「无动画帧」的间隙，杜绝跟丢窗口。
-    val latestMessageCount = rememberUpdatedState(messages.size)
-    LaunchedEffect(listState, messagesReady) {
-        if (!messagesReady) return@LaunchedEffect
+    val latestRenderedItemCount = rememberUpdatedState(renderedItemCount)
+    LaunchedEffect(listState, currentSessionId, timelineReady) {
+        if (!timelineReady) return@LaunchedEffect
         snapshotFlow {
-            Triple(streamingAssistant?.content?.length, streamingAssistant?.reasoning?.length, latestMessageCount.value)
-        }.collect { calibrateToAnchor() }
+            Triple(streamingAssistant?.content?.length, streamingAssistant?.reasoning?.length, latestRenderedItemCount.value)
+        }.collect {
+            withFrameNanos { }
+            calibrateToAnchor()
+        }
     }
 
     val sendMessage: () -> Unit = {
@@ -1449,22 +1470,27 @@ fun AIChatPanel(
     }
 
     // 切换会话 / 打开搜索命中：优先定位到目标消息，否则贴底并恢复跟随。
-    LaunchedEffect(currentSessionId, messagesReady, pendingScroll, chatItems) {
-        if (!messagesReady) return@LaunchedEffect
-        val pending = pendingScroll
-        if (pending != null && pending.first == currentSessionId) {
-            val index = findChatMessageIndex(chatItems, pending.second)
+    val scrollRequest = pendingScroll
+    LaunchedEffect(currentSessionId, timelineCurrent, scrollRequest, chatItems, messagesState.limit) {
+        if (!timelineCurrent) return@LaunchedEffect
+        if (scrollRequest != null && scrollRequest.sessionId == currentSessionId) {
+            if (messagesState.limit < scrollRequest.minimumMessageLimit) return@LaunchedEffect
+            val messageId = scrollRequest.messageId
+            val index = findChatMessageIndex(chatItems, messageId)
             if (index >= 0) {
-                // 等一帧让 LazyColumn 按新会话完成重组，再瞬移到目标消息。
-                withFrameNanos { }
                 followBottom = false
+                withFrameNanos { }
                 listState.scrollToItem(index)
                 positionedSession = currentSessionId
-                viewModel.consumePendingScroll()
-            } else if (!messagesState.hasMore) {
-                // 全部消息已加载仍找不到（消息可能已被删除）：放弃，避免卡在待定位态。
-                viewModel.consumePendingScroll()
+            } else {
+                val collapsedTurn = collapsedTurnForSearchHit(chatItems, stableTurnKeys, messageId)
+                if (collapsedTurn != null) {
+                    followBottom = false
+                    viewModel.setTurnExpanded(collapsedTurn, true)
+                    return@LaunchedEffect
+                }
             }
+            viewModel.consumePendingScroll(scrollRequest)
             return@LaunchedEffect
         }
         if (positionedSession != currentSessionId) {
@@ -1496,8 +1522,9 @@ fun AIChatPanel(
     // index 不再变化；只监听 index 会卡在这里，要用户上下晃动才能再触发一页。
     // 上限纳入信号后，每页补载完成都会重新判断，仍在顶部就连续补载。
     val latestMessagesState = rememberUpdatedState(messagesState)
-    LaunchedEffect(listState, messagesReady) {
-        if (!messagesReady) return@LaunchedEffect
+    LaunchedEffect(listState, currentSessionId, timelineCurrent, scrollRequest) {
+        if (!timelineCurrent || (scrollRequest != null && scrollRequest.sessionId == currentSessionId)) return@LaunchedEffect
+        withFrameNanos { }
         snapshotFlow {
             val ms = latestMessagesState.value
             Triple(listState.firstVisibleItemIndex <= 3 && ms.hasMore && !ms.isLoadingMore, ms.sessionId, ms.limit)
@@ -1639,6 +1666,8 @@ fun AIChatPanel(
                 showMenuButton = showMenuButton,
                 terminalActive = terminalActive,
                 gitActive = gitActive,
+                contextUsedTokens = contextUsages[currentSessionId]?.inputTokens ?: sessionLastInputTokens,
+                contextMaxTokens = activeModelMetadata?.contextTokens ?: 0,
                 pluginEntries = pluginEntries,
                 pluginLanguageTag = pluginLanguageTag,
                 onPluginEntry = onPluginEntry
@@ -1668,13 +1697,19 @@ fun AIChatPanel(
                     } else if (showMessagesLoading) {
                         // 本地模式读库偏慢时的占位：以前这里什么都不画，切会话会先闪一下空白。
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            androidx.compose.material3.CircularProgressIndicator(
+                            CircularProgressIndicator(
                                 modifier = Modifier.size(24.dp),
                                 strokeWidth = 2.dp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
+                } else if (!timelineReady) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.align(Alignment.Center).size(24.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 } else if (messages.isEmpty()) {
                     WelcomeState(
                         bottomReserve = with(LocalDensity.current) { inputBarReservePx.toDp() },
@@ -1956,6 +1991,7 @@ fun AIChatPanel(
                 onModelSheetDismiss = onDismissModelSheetInOnboarding,
                 // 主页模型弹层的「测试」按钮：直接复用设置页的连通性测试链路，状态由弹层自己持有。
                 onRunModelTest = settingsViewModel?.let { svm -> { p, m -> svm.runModelTest(p, m) } },
+                onManageProviders = onOpenProviderSettings,
                 modifier = Modifier
                     .fillMaxWidth()
                     .onboardingTarget(OnboardingStep.SEND_MESSAGE)

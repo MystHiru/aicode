@@ -140,6 +140,7 @@ import com.aicode.feature.settings.presentation.FetchState
 import com.aicode.feature.settings.presentation.UpdateCheckUiState
 import com.aicode.feature.settings.presentation.component.githubReleaseUrl
 import com.aicode.feature.settings.presentation.component.SettingsScreen
+import com.aicode.feature.settings.presentation.component.SettingsSection
 import com.aicode.feature.settings.presentation.component.UpdateCheckDialog
 import com.aicode.feature.settings.presentation.component.decodeBackgroundBitmap
 import com.aicode.feature.settings.presentation.component.openUrl
@@ -722,6 +723,8 @@ fun AppNavigation(
     // 需要确认的动作入口：确认后再交给插件 runtime。
     var pendingPluginAction by remember { mutableStateOf<Pair<PluginUiEntry, PluginEntryContext>?>(null) }
     var paneSplit by rememberSaveable { mutableFloatStateOf(DEFAULT_PANE_SPLIT) }
+    // 从聊天页跳到设置时指定要直接打开的分区（如模型弹层的「管理供应商」）；进入设置后即清空。
+    var pendingSettingsSection by remember { mutableStateOf<SettingsSection?>(null) }
     // 右栏编辑器有未保存修改时，换文件前先弹保存提示（窄窗全屏编辑器由返回键拦截，不经过这里）。
     val editorLeaveGuard = remember { EditorLeaveGuard() }
 
@@ -1079,6 +1082,10 @@ fun AppNavigation(
                                         if (onboardingUiState.active && onboardingUiState.step == OnboardingStep.SIMULATE_CHOOSE_MODEL) {
                                             onboardingCoordinator.goToStep(OnboardingStep.OPEN_MODEL_PICKER)
                                         }
+                                    },
+                                    onOpenProviderSettings = {
+                                        pendingSettingsSection = SettingsSection.Providers
+                                        navController.navigate("settings")
                                     }
                                 )
                             }
@@ -1128,12 +1135,27 @@ fun AppNavigation(
                     }
                 }
             }
-            composable("settings") {
+            composable("settings") { settingsEntry ->
                 // 复用 Activity 级 settingsViewModel（MainActivity 顶部已创建并 init），
                 // 避免进入设置页时再建一个 NavBackStackEntry 级实例、重复跑 init 与 9 路 flow 订阅，
                 // 这是侧边栏点设置「卡一下」的主因。
+                val initialSection = pendingSettingsSection ?: SettingsSection.Menu
+                LaunchedEffect(Unit) { pendingSettingsSection = null }
                 SettingsScreen(
                     viewModel = settingsViewModel,
+                    currentWorkspace = currentWorkspace,
+                    initialSection = initialSection,
+                    onUseTeamProposal = useProposal@{ workspaceRef, proposal ->
+                        val workspace = workspaceViewModel.current.value?.takeIf { it.ref == workspaceRef }
+                            ?: return@useProposal false
+                        val added = agentViewModel.appendTeamProposalToDraft(workspace, proposal) {
+                            navController.currentBackStackEntry === settingsEntry &&
+                                navController.previousBackStackEntry?.destination?.route == "chat" &&
+                                workspaceViewModel.current.value == workspace
+                        }
+                        if (added) navController.popBackStack()
+                        added
+                    },
                     onNavigateBack = {
                         navController.popBackStack()
                         // 大屏返回聊天页后侧栏本就常驻，不再弹 modal 抽屉。
@@ -1305,7 +1327,8 @@ fun AppNavigation(
     val rightDrawerSheet: @Composable () -> Unit = {
         ModalDrawerSheet(
             drawerShape = RectangleShape,
-            drawerContainerColor = settingsPageBackground(),
+            // 抽屉是整页高的面板，不能用透明页面底色，否则壁纸模式下文字全压在背景上。
+            drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             drawerTonalElevation = 0.dp,
             modifier = Modifier.width(drawerWidth())
         ) {
@@ -1392,7 +1415,7 @@ fun AppNavigation(
             drawerContent = {
                 ModalDrawerSheet(
                     drawerShape = RectangleShape,
-                    drawerContainerColor = settingsPageBackground(),
+                    drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     drawerTonalElevation = 0.dp,
                     modifier = Modifier.width(drawerWidth())
                 ) {

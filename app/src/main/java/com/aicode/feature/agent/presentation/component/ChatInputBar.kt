@@ -204,6 +204,8 @@ internal fun ChatInputBar(
     onModelSheetDismiss: (() -> Unit)? = null,
     /** 主页模型弹层的连通性测试：null（无设置页 ViewModel 的宿主）时弹层不显示测试按钮。 */
     onRunModelTest: (suspend (AIProviderConfig, String) -> ModelTestResult)? = null,
+    /** 模型弹层里的「管理供应商」入口：null 时不显示，直接用弹层下方的空态提示。 */
+    onManageProviders: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val hasContent = value.isNotBlank() || pendingAttachments.isNotEmpty()
@@ -609,6 +611,7 @@ internal fun ChatInputBar(
                             onSelectSuccessInOnboarding = onSelectModelInOnboarding,
                             onSheetDismiss = onModelSheetDismiss,
                             runModelTest = onRunModelTest,
+                            onManageProviders = onManageProviders,
                             modifier = Modifier.onboardingTarget(OnboardingStep.OPEN_MODEL_PICKER)
                         )
 

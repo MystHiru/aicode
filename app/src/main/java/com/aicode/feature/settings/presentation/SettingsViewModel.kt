@@ -52,6 +52,9 @@ import com.aicode.feature.agent.domain.subagent.AgentSaveError
 import com.aicode.feature.agent.domain.subagent.InjectPart
 import com.aicode.feature.agent.domain.subagent.SubagentModelTier
 import com.aicode.feature.agent.domain.subagent.SubagentTierSelection
+import com.aicode.feature.agent.domain.team.TeamDefinition
+import com.aicode.feature.agent.domain.team.TeamComposer
+import com.aicode.feature.agent.domain.team.TeamRepository
 import com.aicode.feature.agent.domain.tool.ToolRegistry
 import com.aicode.feature.settings.data.remote.ModelApiService
 import com.aicode.feature.settings.data.remote.ContainerImageDownloader
@@ -125,8 +128,13 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
@@ -137,6 +145,15 @@ sealed class FetchState {
     data class Success(val models: List<String>, val debugInfo: ModelTestResult? = null) : FetchState()
     data class Error(val message: String, val debugInfo: ModelTestResult? = null) : FetchState()
 }
+
+/** 批量模型连通性测试进度：限并发 4，running=true 时可调 [SettingsViewModel.stopAllModels] 取消。 */
+data class BatchTestState(
+    val providerId: String = "",
+    val total: Int = 0,
+    val done: Int = 0,
+    val success: Int = 0,
+    val running: Boolean = false
+)
 
 /** 镜像下载页的完整 UI 状态：空闲 / 下载中（进度）/ 下载完成（可安装）/ 失败。 */
 sealed interface ContainerImageDownloadUiState {
@@ -322,6 +339,30 @@ sealed interface SubAgentSaveState {
     data class Failed(val error: AgentSaveError) : SubAgentSaveState
 }
 
+data class TeamUiEntry(
+    val name: String,
+    val description: String,
+    val ownerName: String,
+    val ownerAvatar: String,
+    val members: List<com.aicode.feature.agent.domain.team.TeamMember>,
+    val strategy: String,
+    val key: String
+)
+
+sealed interface TeamComposeState {
+    data object Idle : TeamComposeState
+    data object Composing : TeamComposeState
+    data class Done(val form: TeamDefinition.Form) : TeamComposeState
+    data class Failed(val message: String) : TeamComposeState
+}
+
+sealed interface TeamSaveState {
+    data object Idle : TeamSaveState
+    data object Saving : TeamSaveState
+    data object Saved : TeamSaveState
+    data class Failed(val error: TeamDefinition.SaveError) : TeamSaveState
+}
+
 /**
  * 把趋势聚合补全为周期内的完整时间轴：无记录的天/小时补 0，避免周期内调用集中在同一天时
  * 趋势只有单个点而无法绘制折线图。「全部」周期从最早有记录的那天起补到当天。
@@ -373,6 +414,8 @@ class SettingsViewModel @Inject constructor(
     private val skillRepository: SkillRepository,
     private val agentDefinitionRepository: AgentDefinitionRepository,
     private val agentDefinitionConfigRepository: AgentDefinitionConfigRepository,
+    private val teamRepository: TeamRepository,
+    private val teamComposer: TeamComposer,
     private val toolRegistry: ToolRegistry,
     private val skillConfigRepository: SkillConfigRepository,
     private val visionModelSettingsRepository: VisionModelSettingsRepository,
@@ -684,6 +727,16 @@ class SettingsViewModel @Inject constructor(
     private val _subAgentDeleting = MutableStateFlow<Set<String>>(emptySet())
     val subAgentDeleting: StateFlow<Set<String>> = _subAgentDeleting.asStateFlow()
 
+    private val _teams = MutableStateFlow<List<TeamUiEntry>>(emptyList())
+    val teams: StateFlow<List<TeamUiEntry>> = _teams.asStateFlow()
+    private val _teamComposeState = MutableStateFlow<TeamComposeState>(TeamComposeState.Idle)
+    val teamComposeState: StateFlow<TeamComposeState> = _teamComposeState.asStateFlow()
+    private val _teamSaveState = MutableStateFlow<TeamSaveState>(TeamSaveState.Idle)
+    val teamSaveState: StateFlow<TeamSaveState> = _teamSaveState.asStateFlow()
+    private var teamComposeJob: Job? = null
+    private val _teamDeleting = MutableStateFlow<Set<String>>(emptySet())
+    val teamDeleting = _teamDeleting.asStateFlow()
+
     val mcpStatuses: StateFlow<List<McpServerStatus>> = mcpManager.statuses
 
     private val _mcpReloading = MutableStateFlow(false)
@@ -707,6 +760,11 @@ class SettingsViewModel @Inject constructor(
 
     private val _testing = MutableStateFlow<Set<String>>(emptySet())
     val testing: StateFlow<Set<String>> = _testing.asStateFlow()
+
+    private val _batchTestState = MutableStateFlow(BatchTestState())
+    val batchTestState: StateFlow<BatchTestState> = _batchTestState.asStateFlow()
+
+    private var batchTestJob: Job? = null
 
     private val _dashboardTestState = MutableStateFlow<ProviderDashboardState>(ProviderDashboardState.Idle)
     val dashboardTestState: StateFlow<ProviderDashboardState> = _dashboardTestState.asStateFlow()
@@ -1762,6 +1820,66 @@ class SettingsViewModel @Inject constructor(
         return queried ?: uri.lastPathSegment?.substringAfterLast('/').orEmpty()
     }
 
+    fun refreshTeams() {
+        viewModelScope.launch { loadTeams() }
+    }
+
+    private suspend fun loadTeams() {
+        _teams.value = withContext(Dispatchers.IO) {
+            teamRepository.listAll().map { team ->
+                TeamUiEntry(team.name, team.description, team.ownerName, team.ownerAvatar, team.members, team.strategy, team.key)
+            }
+        }
+    }
+
+    fun saveTeam(form: TeamDefinition.Form, key: String?) {
+        if (_teamSaveState.value is TeamSaveState.Saving || !isLocalTeamBackend()) return
+        _teamSaveState.value = TeamSaveState.Saving
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) { teamRepository.save(form, key) }
+            if (error == null) loadTeams()
+            _teamSaveState.value = if (error == null) TeamSaveState.Saved else TeamSaveState.Failed(error)
+        }
+    }
+
+    fun composeTeam(name: String, hint: String) {
+        if (_teamComposeState.value is TeamComposeState.Composing || !isLocalTeamBackend()) return
+        _teamComposeState.value = TeamComposeState.Composing
+        teamComposeJob = viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { teamComposer.compose(name.trim(), hint.trim(), null, null) }
+            _teamComposeState.value = result.fold(
+                { TeamComposeState.Done(it) },
+                { TeamComposeState.Failed(context.getString(R.string.team_editor_compose_failed)) }
+            )
+        }
+    }
+
+    fun clearTeamComposeState() {
+        teamComposeJob?.cancel()
+        _teamComposeState.value = TeamComposeState.Idle
+    }
+
+    fun clearTeamSaveState() {
+        if (_teamSaveState.value !is TeamSaveState.Saving) _teamSaveState.value = TeamSaveState.Idle
+    }
+
+    fun deleteTeam(key: String, onResult: (Boolean) -> Unit) {
+        if (!isLocalTeamBackend() || key in _teamDeleting.value) return
+        _teamDeleting.update { it + key }
+        viewModelScope.launch {
+            try {
+                val deleted = withContext(Dispatchers.IO) { teamRepository.delete(key) }
+                loadTeams()
+                onResult(deleted)
+            } finally {
+                _teamDeleting.update { it - key }
+            }
+        }
+    }
+
+    private fun isLocalTeamBackend(): Boolean =
+        activeBackendId.value == ExecutionBackendRegistry.BUILTIN_LOCAL_PROOT_ID
+
     /** 重新扫描子代理定义（进入设置页 / 删除后调用，反映盘上增删改）。 */
     fun refreshSubAgents() {
         viewModelScope.launch {
@@ -2712,9 +2830,9 @@ class SettingsViewModel @Inject constructor(
     }
 
     /** 选择新背景图（拷贝到私有目录后替换）。 */
-    fun setBackgroundImage(uri: Uri) {
+    fun setBackgroundImage(uri: Uri, onFailure: () -> Unit) {
         viewModelScope.launch {
-            backgroundSettingsRepository.setBackgroundImage(uri)
+            if (!backgroundSettingsRepository.setBackgroundImage(uri)) onFailure()
         }
     }
 
@@ -3365,6 +3483,59 @@ class SettingsViewModel @Inject constructor(
     fun clearTestResults() {
         _testResults.value = emptyMap()
         _testing.value = emptySet()
+    }
+
+    /**
+     * 一键测试 [provider] 全部模型的连通性，限并发 4：复用单测的 [_testing] / [_testResults]，
+     * 逐条实时反映到每行模型；running 时调 [stopAllModels] 取消。
+     */
+    fun testAllModels(provider: AIProviderConfig) {
+        if (batchTestJob?.isActive == true) return
+        val models = provider.models
+        if (models.isEmpty()) return
+        batchTestJob = viewModelScope.launch {
+            _batchTestState.value = BatchTestState(provider.id, models.size, 0, 0, true)
+            val semaphore = Semaphore(4)
+            try {
+                coroutineScope {
+                    models.map { model ->
+                        async {
+                            semaphore.withPermit {
+                                _testing.update { it + model }
+                                val result = modelApiService.testModel(
+                                    provider.effectiveBaseUrl(),
+                                    provider.firstUsableApiKey,
+                                    provider.type,
+                                    provider.useFullUrl,
+                                    provider.useResponseApi,
+                                    model,
+                                    provider.customHeaders
+                                )
+                                _testResults.update { it + (model to result) }
+                                _testing.update { it - model }
+                                _batchTestState.update {
+                                    it.copy(
+                                        done = it.done + 1,
+                                        success = it.success + if (result.success) 1 else 0
+                                    )
+                                }
+                            }
+                        }
+                    }.awaitAll()
+                }
+            } finally {
+                _batchTestState.update { it.copy(running = false) }
+                // 取消时正在跑的 OkHttp 阻塞调用不响应 cancel，清空残留 testing 标记兜底
+                _testing.value = emptySet()
+            }
+        }
+    }
+
+    fun stopAllModels() {
+        batchTestJob?.cancel()
+        batchTestJob = null
+        _testing.value = emptySet()
+        _batchTestState.update { it.copy(running = false) }
     }
 
     /**

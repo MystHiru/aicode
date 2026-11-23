@@ -49,7 +49,9 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -78,14 +80,17 @@ import com.aicode.core.ui.pageEnter
 import com.aicode.core.ui.pageExit
 import com.aicode.core.util.LogLevel
 import com.aicode.R
+import com.aicode.feature.agent.domain.container.ExecutionBackendRegistry
 import com.aicode.feature.agent.domain.mcp.McpScope
 import com.aicode.feature.agent.domain.mcp.McpServerEntry
 import com.aicode.feature.agent.domain.mcp.McpServerConfig
 import com.aicode.feature.agent.domain.prompt.PromptFragment
 import com.aicode.feature.agent.domain.prompt.PromptFragmentSource
 import com.aicode.feature.agent.domain.mcp.McpServerStatus
+import com.aicode.feature.agent.presentation.TeamChatViewModel
 import com.aicode.feature.agent.presentation.component.MarkdownContent
 import com.aicode.feature.agent.presentation.component.MarkdownRenderCache
+import com.aicode.feature.agent.presentation.component.TeamChatScreen
 import com.aicode.feature.backup.presentation.BackupScreen
 import com.aicode.feature.settings.data.repository.AppThemeMode
 import com.aicode.feature.settings.data.repository.BackgroundSettingsRepository
@@ -95,6 +100,9 @@ import com.aicode.feature.settings.presentation.MemoryViewModel
 import com.aicode.feature.settings.presentation.RolesViewModel
 import com.aicode.feature.settings.presentation.RootViewModel
 import com.aicode.feature.settings.presentation.SettingsViewModel
+import com.aicode.feature.settings.presentation.TeamComposeState
+import com.aicode.feature.settings.presentation.TeamSaveState
+import com.aicode.feature.settings.presentation.TeamUiEntry
 import com.aicode.feature.settings.presentation.ShizukuViewModel
 import com.aicode.feature.settings.presentation.SkillImportState
 import com.aicode.feature.settings.presentation.SkillUiEntry
@@ -114,6 +122,7 @@ import com.aicode.feature.plugin.presentation.PluginSettingsSheet
 import com.aicode.feature.plugin.presentation.PluginImportHost
 import com.aicode.feature.plugin.presentation.PluginStoreDetailSection
 import com.aicode.feature.plugin.presentation.PluginStoreItem
+import com.aicode.feature.plugin.presentation.PluginStoreViewModel
 import com.aicode.feature.plugin.presentation.PluginThemeTokens
 import com.aicode.feature.plugin.presentation.PluginPageHost
 import com.aicode.feature.plugin.presentation.pluginPageIcon
@@ -124,9 +133,12 @@ import com.aicode.feature.plugin.presentation.PluginsSection
 import com.aicode.feature.plugin.presentation.PluginsViewModel
 import com.aicode.feature.plugin.presentation.currentLanguageTag
 import com.aicode.feature.plugin.presentation.displayName
+import com.aicode.feature.workspace.domain.model.Workspace
+import com.aicode.feature.workspace.domain.model.WorkspaceRef
 import kotlinx.coroutines.delay
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Activity
+import compose.icons.feathericons.Archive
 import compose.icons.feathericons.ArrowLeft
 import compose.icons.feathericons.Bookmark
 import compose.icons.feathericons.BarChart2
@@ -142,6 +154,7 @@ import compose.icons.feathericons.HardDrive
 import compose.icons.feathericons.Heart
 import compose.icons.feathericons.Image
 import compose.icons.feathericons.Info
+import compose.icons.feathericons.Layout
 import compose.icons.feathericons.Lock
 import compose.icons.feathericons.Moon
 import compose.icons.feathericons.MessageSquare
@@ -161,7 +174,9 @@ import compose.icons.feathericons.Sliders
 import compose.icons.feathericons.Terminal
 import compose.icons.feathericons.Trash2
 import compose.icons.feathericons.User
+import compose.icons.feathericons.UserPlus
 import compose.icons.feathericons.Users
+import compose.icons.feathericons.Wifi
 import compose.icons.feathericons.Zap
 import com.aicode.feature.onboarding.domain.OnboardingStep
 import com.aicode.feature.onboarding.presentation.onboardingTarget
@@ -216,6 +231,9 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     Permissions(R.string.settings_permissions),
     Roles(R.string.settings_roles),
     Memory(R.string.settings_memory),
+    Teams(R.string.settings_teams),
+    TeamEditor(R.string.settings_teams),
+    TeamChat(R.string.team_chat_title),
     AppPermissions(R.string.settings_app_permissions),
     BackgroundRun(R.string.settings_category_background),
     RemoteServers(R.string.settings_remote_servers),
@@ -240,9 +258,11 @@ private fun SettingsSection.depth(): Int = when (this) {
     // 同深度会让「编辑 → 详情」也被当成前进，返回时页面从右侧滑入，方向是反的。
     SettingsSection.SkillEditor,
     SettingsSection.SubAgentEditor,
+    SettingsSection.TeamEditor,
     SettingsSection.PromptEditor -> 3
     SettingsSection.ProviderEditor,
     SettingsSection.PromptDetail,
+    SettingsSection.TeamChat,
     SettingsSection.SkillDetail,
     SettingsSection.SubAgentDetail,
     SettingsSection.SessionDetail,
@@ -256,7 +276,7 @@ private fun SettingsSection.depth(): Int = when (this) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(
+internal fun SettingsScreen(
     viewModel: SettingsViewModel,
     onNavigateBack: () -> Unit,
     onStopAllAndCloseTerminal: () -> Unit = {},
@@ -267,7 +287,11 @@ fun SettingsScreen(
     onShowStarPrompt: () -> Unit = {},
     onboardingStep: OnboardingStep? = null,
     onOnboardingModelAdded: (() -> Unit)? = null,
-    onOnboardingDismissFetchDialog: (() -> Unit)? = null
+    onOnboardingDismissFetchDialog: (() -> Unit)? = null,
+    currentWorkspace: Workspace? = null,
+    onUseTeamProposal: suspend (WorkspaceRef, String) -> Boolean = { _, _ -> false },
+    /** 从外部（如聊天页模型弹层）跳入时直接打开的分区；默认进菜单首页。 */
+    initialSection: SettingsSection = SettingsSection.Menu
 ) {
     val providers by viewModel.providers.collectAsStateWithLifecycle()
     val logLevel by viewModel.logLevel.collectAsStateWithLifecycle()
@@ -363,7 +387,25 @@ fun SettingsScreen(
     }
 
 
-    var section by remember { mutableStateOf(SettingsSection.Menu) }
+    var section by remember { mutableStateOf(initialSection) }
+    val teamWorkspace = currentWorkspace?.takeIf {
+        it.available && it.backendId == ExecutionBackendRegistry.BUILTIN_LOCAL_PROOT_ID &&
+            activeBackendId == ExecutionBackendRegistry.BUILTIN_LOCAL_PROOT_ID
+    }?.ref
+    var teamPageWorkspace by remember { mutableStateOf<WorkspaceRef?>(null) }
+    var discussingTeam by remember { mutableStateOf<TeamUiEntry?>(null) }
+    var editingTeam by remember { mutableStateOf<TeamUiEntry?>(null) }
+    var teamEditorReturn by remember { mutableStateOf(SettingsSection.Teams) }
+    val teams by viewModel.teams.collectAsStateWithLifecycle()
+    val teamSaveState by viewModel.teamSaveState.collectAsStateWithLifecycle()
+    val teamComposeState by viewModel.teamComposeState.collectAsStateWithLifecycle()
+    val teamDeleting by viewModel.teamDeleting.collectAsStateWithLifecycle()
+    LaunchedEffect(section, teamWorkspace) {
+        if (section != SettingsSection.TeamEditor) viewModel.clearTeamComposeState()
+        if (section in listOf(SettingsSection.TeamEditor, SettingsSection.TeamChat) &&
+            (teamWorkspace == null || teamWorkspace != teamPageWorkspace)
+        ) section = SettingsSection.Teams
+    }
     var logReturnSection by remember { mutableStateOf(SettingsSection.Menu) }
     // 各列表页的多选状态：顶栏「多选」开关在本页 Scaffold 里，所以状态必须提到这里统一持有。
     // 用普通 map（非 snapshot）新建容器，避免在组合期写快照状态；Compose 状态在 ListSelectionState 内部。
@@ -466,7 +508,9 @@ fun SettingsScreen(
     val pluginDevRefreshing by pluginsViewModel.devRefreshing.collectAsStateWithLifecycle()
     val pluginIndexSourceText by pluginsViewModel.indexSourceText.collectAsStateWithLifecycle()
     val pluginDownloadMirror by pluginsViewModel.downloadMirror.collectAsStateWithLifecycle()
+    val pluginAutoUpdate by pluginsViewModel.autoUpdatePlugins.collectAsStateWithLifecycle()
     var selectedPluginId by remember { mutableStateOf<String?>(null) }
+    var pluginDetailReturn by remember { mutableStateOf(SettingsSection.Plugins) }
     var selectedStoreItem by remember { mutableStateOf<PluginStoreItem?>(null) }
     var selectedDevProject by remember { mutableStateOf<PluginDevProject?>(null) }
     val currentDevProject = pluginDevProjects.firstOrNull { it.dirName == selectedDevProject?.dirName }
@@ -591,7 +635,9 @@ fun SettingsScreen(
         SettingsSection.SkillEditor -> skillEditorReturn
         SettingsSection.SubAgentDetail -> SettingsSection.SubAgents
         SettingsSection.SubAgentEditor -> subAgentEditorReturn
-        SettingsSection.PluginDetail -> SettingsSection.Plugins
+        SettingsSection.TeamEditor -> teamEditorReturn
+        SettingsSection.TeamChat -> SettingsSection.Teams
+        SettingsSection.PluginDetail -> pluginDetailReturn
         SettingsSection.PluginStoreDetail -> SettingsSection.Plugins
         SettingsSection.PluginDevDetail -> SettingsSection.Plugins
         SettingsSection.SessionDetail -> SettingsSection.SessionManagement
@@ -629,9 +675,8 @@ fun SettingsScreen(
         }
     }
 
-    // 在详情页卸载插件（或记录消失）后回到列表，别停在一个空页面。
     LaunchedEffect(selectedPlugin, section) {
-        if (section == SettingsSection.PluginDetail && selectedPlugin == null) section = SettingsSection.Plugins
+        if (section == SettingsSection.PluginDetail && selectedPlugin == null) section = pluginDetailReturn
     }
 
     // 商店 / 开发中详情依赖内存里的选中项；没有选中项时退回插件列表。
@@ -733,12 +778,13 @@ fun SettingsScreen(
                 modifier = Modifier
                     .width(SettingsMenuWidth)
                     .fillMaxHeight()
-                    .background(settingsPageBackground())
+                    // 常驻侧栏是面板而不是页面，壁纸模式下页面底色透明会让菜单文字压在背景上。
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             ) {
                 TopAppBar(
                     title = { Text(stringResource(R.string.settings_title)) },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = settingsPageBackground(),
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                         titleContentColor = MaterialTheme.colorScheme.onBackground
                     ),
                     navigationIcon = {
@@ -763,7 +809,8 @@ fun SettingsScreen(
             targetState = section,
             modifier = Modifier.fillMaxSize(),
             transitionSpec = {
-                val forward = targetState.depth() >= initialState.depth()
+                val returningToStore = initialState == SettingsSection.PluginDetail && targetState == SettingsSection.PluginStoreDetail
+                val forward = !returningToStore && targetState.depth() >= initialState.depth()
                 // sizeTransform 必须给 null：新旧内容尺寸本就一样，默认的尺寸补间只会让容器裁剪拖影。
                 ContentTransform(pageEnter(forward), pageExit(forward), sizeTransform = null)
             },
@@ -831,6 +878,66 @@ fun SettingsScreen(
                     section = subAgentEditorReturn
                 }
             )
+
+            current == SettingsSection.TeamEditor -> {
+                val workspace = teamPageWorkspace
+                if (section == current && workspace != null && workspace == teamWorkspace) {
+                    key(editingTeam?.key, workspace) {
+                        TeamEditorScreen(
+                            initial = editingTeam,
+                            availableAgents = subAgents.filterNot { it.disabled }.map { it.name },
+                            providers = providers.filter { it.isEnabled },
+                            modelMetadata = modelMetadata,
+                            saveState = teamSaveState,
+                            composeState = teamComposeState,
+                            onCompose = viewModel::composeTeam,
+                            onClearCompose = viewModel::clearTeamComposeState,
+                            onLoadMetadata = { viewModel.loadAllModelMetadata() },
+                            onSave = { form -> viewModel.saveTeam(form, editingTeam?.key) },
+                            onSaved = {
+                                viewModel.clearTeamSaveState()
+                                section = teamEditorReturn
+                            },
+                            onNavigateBack = { section = teamEditorReturn }
+                        )
+                    }
+                }
+            }
+
+            current == SettingsSection.TeamChat -> {
+                val team = discussingTeam
+                val workspace = teamPageWorkspace
+                if (section == current && team != null && workspace != null && workspace == teamWorkspace) {
+                    val chatViewModel: TeamChatViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+                    val chatState by chatViewModel.state.collectAsStateWithLifecycle()
+                    DisposableEffect(team.key, workspace) {
+                        chatViewModel.open(team.key, workspace)
+                        onDispose { chatViewModel.close() }
+                    }
+                    key(team.key, workspace) {
+                        TeamChatScreen(
+                            state = chatState,
+                            onPrepare = chatViewModel::prepare,
+                            onConfirm = chatViewModel::confirm,
+                            onDismissPreview = chatViewModel::dismissPreview,
+                            onStop = chatViewModel::stop,
+                            onEdit = {
+                                editingTeam = teams.firstOrNull { it.key == team.key } ?: team
+                                teamEditorReturn = SettingsSection.TeamChat
+                                viewModel.clearTeamSaveState()
+                                viewModel.clearTeamComposeState()
+                                section = SettingsSection.TeamEditor
+                            },
+                            onUseProposal = { proposal ->
+                                section == SettingsSection.TeamChat &&
+                                    chatViewModel.canHandOff(proposal) && onUseTeamProposal(workspace, proposal)
+                            },
+                            onClearHistory = chatViewModel::clearHistory,
+                            onNavigateBack = { section = SettingsSection.Teams }
+                        )
+                    }
+                }
+            }
 
             current == SettingsSection.PromptEditor -> {
                 val promptsViewModel: com.aicode.feature.settings.presentation.PromptsViewModel =
@@ -1637,6 +1744,39 @@ fun SettingsScreen(
                         androidx.hilt.navigation.compose.hiltViewModel()
                     MemorySection(viewModel = memoryViewModel)
                 }
+                SettingsSection.Teams -> {
+                    if (teamWorkspace == null) {
+                        SettingsEmptyState(
+                            icon = FeatherIcons.Users,
+                            title = stringResource(R.string.team_local_workspace_required),
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        LaunchedEffect(teamWorkspace) { viewModel.refreshTeams() }
+                        TeamsSection(
+                            teams = teams,
+                            deleting = teamDeleting,
+                            onOpenEditor = { team ->
+                                editingTeam = team
+                                teamPageWorkspace = teamWorkspace
+                                teamEditorReturn = SettingsSection.Teams
+                                viewModel.clearTeamSaveState()
+                                viewModel.clearTeamComposeState()
+                                section = SettingsSection.TeamEditor
+                            },
+                            onOpenChat = { team ->
+                                discussingTeam = team
+                                teamPageWorkspace = teamWorkspace
+                                section = SettingsSection.TeamChat
+                            },
+                            onDelete = { team ->
+                                viewModel.deleteTeam(team.key) { success ->
+                                    if (!success) Toast.makeText(context, R.string.team_delete_failed, Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        )
+                    }
+                }
                 SettingsSection.Roles -> {
                     val rolesViewModel: RolesViewModel =
                         androidx.hilt.navigation.compose.hiltViewModel()
@@ -1717,7 +1857,9 @@ fun SettingsScreen(
                 }
                 SettingsSection.ProviderEditor -> {} // 已在上方 early return 处理
                 SettingsSection.SkillEditor -> {} // 已在上方 early return 处理
-                SettingsSection.SubAgentEditor -> {} // 已在上方 early return 处理
+                SettingsSection.SubAgentEditor,
+                SettingsSection.TeamEditor,
+                SettingsSection.TeamChat -> {} // 已在外层全屏分支处理
                 SettingsSection.RemoteServers -> {} // 已在上方 early return 处理
                 SettingsSection.Backup -> {} // 已在上方 early return 处理
                 SettingsSection.Plugins -> PluginsSection(
@@ -1745,16 +1887,21 @@ fun SettingsScreen(
                     },
                     onOpenDetail = {
                         selectedPluginId = it.id
+                        pluginDetailReturn = SettingsSection.Plugins
                         section = SettingsSection.PluginDetail
                     },
                     onToggleEnabled = { plugin, enabled -> pluginsViewModel.setEnabled(plugin.id, enabled) },
-                    onShowStorePreview = pluginsViewModel::showPreview,
                     onOpenStoreDetail = {
                         selectedStoreItem = it
                         section = SettingsSection.PluginStoreDetail
-                    }
+                    },
+                    autoUpdatePlugins = pluginAutoUpdate,
+                    onAutoUpdatePlugins = pluginsViewModel::autoUpdateFromStore
                 )
                 SettingsSection.PluginDetail -> selectedPlugin?.let { plugin ->
+                    val storeViewModel: PluginStoreViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+                    val storeState by storeViewModel.state.collectAsStateWithLifecycle()
+                    val update = storeState.updatesByPluginId[plugin.id]
                     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
                     PluginDetailSection(
                         plugin = plugin,
@@ -1769,8 +1916,11 @@ fun SettingsScreen(
                                 post = post
                             )
                         },
-                        onClosePage = {
-                            section = SettingsSection.Plugins
+                        update = update,
+                        onUpdate = {
+                            if (update != null) {
+                                pluginsViewModel.installFromStore(update, isListingCurrent = { storeViewModel.isCurrent(update) })
+                            }
                         },
                         dependencyState = pluginDependencyStates[plugin.id],
                         onPrepareDependencies = { pluginsViewModel.prepareDependencies(plugin.id) },
@@ -1784,9 +1934,18 @@ fun SettingsScreen(
                     )
                 }
                 SettingsSection.PluginStoreDetail -> selectedStoreItem?.let { item ->
+                    val installed = plugins.firstOrNull { it.id == item.plugin.id }
                     PluginStoreDetailSection(
                         item = item,
-                        onShowPreview = pluginsViewModel::showPreview
+                        installed = installed?.record,
+                        onManageInstalled = {
+                            pluginsViewModel.plugins.value.firstOrNull { it.id == item.plugin.id }?.let {
+                                selectedPluginId = it.id
+                                pluginDetailReturn = SettingsSection.PluginStoreDetail
+                                section = SettingsSection.PluginDetail
+                            }
+                        },
+                        onInstall = pluginsViewModel::installFromStore
                     )
                 }
                 SettingsSection.PluginDevDetail -> currentDevProject?.let { project ->
@@ -1957,7 +2116,11 @@ fun SettingsScreen(
         BackgroundImageSheet(
             imagePath = backgroundImagePath,
             alpha = backgroundAlpha,
-            onPickImage = { viewModel.setBackgroundImage(it) },
+            onPickImage = { uri ->
+                viewModel.setBackgroundImage(uri) {
+                    Toast.makeText(context, R.string.settings_background_image_failed, Toast.LENGTH_SHORT).show()
+                }
+            },
             onAlphaChange = { viewModel.setBackgroundAlpha(it) },
             onRemove = { viewModel.clearBackgroundImage() },
             onDismiss = { showBackgroundSheet = false }
@@ -2138,8 +2301,10 @@ fun SettingsScreen(
             devRootPath = pluginsViewModel.devRootPath,
             indexSourceText = pluginIndexSourceText,
             downloadMirror = pluginDownloadMirror,
+            autoUpdatePlugins = pluginAutoUpdate,
             onSetIndexSourceText = pluginsViewModel::setIndexSourceText,
             onSetDownloadMirror = pluginsViewModel::setDownloadMirror,
+            onSetAutoUpdatePlugins = pluginsViewModel::setAutoUpdatePlugins,
             onSetDevMode = pluginsViewModel::setDevMode,
             onDismiss = {
                 pluginsViewModel.savePluginSettings()
@@ -2391,7 +2556,7 @@ internal fun SettingsMenu(
             )
             SettingsDivider()
             SettingsRow(
-                icon = FeatherIcons.Sliders,
+                icon = FeatherIcons.Layout,
                 title = stringResource(R.string.appearance_title),
                 subtitle = stringResource(R.string.appearance_entry_desc),
                 onClick = onOpenAppearance,
@@ -2488,7 +2653,7 @@ internal fun SettingsMenu(
             )
             SettingsDivider()
             SettingsRow(
-                icon = FeatherIcons.Users,
+                icon = FeatherIcons.UserPlus,
                 title = stringResource(SettingsSection.SubAgents.titleRes),
                 onClick = { onOpen(SettingsSection.SubAgents) }
             )
@@ -2516,6 +2681,12 @@ internal fun SettingsMenu(
                 title = stringResource(SettingsSection.Memory.titleRes),
                 onClick = { onOpen(SettingsSection.Memory) }
             )
+            SettingsDivider()
+            SettingsRow(
+                icon = FeatherIcons.Users,
+                title = stringResource(SettingsSection.Teams.titleRes),
+                onClick = { onOpen(SettingsSection.Teams) }
+            )
             PluginSettingsRows(pluginPages, PluginUiSlots.SETTINGS_AI, pluginLanguageTag, onOpenPluginPage)
         }
 
@@ -2529,7 +2700,7 @@ internal fun SettingsMenu(
             )
             SettingsDivider()
             SettingsRow(
-                icon = FeatherIcons.Globe,
+                icon = FeatherIcons.Wifi,
                 title = stringResource(SettingsSection.Proxy.titleRes),
                 onClick = { onOpen(SettingsSection.Proxy) }
             )
@@ -2569,7 +2740,7 @@ internal fun SettingsMenu(
         SettingsGroupHeader(text = stringResource(R.string.settings_category_data))
         SettingsGroup {
             SettingsRow(
-                icon = FeatherIcons.MessageSquare,
+                icon = FeatherIcons.Archive,
                 title = stringResource(SettingsSection.SessionManagement.titleRes),
                 onClick = { onOpen(SettingsSection.SessionManagement) }
             )

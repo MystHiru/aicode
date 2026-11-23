@@ -12,9 +12,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
-import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.aicode.feature.settings.presentation.SettingsViewModel
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -282,18 +280,12 @@ fun ChatDrawerContent(
     }
 
     val imeInset = rememberImeBottomInset()
-    // 设了壁纸时侧边栏底色改半透明，让壁纸透出；没设壁纸保持原样。
-    val settingsViewModel: SettingsViewModel = hiltViewModel()
-    val wallpaperPath by settingsViewModel.backgroundImagePath.collectAsStateWithLifecycle()
-    val drawerBackground = if (wallpaperPath != null) {
-        settingsPageBackground().copy(alpha = 0.82f)
-    } else {
-        settingsPageBackground()
-    }
+    // 侧边栏是整页高的面板，不能用页面底色：壁纸 / 背景视频模式下它的 alpha 为 0，
+    // 会话列表和标题会直接压在壁纸上。统一用高不透明容器色，保留一点质感且可读。
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(drawerBackground)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .windowInsetsPadding(
                 WindowInsets.systemBars.only(
                     WindowInsetsSides.Horizontal + WindowInsetsSides.Top
@@ -1557,7 +1549,7 @@ private fun FileTreeActionSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(),
-        containerColor = MaterialTheme.colorScheme.surface
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(
             modifier = Modifier
@@ -1837,7 +1829,7 @@ private fun SessionActionSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(
             modifier = Modifier

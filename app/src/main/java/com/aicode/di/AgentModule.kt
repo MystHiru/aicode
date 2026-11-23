@@ -14,6 +14,8 @@ import com.aicode.feature.backup.data.local.dao.BackupTargetDao
 import com.aicode.feature.settings.data.local.dao.AIProviderDao
 import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import com.aicode.feature.agent.data.local.database.AgentDatabase
+import com.aicode.feature.agent.data.local.database.TeamChatDatabase
+import com.aicode.feature.agent.data.local.dao.TeamChatDao
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.aicode.feature.agent.data.remote.anthropic.AnthropicApi
 import com.aicode.feature.agent.data.remote.gemini.GeminiApi
@@ -175,6 +177,17 @@ object AgentModule {
     fun provideRootGrantDao(database: AgentDatabase): com.aicode.feature.agent.data.local.dao.RootGrantDao {
         return database.rootGrantDao()
     }
+
+    @Provides
+    @Singleton
+    fun provideTeamChatDatabase(@ApplicationContext context: Context): TeamChatDatabase =
+        Room.databaseBuilder(context, TeamChatDatabase::class.java, TeamChatDatabase.DATABASE_NAME)
+            .addMigrations(TeamChatDatabase.MIGRATION_1_2, TeamChatDatabase.MIGRATION_2_3, TeamChatDatabase.MIGRATION_3_4)
+            .build()
+
+    @Provides
+    @Singleton
+    fun provideTeamChatDao(database: TeamChatDatabase): TeamChatDao = database.teamChatDao()
 
     @Provides
     @Singleton

@@ -76,11 +76,13 @@ import com.aicode.feature.terminal.domain.TerminalKeepaliveService
 import com.aicode.feature.terminal.domain.TerminalSessionManager
 import com.aicode.feature.terminal.domain.TerminalSessionProvider
 import com.aicode.feature.terminal.domain.takeTailLines
+import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import com.aicode.feature.workspace.domain.FileEntry
 import com.aicode.feature.workspace.domain.UriPathResolver
 import com.aicode.feature.workspace.domain.WorkspacePathMapper
 import com.aicode.feature.workspace.domain.isValidFileEntryName
+import com.aicode.feature.workspace.domain.model.Workspace
 import com.aicode.feature.agent.domain.workflow.AgentEvent
 import com.aicode.feature.agent.domain.tool.ToolPermissionManager
 import com.aicode.feature.agent.domain.tool.ToolRegistry
@@ -196,6 +198,7 @@ class AIAgentViewModel @Inject constructor(
     val fileAccess: FileAccessProvider,
     private val fileChangeHub: FileChangeHub,
     private val executionModeHolder: ExecutionModeHolder,
+    private val workspaceRepository: WorkspaceRepository,
     private val agentRunManager: AgentRunManager,
     private val workflowRegistry: AgentWorkflowRegistry,
     private val externalSessionStore: ExternalSessionStore,
@@ -206,8 +209,15 @@ class AIAgentViewModel @Inject constructor(
     private val streamingAssistantOwner = Any()
     private val _currentSessionId = MutableStateFlow<String?>(null)
     val currentSessionId: StateFlow<String?> = _currentSessionId.asStateFlow()
+    private var chatSearchOpenJob: Job? = null
+    private val _pendingScrollMessage = MutableStateFlow<PendingChatScroll?>(null)
+    internal val pendingScrollMessage = _pendingScrollMessage.asStateFlow()
 
     private fun updateSelectedSessionId(sessionId: String?) {
+        if (_currentSessionId.value != sessionId) {
+            chatSearchOpenJob?.cancel()
+            _pendingScrollMessage.value = null
+        }
         agentRunManager.setSelectedLocalSession(streamingAssistantOwner, sessionId)
         _currentSessionId.value = sessionId
     }
@@ -273,6 +283,8 @@ class AIAgentViewModel @Inject constructor(
      * 以前是全局单一一份，在 A 打了半截话切到 B 那半截话会跟着跑过去。
      */
     private val draftPrefs = context.getSharedPreferences("agent_input_drafts", Context.MODE_PRIVATE)
+    // Standard sessions remain path-indexed; only capture ownership at creation for discussion handoff.
+    private val teamDraftOrigins = context.getSharedPreferences("team_draft_origins", Context.MODE_PRIVATE)
     private val _inputDrafts = MutableStateFlow<Map<String, String>>(
         draftPrefs.all.mapNotNull { (k, v) ->
             (v as? String)?.takeIf { it.isNotEmpty() }?.let { k to it }
@@ -286,6 +298,10 @@ class AIAgentViewModel @Inject constructor(
 
     fun updateInputDraft(text: String) {
         val id = _currentSessionId.value ?: return
+        writeInputDraft(id, text)
+    }
+
+    private fun writeInputDraft(id: String, text: String) {
         val editor = draftPrefs.edit()
         if (text.isEmpty()) {
             _inputDrafts.value = _inputDrafts.value - id
@@ -296,6 +312,47 @@ class AIAgentViewModel @Inject constructor(
         }
         editor.apply()
     }
+
+    internal suspend fun appendTeamProposalToDraft(
+        workspace: Workspace,
+        proposal: String,
+        isWorkspaceCurrent: () -> Boolean
+    ): Boolean {
+        val id = _currentSessionId.value ?: return false
+        val text = proposal.trim()
+        if (text.isEmpty()) return false
+
+        fun canWrite(): Boolean = isWorkspaceCurrent() && _currentSessionId.value == id &&
+            _activeExternalSession.value == null && currentTeamDraftWorkspace(workspace.path) == workspace
+
+        if (!canWrite()) return false
+        val session = try {
+            sessionUseCase.getSessionById(id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            FileLogger.w(TAG, "Could not read draft target: ${e.javaClass.simpleName}")
+            return false
+        } ?: return false
+        if (!canWrite() || !isTeamDraftTarget(session, workspace)) return false
+        val existing = _inputDrafts.value[id].orEmpty()
+        writeInputDraft(id, if (existing.isEmpty()) text else "$existing\n\n$text")
+        return true
+    }
+
+    private fun currentTeamDraftWorkspace(path: String): Workspace? {
+        if (_currentWorkspace.value != path) return null
+        val backend = executionModeHolder.currentBackend()
+        return workspaceRepository.current.value?.takeIf {
+            it.available && it.path == path && it.backendId == ExecutionBackendRegistry.BUILTIN_LOCAL_PROOT_ID &&
+                it.backendId == backend.id && it.instanceId == backend.instanceId
+        }
+    }
+
+    private fun isTeamDraftTarget(session: ChatSessionEntity, workspace: Workspace): Boolean =
+        session.parentId == null && session.subagentType == null && session.workspacePath == workspace.path &&
+            session.backendInstanceId == null && session.workspaceId == null &&
+            teamDraftOrigins.getString(session.id, null) == workspace.ref.stableKey
 
     fun clearInputDraft() {
         val id = _currentSessionId.value ?: return
@@ -464,11 +521,27 @@ class AIAgentViewModel @Inject constructor(
         _chatSearchQuery.value = ""
     }
 
+    /**
+     * 侧边栏会话列表：工作区下的根会话，过滤掉还没有任何消息的空会话。
+     *
+     * 空会话只是启动 / 新建时占位的壳。若不过滤，每次冷启动都会在聊天记录里多出一条
+     * 从没用过的空条目。当前正在用的那一个要保留，否则刚新建、还没发消息时侧边栏会是空白的。
+     */
     val sessions: StateFlow<List<ChatSession>> = _currentWorkspace
         .flatMapLatest { path ->
-            if (path.isBlank()) flowOf(emptyList())
-            else chatSessionDao.getRootSessionsByWorkspace(path)
-                .map { list -> list.map { it.toDomain() } }
+            if (path.isBlank()) {
+                flowOf(emptyList())
+            } else {
+                // _currentSessionId 也作为输入：切换会话后「保留当前空会话」的规则会变。
+                combine(
+                    chatSessionDao.getRootSessionsByWorkspace(path),
+                    chatSessionDao.getEmptyRootSessionIdsFlow(path),
+                    _currentSessionId
+                ) { all, emptyIds, currentId ->
+                    val empty = emptyIds.toSet()
+                    all.map { it.toDomain() }.filter { it.id !in empty || it.id == currentId }
+                }
+            }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -489,10 +562,6 @@ class AIAgentViewModel @Inject constructor(
     // ── 聊天记录全局搜索（限当前工作区）──
     private val _chatSearchQuery = MutableStateFlow("")
     val chatSearchQuery: StateFlow<String> = _chatSearchQuery.asStateFlow()
-
-    /** 待定位的消息（会话 id to 消息 id）；聊天页滚动到位或确认无法定位后消费清除。 */
-    private val _pendingScrollMessage = MutableStateFlow<Pair<String, String>?>(null)
-    val pendingScrollMessage: StateFlow<Pair<String, String>?> = _pendingScrollMessage.asStateFlow()
 
     /**
      * 搜索状态：工作区与关键词变化时防抖后查询，命中映射为带片段的 UI 模型。
@@ -534,6 +603,7 @@ class AIAgentViewModel @Inject constructor(
     }
 
     fun clearChatSearch() {
+        chatSearchOpenJob?.cancel()
         _chatSearchQuery.value = ""
         _pendingScrollMessage.value = null
     }
@@ -544,25 +614,26 @@ class AIAgentViewModel @Inject constructor(
      */
     fun openChatSearchHit(hit: ChatSearchHit) {
         selectSession(hit.sessionId)
-        viewModelScope.launch {
-            val timestamp = withContext(Dispatchers.IO) {
-                agentMessageDao.getMessageById(hit.messageId)?.timestamp
+        chatSearchOpenJob?.cancel()
+        _pendingScrollMessage.value = null
+        chatSearchOpenJob = viewModelScope.launch {
+            val needed = withContext(Dispatchers.IO) {
+                val message = agentMessageDao.getMessageById(hit.messageId)
+                if (message?.sessionId != hit.sessionId) return@withContext null
+                agentMessageDao.countMessagesFromTimestamp(hit.sessionId, message.timestamp) + messageLimitMargin
+            } ?: return@launch
+            if (_currentSessionId.value != hit.sessionId) return@launch
+            val current = _messageLimit.value[hit.sessionId] ?: defaultLimit
+            val limit = maxOf(current, needed)
+            if (limit > current) {
+                _messageLimit.update { it + (hit.sessionId to limit) }
             }
-            if (timestamp != null) {
-                val needed = withContext(Dispatchers.IO) {
-                    agentMessageDao.countMessagesFromTimestamp(hit.sessionId, timestamp)
-                } + messageLimitMargin
-                val current = _messageLimit.value[hit.sessionId] ?: defaultLimit
-                if (needed > current) {
-                    _messageLimit.value = _messageLimit.value + (hit.sessionId to needed)
-                }
-            }
-            _pendingScrollMessage.value = hit.sessionId to hit.messageId
+            _pendingScrollMessage.value = PendingChatScroll(hit.sessionId, hit.messageId, limit)
         }
     }
 
-    fun consumePendingScroll() {
-        _pendingScrollMessage.value = null
+    internal fun consumePendingScroll(request: PendingChatScroll) {
+        _pendingScrollMessage.compareAndSet(request, null)
     }
 
     /** 转义 LIKE 通配符，配合 SQL 里的 ESCAPE '!'（转义字符本身需最先处理）。 */
@@ -1397,12 +1468,8 @@ class AIAgentViewModel @Inject constructor(
                     ChatMessagesState(
                         sessionId = id,
                         messages = list.asSequence()
-                            .filterNot {
-                                it.role == MessageRole.ASSISTANT.name &&
-                                    !it.content.hasVisibleContent() &&
-                                    it.reasoning.isNullOrEmpty()
-                            }
                             .map { entity -> entity.toUIMessage() }
+                            .filter { it.hasRenderableChatContent() }
                             .toList(),
                         loaded = true,
                         hasMore = list.size >= limit,
@@ -1772,6 +1839,7 @@ class AIAgentViewModel @Inject constructor(
         agentRunManager.clearSessionRuntimeState(sessionId)
         _inputDrafts.value = _inputDrafts.value - sessionId
         draftPrefs.edit().remove(sessionId).apply()
+        teamDraftOrigins.edit().remove(sessionId).apply()
         _attachmentDrafts.value = _attachmentDrafts.value - sessionId
         attachmentDraftPrefs.edit().remove(sessionId).apply()
     }
@@ -1781,12 +1849,14 @@ class AIAgentViewModel @Inject constructor(
         leaveExternalSessionForLocalSwitch()
         val ws = _currentWorkspace.value
         if (ws.isBlank()) return@launch
+        val workspace = currentTeamDraftWorkspace(ws)
         val curId = _currentSessionId.value
-        val reusableId = if (curId != null && sessionUseCase.isSessionEmpty(curId)) {
-            curId
-        } else {
-            sessionUseCase.getEmptySessionOfWorkspace(ws)?.id
-        }
+        val reusableId = curId?.takeIf { id ->
+            sessionUseCase.isSessionEmpty(id) && (workspace == null ||
+                sessionUseCase.getSessionById(id)?.let { isTeamDraftTarget(it, workspace) } == true)
+        } ?: sessionUseCase.getEmptySessionOfWorkspace(ws)
+            ?.takeIf { workspace == null || isTeamDraftTarget(it, workspace) }?.id
+        if (_currentWorkspace.value != ws || (workspace != null && currentTeamDraftWorkspace(ws) != workspace)) return@launch
         if (reusableId != null) {
             updateSelectedSessionId(reusableId)
             return@launch
@@ -1795,7 +1865,9 @@ class AIAgentViewModel @Inject constructor(
         // 不阻塞会话创建——MCP 环境未就绪/超时时不能卡住「新建会话」。
         mcpManager.reconnectUnconnectedAsync()
         val sid = createAndUpsertSession(ws)
-        updateSelectedSessionId(sid)
+        if (_currentWorkspace.value == ws && (workspace == null || currentTeamDraftWorkspace(ws) == workspace)) {
+            updateSelectedSessionId(sid)
+        }
     }
 
     fun setCurrentSessionId(id: String) {
@@ -2409,9 +2481,13 @@ class AIAgentViewModel @Inject constructor(
 
     /** 新建会话并落库，返回 id。 */
     private suspend fun createAndUpsertSession(workspacePath: String): String {
-        val s = createSession(workspacePath)
-        sessionUseCase.upsertSession(s)
-        return s.id
+        val workspace = currentTeamDraftWorkspace(workspacePath)
+        val session = createSession(workspacePath)
+        sessionUseCase.upsertSession(session)
+        if (workspace != null && currentTeamDraftWorkspace(workspacePath) == workspace) {
+            teamDraftOrigins.edit().putString(session.id, workspace.ref.stableKey).apply()
+        }
+        return session.id
     }
 
     /**

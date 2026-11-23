@@ -148,7 +148,8 @@ object PluginManifestParser {
             val license = readText(obj, "license", MAX_LICENSE)
             val engines = readEngines(obj)
             val runtime = readRuntime(obj)
-            val contributes = readContributes(obj)
+            val topLevelConfigPage = readConfigPage(obj["configPage"], "configPage")
+            val contributes = readContributes(obj, topLevelConfigPage)
             val icon = readIcon(obj)
 
             val needsRuntime = contributes != null && (
@@ -188,7 +189,7 @@ object PluginManifestParser {
                     overlay = contributes.overlay,
                     backup = contributes.backup,
                     modelAccess = contributes.modelAccess,
-                    configPage = contributes.configPage ?: readConfigPage(obj["configPage"], "configPage"),
+                    configPage = contributes.configPage,
                     icon = icon
                 )
             )
@@ -433,7 +434,7 @@ object PluginManifestParser {
             val configPage: String?
         )
 
-        private fun readContributes(obj: JsonObject): Contributes? {
+        private fun readContributes(obj: JsonObject, topLevelConfigPage: String?): Contributes? {
             val raw = obj["contributes"] ?: return null.also { missing("contributes") }
             val contributes = raw as? JsonObject ?: return null.also { invalid("contributes") }
             var ok = true
@@ -499,7 +500,7 @@ object PluginManifestParser {
                     ok = false
                 }
             }
-            val configPage = readConfigPage(contributes["configPage"], "contributes.configPage")
+            val configPage = readConfigPage(contributes["configPage"], "contributes.configPage") ?: topLevelConfigPage
             if (ok && skills.isEmpty() && agents.isEmpty() && workspaceTools.isEmpty() && uiEntries.isEmpty() &&
                 tools.isEmpty() && hooks.isEmpty() && mcp.isEmpty() && providers.isEmpty() &&
                 executionBackends.isEmpty() && workflows.isEmpty() && sessions.isEmpty() &&

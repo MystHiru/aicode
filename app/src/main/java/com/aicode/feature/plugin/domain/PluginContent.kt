@@ -47,12 +47,13 @@ data class PluginPage(
     val icon: String,
     val installDir: File,
     val pluginVersion: String = "",
-    val installRevision: String? = null
+    val installRevision: String? = null,
+    internal val isConfiguration: Boolean = false
 ) {
     val key: String get() = pluginContributionName(pluginId, localId)
 
-    /** WebView/页面桥缓存键：安装 revision 变化后强制创建新实例，避免开发重载继续使用旧页面。 */
-    val cacheKey: String get() = listOfNotNull(key, pluginVersion, installRevision)
+    /** WebView/页面桥缓存按入口类型和安装 revision 隔离。 */
+    val cacheKey: String get() = listOfNotNull(if (isConfiguration) "config@$key" else key, pluginVersion, installRevision)
         .filter { it.isNotBlank() }
         .joinToString("@")
 }
@@ -700,7 +701,8 @@ object PluginContentLoader {
             icon = "settings",
             installDir = dir,
             pluginVersion = pluginVersion,
-            installRevision = installRevision
+            installRevision = installRevision,
+            isConfiguration = true
         )
     }
 

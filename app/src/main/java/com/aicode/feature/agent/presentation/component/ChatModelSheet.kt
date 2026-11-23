@@ -69,7 +69,8 @@ internal fun ModelIconButton(
     forceOpenSheet: Boolean = false,
     onSelectSuccessInOnboarding: (() -> Unit)? = null,
     onSheetDismiss: (() -> Unit)? = null,
-    runModelTest: (suspend (AIProviderConfig, String) -> ModelTestResult)? = null
+    runModelTest: (suspend (AIProviderConfig, String) -> ModelTestResult)? = null,
+    onManageProviders: (() -> Unit)? = null
 ) {
     var showSheet by remember { mutableStateOf(false) }
     val effectiveShowSheet = showSheet || forceOpenSheet
@@ -93,7 +94,8 @@ internal fun ModelIconButton(
                 showSheet = false
                 onSheetDismiss?.invoke()
             },
-            runModelTest = runModelTest
+            runModelTest = runModelTest,
+            onManageProviders = onManageProviders
         )
     }
 }
@@ -165,7 +167,7 @@ internal fun ReasoningEffortSelector(
         AdaptiveModalBottomSheet(
             onDismissRequest = { showSheet = false },
             sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
         ) {
             Column(
                 modifier = Modifier
@@ -326,7 +328,8 @@ internal fun ModelSheet(
     modelMetadata: Map<String, ModelMetadata>,
     onSelect: (String, String) -> Unit,
     onDismiss: () -> Unit,
-    runModelTest: (suspend (AIProviderConfig, String) -> ModelTestResult)? = null
+    runModelTest: (suspend (AIProviderConfig, String) -> ModelTestResult)? = null,
+    onManageProviders: (() -> Unit)? = null
 ) {
     val testScope = rememberCoroutineScope()
     var testingModels by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -355,6 +358,7 @@ internal fun ModelSheet(
             }
         },
         testingModels = testingModels,
-        testResults = testResults
+        testResults = testResults,
+        onManageProviders = onManageProviders
     )
 }

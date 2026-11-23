@@ -150,7 +150,8 @@ class PluginManager internal constructor(
     private class StagedPackage(
         val pkg: ExtractedPackage,
         val manifest: PluginManifest,
-        val content: PluginContent
+        val content: PluginContent,
+        val previous: PluginRecord?
     )
 
     private class LoadedRegistry(
@@ -394,8 +395,8 @@ class PluginManager internal constructor(
             is ContentLoadResult.Failed -> return rejected(pkg, loadedContent.errors)
             is ContentLoadResult.Ok -> loadedContent.content
         }
-        staged[token] = StagedPackage(pkg, manifest, content)
         val existing = _plugins.value.firstOrNull { it.id == manifest.id }?.record
+        staged[token] = StagedPackage(pkg, manifest, content, existing)
         return PluginPreviewResult.Ready(
             PluginPreview(
                 token = token,
@@ -439,7 +440,9 @@ class PluginManager internal constructor(
      */
     suspend fun install(
         token: String,
-        origin: PluginInstallOrigin = PluginInstallOrigin()
+        origin: PluginInstallOrigin = PluginInstallOrigin(),
+        isCurrent: () -> Boolean = { true },
+        beforeCommit: suspend () -> Unit = {}
     ): PluginInstallResult =
         withContext(Dispatchers.IO) {
             mutex.withLock {
@@ -447,7 +450,16 @@ class PluginManager internal constructor(
                 val pending = staged[token]
                     ?: return@withLock PluginInstallResult.Failed(PluginError(PluginErrorCode.PREVIEW_EXPIRED))
                 val manifest = pending.manifest
+                val current = _plugins.value.firstOrNull { it.id == manifest.id }?.record
+                val previous = pending.previous
+                if (if (previous == null) current != null else current == null || !sameInstallation(current, previous)) {
+                    return@withLock PluginInstallResult.Failed(PluginError(PluginErrorCode.PREVIEW_EXPIRED))
+                }
                 try {
+                    if (!isCurrent()) {
+                        return@withLock PluginInstallResult.Failed(PluginError(PluginErrorCode.PREVIEW_EXPIRED))
+                    }
+                    beforeCommit()
                     commitInstall(token, pending, origin)
                     PluginInstallResult.Installed(manifest.id)
                 } catch (e: IOException) {

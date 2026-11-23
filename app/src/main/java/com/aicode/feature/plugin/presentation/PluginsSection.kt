@@ -1,6 +1,7 @@
 package com.aicode.feature.plugin.presentation
 
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +28,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -63,6 +65,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicode.R
+import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.AdaptiveModalBottomSheet
@@ -72,9 +75,11 @@ import com.aicode.core.ui.FloatingTabBar
 import com.aicode.core.ui.FloatingTabItem
 import com.aicode.core.ui.SegmentedTabs
 import com.aicode.feature.agent.domain.shizuku.ShizukuState
+import com.aicode.feature.plugin.data.SOURCE_DEVELOPMENT
 import com.aicode.feature.plugin.domain.InstalledPlugin
 import com.aicode.feature.plugin.domain.PluginContent
 import com.aicode.feature.plugin.domain.PluginIcon
+import com.aicode.feature.plugin.domain.PluginInstallOrigin
 import com.aicode.feature.plugin.domain.PluginMcpServer
 import com.aicode.feature.plugin.domain.PluginPage
 import com.aicode.feature.plugin.domain.PluginStatus
@@ -96,6 +101,7 @@ import compose.icons.feathericons.ChevronRight
 import compose.icons.feathericons.Cloud
 import compose.icons.feathericons.Code
 import compose.icons.feathericons.Cpu
+import compose.icons.feathericons.Download
 import compose.icons.feathericons.Github
 import compose.icons.feathericons.MessageSquare
 import compose.icons.feathericons.Monitor
@@ -104,6 +110,7 @@ import compose.icons.feathericons.Search
 import compose.icons.feathericons.Server
 import compose.icons.feathericons.Settings
 import compose.icons.feathericons.ShoppingBag
+import compose.icons.feathericons.Sliders
 import compose.icons.feathericons.Tag
 import compose.icons.feathericons.Terminal
 import compose.icons.feathericons.Tool
@@ -151,8 +158,9 @@ internal fun PluginsSection(
     onSetDevEnabled: (PluginDevProject, Boolean) -> Unit,
     onOpenDetail: (InstalledPlugin) -> Unit,
     onToggleEnabled: (InstalledPlugin, Boolean) -> Unit,
-    onShowStorePreview: (PluginStorePreview) -> Unit,
-    onOpenStoreDetail: (PluginStoreItem) -> Unit
+    onOpenStoreDetail: (PluginStoreItem) -> Unit,
+    autoUpdatePlugins: Boolean = false,
+    onAutoUpdatePlugins: (List<PluginStoreItem>) -> Unit = {}
 ) {
     if (!loaded) return
 
@@ -164,10 +172,22 @@ internal fun PluginsSection(
     val installedListState = rememberLazyListState()
     val devListState = rememberLazyListState()
 
+    // 商店拉到新版本后，开关开启时逐个走安装链；贡献有变化的插件会停在预览页等用户确认。
+    LaunchedEffect(autoUpdatePlugins, storeState.loading, storeState.updatesByPluginId) {
+        if (!autoUpdatePlugins || storeState.loading) return@LaunchedEffect
+        val pending = storeState.updatesByPluginId.values.toList()
+        if (pending.isNotEmpty()) onAutoUpdatePlugins(pending)
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         // 开发者侧载开关会改变 tab 数量；连同底栏一起重建，避免底栏内部缓存的 tab 位置残留。
         key(pageCount) {
             val pagerState = rememberPagerState { pageCount }
+            // 每次切到商店页都拉一次最新索引，插件作者发新版本后不用手动下拉；
+            // ViewModel 先展示磁盘缓存，刷新失败时保留旧列表。
+            LaunchedEffect(pagerState.currentPage) {
+                if (pagerState.currentPage == pageCount - 1) storeViewModel.openStore()
+            }
             val listScrolling by remember {
                 derivedStateOf {
                     when {
@@ -208,8 +228,7 @@ internal fun PluginsSection(
                         onOpenDetail = onOpenDevDetail,
                         onSetEnabled = onSetDevEnabled
                     )
-                    else -> PluginStorePage(
-                        onShowPreview = onShowStorePreview,
+                    else -> PluginStoreSection(
                         onOpenDetail = onOpenStoreDetail,
                         viewModel = storeViewModel
                     )
@@ -319,19 +338,6 @@ private fun InstalledPluginsPage(
             }
         }
     }
-}
-
-@Composable
-private fun PluginStorePage(
-    onShowPreview: (PluginStorePreview) -> Unit,
-    onOpenDetail: (PluginStoreItem) -> Unit,
-    viewModel: PluginStoreViewModel
-) {
-    PluginStoreSection(
-        onShowPreview = onShowPreview,
-        onOpenDetail = onOpenDetail,
-        viewModel = viewModel
-    )
 }
 
 /** 列表搜索无结果时的共用占位。 */
@@ -481,14 +487,15 @@ private fun PluginRow(
 /**
  * 插件详情与配置页面：
  * 采用 SegmentedTabs 分段控件，将【插件管理（AiCode 固定配置）】与【插件配置（WebView 专属配置页面）】清晰分离，
- * 若插件未声明专属配置页面（configPage）则直接全屏展示原生管理页面，无缝融入 App 主题。
+ * 停用时保留配置入口的状态提示，但不挂载 WebView。
  */
 @Composable
 internal fun PluginDetailSection(
     plugin: InstalledPlugin,
     onToggleEnabled: (Boolean) -> Unit,
-    bridgeFactory: ((page: PluginPage, post: (String) -> Unit, onClosePage: () -> Unit) -> PluginWebBridge)? = null,
-    onClosePage: () -> Unit = {},
+    bridgeFactory: (page: PluginPage, post: (String) -> Unit, onClosePage: () -> Unit) -> PluginWebBridge,
+    update: PluginStoreItem? = null,
+    onUpdate: () -> Unit = {},
     dependencyState: PluginDependencyUiState? = null,
     onPrepareDependencies: () -> Unit = {},
     shizukuGranted: Boolean = false,
@@ -500,12 +507,13 @@ internal fun PluginDetailSection(
     onSetBackupGranted: (Boolean) -> Unit = {}
 ) {
     val languageTag = currentLanguageTag()
-    val configPage = plugin.content.configPage
-    val hasConfigPage = plugin.isActive && configPage != null && bridgeFactory != null
-    var selectedTab by remember(plugin.id, plugin.isActive) { mutableIntStateOf(0) }
+    val configPage = plugin.content.configPage?.takeIf { plugin.status == PluginStatus.OK }
+    var selectedTab by remember(plugin.id, configPage?.cacheKey) { mutableIntStateOf(0) }
+
+    BackHandler(enabled = configPage != null && selectedTab == 1 && !plugin.isActive) { selectedTab = 0 }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        if (hasConfigPage) {
+        if (configPage != null) {
             SegmentedTabs(
                 selected = selectedTab,
                 labels = listOf(
@@ -513,18 +521,18 @@ internal fun PluginDetailSection(
                     stringResource(R.string.plugins_tab_config)
                 ),
                 onSelect = { selectedTab = it },
-                modifier = Modifier
-                    .padding(horizontal = Spacing.lg)
-                    .padding(top = Spacing.sm, bottom = Spacing.sm)
+                icons = listOf(FeatherIcons.Package, FeatherIcons.Sliders),
+                modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.sm)
             )
         }
 
-        if (!hasConfigPage || selectedTab == 0) {
-            // Tab 0: AiCode 固定配置与管理页面
+        if (configPage == null || selectedTab == 0) {
             PluginNativeConfigContent(
                 plugin = plugin,
                 languageTag = languageTag,
                 onToggleEnabled = onToggleEnabled,
+                update = update,
+                onUpdate = onUpdate,
                 dependencyState = dependencyState,
                 onPrepareDependencies = onPrepareDependencies,
                 shizukuGranted = shizukuGranted,
@@ -535,11 +543,22 @@ internal fun PluginDetailSection(
                 backupGranted = backupGranted,
                 onSetBackupGranted = onSetBackupGranted
             )
+        } else if (!plugin.isActive) {
+            SettingsEmptyState(
+                icon = FeatherIcons.Sliders,
+                title = stringResource(R.string.plugins_status_disabled),
+                hint = stringResource(R.string.plugins_config_enable_first),
+                actions = {
+                    Button(onClick = { onToggleEnabled(true) }) {
+                        Text(stringResource(R.string.plugins_enable))
+                    }
+                },
+                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(Spacing.lg)
+            )
         } else {
-            // Tab 1: 插件自己的专属 WebView 配置页面
             PluginWebPanelScreen(
                 page = configPage,
-                onClosePage = onClosePage,
+                onClosePage = { selectedTab = 0 },
                 bridgeFactory = { post, onClose ->
                     bridgeFactory(configPage, post, onClose)
                 },
@@ -556,6 +575,8 @@ private fun PluginNativeConfigContent(
     plugin: InstalledPlugin,
     languageTag: String,
     onToggleEnabled: (Boolean) -> Unit,
+    update: PluginStoreItem?,
+    onUpdate: () -> Unit,
     dependencyState: PluginDependencyUiState? = null,
     onPrepareDependencies: () -> Unit = {},
     shizukuGranted: Boolean = false,
@@ -593,6 +614,7 @@ private fun PluginNativeConfigContent(
         if (manifest != null) {
             PluginHeaderCard(
                 name = plugin.displayName(languageTag),
+                subtitle = stringResource(R.string.plugins_item_subtitle, plugin.record.version, manifest.publisher),
                 description = manifest.description.resolve(languageTag),
                 icon = plugin.content.icon
             )
@@ -616,6 +638,31 @@ private fun PluginNativeConfigContent(
                     checked = plugin.record.enabled && plugin.status == PluginStatus.OK,
                     onCheckedChange = onToggleEnabled,
                     enabled = plugin.status == PluginStatus.OK
+                )
+            }
+            if (plugin.status != PluginStatus.OK) {
+                SettingsDivider()
+                SettingsRow(
+                    icon = FeatherIcons.Package,
+                    title = stringResource(
+                        if (plugin.status == PluginStatus.INVALID) R.string.plugins_status_incompatible
+                        else R.string.plugins_status_damaged
+                    ),
+                    subtitle = plugin.errors.firstOrNull()?.let { pluginErrorMessage(it) }
+                        ?: stringResource(R.string.plugins_detail_reinstall_hint)
+                )
+            }
+            if (update != null) {
+                SettingsDivider()
+                SettingsRow(
+                    icon = FeatherIcons.Download,
+                    title = stringResource(R.string.plugins_store_update),
+                    subtitle = stringResource(
+                        R.string.plugins_update_version_transition,
+                        plugin.record.version,
+                        update.plugin.version.orEmpty()
+                    ),
+                    onClick = onUpdate
                 )
             }
         }
@@ -761,7 +808,17 @@ private fun PluginNativeConfigContent(
                 SettingsRow(
                     icon = FeatherIcons.Package,
                     title = stringResource(R.string.plugins_info_origin),
-                    trailing = { PluginInfoValue(stringResource(R.string.plugins_origin_local)) }
+                    trailing = {
+                        val record = plugin.record
+                        PluginInfoValue(
+                            when {
+                                record.sourceKind == SOURCE_DEVELOPMENT -> stringResource(R.string.plugins_origin_development)
+                                record.origin == PluginInstallOrigin.KIND_INDEX ->
+                                    record.sourceName ?: stringResource(R.string.plugins_origin_index)
+                                else -> stringResource(R.string.plugins_origin_local)
+                            }
+                        )
+                    }
                 )
             }
 
@@ -826,12 +883,11 @@ private fun PluginNativeConfigContent(
 }
 
 @Composable
-private fun PluginHeaderCard(name: String, description: String, icon: PluginIcon?) {
+internal fun PluginHeaderCard(name: String, subtitle: String, description: String, icon: PluginIcon?) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.semanticColors.cardSurface,
-        shadowElevation = 0.dp
+        shape = RoundedCornerShape(Radius.lg),
+        color = MaterialTheme.semanticColors.cardSurface
     ) {
         Row(
             modifier = Modifier
@@ -843,28 +899,35 @@ private fun PluginHeaderCard(name: String, description: String, icon: PluginIcon
                 modifier = Modifier
                     .size(48.dp)
                     .background(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(12.dp)
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(Radius.mdLarge)
                     ),
                 contentAlignment = Alignment.Center
             ) {
                 PluginIconContent(
                     icon = icon,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    iconSize = 26.dp,
-                    shape = RoundedCornerShape(12.dp)
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    iconSize = Spacing.xl,
+                    shape = RoundedCornerShape(Radius.mdLarge)
                 )
             }
             Spacer(modifier = Modifier.width(Spacing.lg))
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.Center
+                verticalArrangement = Arrangement.spacedBy(Spacing.xs)
             ) {
                 Text(
                     text = name,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -1083,8 +1146,10 @@ internal fun PluginSettingsSheet(
     devRootPath: String,
     indexSourceText: String,
     downloadMirror: String,
+    autoUpdatePlugins: Boolean,
     onSetIndexSourceText: (String) -> Unit,
     onSetDownloadMirror: (String) -> Unit,
+    onSetAutoUpdatePlugins: (Boolean) -> Unit,
     onSetDevMode: (Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -1092,7 +1157,7 @@ internal fun PluginSettingsSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(
             modifier = Modifier
@@ -1113,6 +1178,11 @@ internal fun PluginSettingsSheet(
                 downloadMirror = downloadMirror,
                 onSetIndexSourceText = onSetIndexSourceText,
                 onSetDownloadMirror = onSetDownloadMirror
+            )
+            Spacer(modifier = Modifier.height(Spacing.md))
+            PluginUpdateSection(
+                autoUpdatePlugins = autoUpdatePlugins,
+                onSetAutoUpdatePlugins = onSetAutoUpdatePlugins
             )
             Spacer(modifier = Modifier.height(Spacing.md))
             PluginDeveloperSection(
@@ -1167,6 +1237,35 @@ private fun PluginIndexSettingsSection(
                 isError = mirrorInvalid,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
             )
+        }
+    }
+}
+
+@Composable
+private fun PluginUpdateSection(
+    autoUpdatePlugins: Boolean,
+    onSetAutoUpdatePlugins: (Boolean) -> Unit
+) {
+    SettingsGroup {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.lg, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.plugins_auto_update),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = stringResource(R.string.plugins_auto_update_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            AppSwitch(checked = autoUpdatePlugins, onCheckedChange = onSetAutoUpdatePlugins)
         }
     }
 }

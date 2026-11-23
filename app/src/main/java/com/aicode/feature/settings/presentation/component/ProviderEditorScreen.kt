@@ -169,8 +169,10 @@ import compose.icons.feathericons.Plus
 import compose.icons.feathericons.RefreshCw
 import compose.icons.feathericons.Slash
 import compose.icons.feathericons.Sliders
+import compose.icons.feathericons.Square
 import compose.icons.feathericons.Trash2
 import compose.icons.feathericons.X
+import compose.icons.feathericons.Zap
 import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.agent.presentation.component.AdaptiveCardView
 import com.aicode.feature.settings.domain.model.ProviderDashboardResult
@@ -277,6 +279,7 @@ fun ProviderEditorScreen(
     val autoRemoveStaleModels by viewModel.autoRemoveStaleModels.collectAsStateWithLifecycle()
     val testResults by viewModel.testResults.collectAsStateWithLifecycle()
     val testing by viewModel.testing.collectAsStateWithLifecycle()
+    val batchTestState by viewModel.batchTestState.collectAsStateWithLifecycle()
     val proxyTestState by viewModel.proxyTestState.collectAsStateWithLifecycle()
     val dashboardTestState by viewModel.dashboardTestState.collectAsStateWithLifecycle()
     val dashboardScripts by viewModel.dashboardScripts.collectAsStateWithLifecycle()
@@ -571,7 +574,17 @@ fun ProviderEditorScreen(
                             checked = isEnabled,
                             onCheckedChange = { isEnabled = it }
                         )
-                        SettingsDivider()
+                    }
+
+                    // ── 高级选项：完整 URL / 新版端点 / 缓存 / 多 Key / 代理默认收起，首屏只留启用 ──
+                    var advancedExpanded by rememberSaveable { mutableStateOf(false) }
+                    CollapsibleGroupHeader(
+                        text = stringResource(R.string.provider_section_advanced),
+                        expanded = advancedExpanded,
+                        onToggle = { advancedExpanded = !advancedExpanded }
+                    )
+                    AnimatedVisibility(visible = advancedExpanded) {
+                    SettingsGroup {
                         ProviderSwitchRow(
                             title = stringResource(R.string.provider_full_url),
                             subtitle = stringResource(R.string.provider_full_url_desc),
@@ -656,6 +669,7 @@ fun ProviderEditorScreen(
                                 )
                             }
                         )
+                    }
                     }
 
                     // ── 自定义面板 (DIY)：不常用，默认折叠，首屏只留基本信息与选项 ──
@@ -799,6 +813,30 @@ fun ProviderEditorScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.weight(1f)
                         )
+                        if (batchTestState.running) {
+                            TextButton(
+                                onClick = { viewModel.stopAllModels() },
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Icon(FeatherIcons.Square, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(Spacing.xs))
+                                Text(stringResource(R.string.provider_test_stop))
+                            }
+                        } else {
+                            TextButton(
+                                onClick = { viewModel.testAllModels(currentConfig()) },
+                                enabled = models.isNotEmpty(),
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            ) {
+                                Icon(FeatherIcons.Zap, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(Spacing.xs))
+                                Text(stringResource(R.string.provider_test_all))
+                            }
+                        }
                         TextButton(
                             onClick = {
                                 fetchDialogKey++
@@ -813,6 +851,19 @@ fun ProviderEditorScreen(
                             Spacer(Modifier.width(Spacing.xs))
                             Text(stringResource(R.string.provider_fetch_models))
                         }
+                    }
+                    if (batchTestState.running) {
+                        Text(
+                            text = stringResource(
+                                R.string.provider_test_batch_summary,
+                                batchTestState.done,
+                                batchTestState.total,
+                                batchTestState.success
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = Spacing.md, bottom = Spacing.xs)
+                        )
                     }
                     if (models.isEmpty()) {
                         Box(
@@ -1227,7 +1278,7 @@ private fun AddModelSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentWindowInsets = { WindowInsets(0.dp) }
     ) {
         Column(
@@ -1620,7 +1671,7 @@ private fun FetchModelsDialog(
             }
         },
         sheetState = sheetState,
-        containerColor = settingsPageBackground()
+        containerColor = sheetSurface()
     ) {
         Column(
             modifier = Modifier
@@ -2065,7 +2116,7 @@ private fun ProviderTypeSelectionSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(
             modifier = Modifier
@@ -2511,7 +2562,7 @@ private fun ScriptPickerBottomSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(),
-        containerColor = MaterialTheme.colorScheme.surface
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(
             modifier = Modifier
@@ -2597,7 +2648,7 @@ private fun RawOutputBottomSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = MaterialTheme.semanticColors.cardSurface
+        containerColor = sheetSurface()
     ) {
         Column(
             modifier = Modifier
@@ -2916,7 +2967,7 @@ private fun ProviderHeadersSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentWindowInsets = { WindowInsets(0.dp) }
     ) {
         Column(
@@ -3095,7 +3146,7 @@ private fun ProviderScriptParamsSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentWindowInsets = { WindowInsets(0.dp) }
     ) {
         Column(
