@@ -134,6 +134,9 @@ class MigrationTest {
     @Test
     fun migrate_66_to_69_repairs_skipped_columns() {
         helper.createDatabase(dbName, 66).apply {
+            // 真实老库：user_version 停在 66、跑的是本分支旧的 66_add_root_grants，
+            // 迁移 66 加的列没执行过。这里删掉列复现。
+            execSQL("ALTER TABLE ai_providers DROP COLUMN useResponseWebSocket")
             execSQL(
                 "CREATE TABLE IF NOT EXISTS migration_history (" +
                         "version INTEGER PRIMARY KEY, script_name TEXT, executed_at INTEGER)"
