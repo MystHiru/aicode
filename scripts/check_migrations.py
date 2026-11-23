@@ -159,6 +159,35 @@ for ver, name in sorted(versions.items()):
                 % (name, column)
             )
 
+# ---------- 3c. LegacySchemaRepair 的 identity hash 与编译期一致 ----------
+# 用户库被手工改过（或装过临时修复包）时，启动前会把 room_master_table 重写成这里的常量；
+# 常量落后于编译期生成的 hash，修复就变成新的崩溃源。
+LEGACY_REPAIR_REL = "app/src/main/java/com/aicode/core/db/LegacySchemaRepair.kt"
+legacy_repair_file = os.path.join(ROOT, LEGACY_REPAIR_REL)
+if os.path.isfile(legacy_repair_file):
+    with open(legacy_repair_file, encoding="utf-8", errors="replace") as f:
+        repair_src = f.read()
+    m = re.search(r'EXPECTED_IDENTITY_HASH\s*=\s*"([0-9a-fA-F]+)"', repair_src)
+    repair_hash = m.group(1).lower() if m else None
+    impls = glob.glob(
+        os.path.join(
+            ROOT,
+            "app/build/generated/ksp/*/kotlin/com/aicode/feature/agent/data/local/database/AgentDatabase_Impl.kt",
+        )
+    )
+    if repair_hash and impls:
+        with open(sorted(impls)[-1], encoding="utf-8", errors="replace") as f:
+            impl_src = f.read()
+        m2 = re.search(r'"([0-9a-f]{32})",\s*"([0-9a-f]{32})"', impl_src)
+        compile_hash = m2.group(1).lower() if m2 else None
+        if compile_hash and compile_hash != repair_hash:
+            errors.append(
+                "LegacySchemaRepair 的 EXPECTED_IDENTITY_HASH=%s 与编译期 hash=%s 不一致；"
+                "改了实体或迁移后要同步更新" % (repair_hash, compile_hash)
+            )
+        elif compile_hash:
+            notes.append("LegacySchemaRepair identity hash 与编译期一致：%s" % compile_hash)
+
 # ---------- 4. 已发布冻结校验 ----------
 _, tags_out = git(["for-each-ref", "--sort=-creatordate", "--format=%(refname:short)", "refs/tags/v*"])
 tags = [t.strip() for t in tags_out.splitlines() if t.strip()]

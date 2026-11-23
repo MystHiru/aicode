@@ -22,7 +22,13 @@ object LegacySchemaRepair {
     private const val LEGACY_SCRIPT_MARKER = "root_grants"
     private const val REPLAY_FROM_VERSION = 63
 
-    fun repairIfNeeded(context: Context, databaseName: String) {
+    /**
+     * 当前 schema 的 identity hash，必须与 KSP 生成的 `AgentDatabase_Impl` 一致。
+     * 改了实体/索引后跟着 SCHEMA_VERSION 一起更新，scripts/check_migrations.py 会比对。
+     */
+    private const val EXPECTED_IDENTITY_HASH = "b6de7a7bdc104f4630bf2bff245fb610"
+
+    fun repairIfNeeded(context: Context, databaseName: String, schemaVersion: Int) {
         val file = runCatching { context.getDatabasePath(databaseName) }.getOrNull() ?: return
         if (!file.isFile || file.length() == 0L) return
 
@@ -45,7 +51,42 @@ object LegacySchemaRepair {
         if (repaired) {
             FileLogger.i("LegacySchemaRepair", "检测到旧版 64 号迁移，已回退到 63 以便重放上游迁移")
         }
+
+        repairIdentityHash(file, schemaVersion)
     }
+
+    /**
+     * 版本已是最新但 identity hash 与当前包不一致时，直接重写 hash。
+     * 用户手工改过库（或装过临时修复包）会留下旧 hash，Room 在 onOpen 会报
+     * 「Room cannot verify the data integrity」；这里先确认补列迁移已经落地，
+     * 再把 hash 对齐到当前编译期常量。版本没到位时不动，交给正常升级路径。
+     */
+    private fun repairIdentityHash(file: java.io.File, schemaVersion: Int) {
+        val changed = runCatching {
+            SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+                if (db.version != schemaVersion) return@use false
+                if (!hasColumn(db, "ai_providers", "useResponseWebSocket")) return@use false
+                if (!hasColumn(db, "chat_sessions", "fastMode")) return@use false
+                val current = readIdentityHash(db) ?: return@use false
+                if (current == EXPECTED_IDENTITY_HASH) return@use false
+                db.execSQL(
+                    "UPDATE room_master_table SET identity_hash = ? WHERE id = 42",
+                    arrayOf<Any>(EXPECTED_IDENTITY_HASH)
+                )
+                true
+            }
+        }.getOrElse {
+            FileLogger.w("LegacySchemaRepair", "identity hash 对齐失败: ${it.message}")
+            false
+        }
+        if (changed) FileLogger.i("LegacySchemaRepair", "已把 room_master_table 的 identity hash 对齐到当前版本")
+    }
+
+    private fun readIdentityHash(db: SQLiteDatabase): String? = runCatching {
+        db.rawQuery("SELECT identity_hash FROM room_master_table WHERE id = 42", null).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull()
 
     private fun hasColumn(db: SQLiteDatabase, table: String, column: String): Boolean =
         runCatching {

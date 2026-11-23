@@ -115,7 +115,11 @@ object AgentModule {
     @Singleton
     fun provideAgentDatabase(@ApplicationContext context: Context): AgentDatabase {
         // 合并上游前本分支把 root_grants 建在 64 号上，旧库要先回退工号才能重放上游迁移。
-        com.aicode.core.db.LegacySchemaRepair.repairIfNeeded(context, AgentDatabase.DATABASE_NAME)
+        com.aicode.core.db.LegacySchemaRepair.repairIfNeeded(
+            context,
+            AgentDatabase.DATABASE_NAME,
+            AgentDatabase.SCHEMA_VERSION
+        )
         return Room.databaseBuilder(
             context,
             AgentDatabase::class.java,
