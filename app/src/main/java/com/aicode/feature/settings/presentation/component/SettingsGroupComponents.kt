@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aicode.R
+import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
 import compose.icons.FeatherIcons
@@ -93,10 +94,21 @@ internal fun CollapsibleGroupHeader(
     }
 }
 
-/** 设置页背景：统一使用语义定义的 pageBackground。 */
+/** 设置页背景：统一使用语义定义的 pageBackground。壁纸模式下它是透明的，让背景图透出。 */
 @Composable
 internal fun settingsPageBackground(): Color =
     MaterialTheme.semanticColors.pageBackground
+
+/**
+ * 底部弹层/浮层的底色。
+ *
+ * 不能复用 [settingsPageBackground]：壁纸模式下它的 alpha 是 0，弹层整块透明，
+ * 后面的聊天文字会直接叠在弹层标题与模型名上。这里用容器高亮色（有背景时 92%、
+ * 无背景时不透明），保留一点壁纸质感又不影响阅读。
+ */
+@Composable
+internal fun sheetSurface(): Color =
+    MaterialTheme.colorScheme.surfaceContainerHigh
 
 /** 分组小标题：卡片上方灰色小字，左对齐。 */
 @Composable
@@ -118,7 +130,7 @@ internal fun SettingsGroup(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(Radius.mdLarge),
         color = MaterialTheme.semanticColors.cardSurface,
         shadowElevation = 0.dp
     ) {
@@ -140,10 +152,10 @@ internal fun LazyGroupItem(
     content: @Composable () -> Unit
 ) {
     val shape = RoundedCornerShape(
-        topStart = if (index == 0) 14.dp else 0.dp,
-        topEnd = if (index == 0) 14.dp else 0.dp,
-        bottomStart = if (index == lastIndex) 14.dp else 0.dp,
-        bottomEnd = if (index == lastIndex) 14.dp else 0.dp
+        topStart = if (index == 0) Radius.mdLarge else 0.dp,
+        topEnd = if (index == 0) Radius.mdLarge else 0.dp,
+        bottomStart = if (index == lastIndex) Radius.mdLarge else 0.dp,
+        bottomEnd = if (index == lastIndex) Radius.mdLarge else 0.dp
     )
     Column(
         modifier = modifier

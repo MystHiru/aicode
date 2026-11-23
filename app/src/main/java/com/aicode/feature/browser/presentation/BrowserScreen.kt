@@ -306,7 +306,7 @@ fun BrowserScreen(
         AdaptiveModalBottomSheet(
             onDismissRequest = { showTabsSheet = false },
             sheetState = tabsSheetState,
-            containerColor = MaterialTheme.semanticColors.pageBackground
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
         ) {
             Column(
                 modifier = Modifier
@@ -779,7 +779,7 @@ private fun BrowserMenuSheet(
             onDismiss()
         },
         sheetState = sheetState,
-        containerColor = MaterialTheme.semanticColors.pageBackground
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(
             modifier = Modifier

@@ -391,7 +391,7 @@ internal fun SubAgentEditorScreen(
         AdaptiveModalBottomSheet(
             onDismissRequest = { showEffortSheet = false },
             sheetState = sheetState,
-            containerColor = settingsPageBackground()
+            containerColor = sheetSurface()
         ) {
             Column(
                 modifier = Modifier
@@ -432,7 +432,7 @@ internal fun SubAgentEditorScreen(
         AdaptiveModalBottomSheet(
             onDismissRequest = { showModeSheet = false },
             sheetState = sheetState,
-            containerColor = settingsPageBackground()
+            containerColor = sheetSurface()
         ) {
             Column(
                 modifier = Modifier
@@ -521,7 +521,7 @@ private fun ToolPickerSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = settingsPageBackground()
+        containerColor = sheetSurface()
     ) {
         Column(
             modifier = Modifier

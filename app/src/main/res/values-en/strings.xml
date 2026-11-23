@@ -275,7 +275,8 @@
     <string name="settings_background_image">Background image</string>
     <string name="settings_background_image_none">None</string>
     <string name="settings_background_image_alpha">Opacity</string>
-    <string name="settings_background_image_pick">Pick image</string>
+    <string name="settings_background_image_pick">Choose image or video</string>
+    <string name="settings_background_image_failed">Choose a readable image or MP4 video. Your previous background was kept.</string>
     <string name="settings_background_image_remove">Remove background</string>
     <string name="provider_cache_anthropic_title">Anthropic cache breakpoints</string>
     <string name="provider_cache_anthropic_subtitle">Mark system/tools/messages prefixes with explicit cache breakpoints to cut repeated input cost</string>
@@ -907,7 +908,11 @@
     <string name="chat_queue_drag">Drag to reorder</string>
     <string name="chat_upload_file">Upload File</string>
     <string name="chat_upload_image">Upload Image</string>
-    <string name="chat_remove_attachment">Remove attachment</string>    <string name="chat_no_models_hint">No models available, add one in "AI Vendors"</string>
+    <string name="chat_remove_attachment">Remove attachment</string>
+    <string name="chat_no_models_hint">No models available, add one in "AI Vendors"</string>
+    <string name="model_sheet_manage_providers">Manage vendors</string>
+    <string name="model_sheet_add_provider">Add a vendor</string>
+    <string name="model_sheet_search_empty">No matching models or vendors</string>
     <string name="chat_stop">Stop</string>
     <string name="chat_send">Send</string>
     <string name="chat_perm_single_use_desc">Contains command substitution/pipes/redirects, cannot be remembered, single-use only</string>
@@ -1216,6 +1221,11 @@
     <string name="git_new">New</string>
     <string name="git_no_commits">No commits yet</string>
     <string name="git_commit_count">Commits (%1$s)</string>
+    <string name="git_filter_author">Filter by author</string>
+    <string name="git_filter_all_authors">All authors</string>
+    <string name="git_author_commit_count">%1$d commits</string>
+    <string name="git_graph_expand">Show full branch graph</string>
+    <string name="git_graph_collapse">Collapse branch graph</string>
     <string name="git_credentials_count">Credentials (%1$d)</string>
     <string name="git_load_more_commits">Pull up to load more commits</string>
     <string name="git_no_more_commits">No more commits</string>
@@ -1611,7 +1621,9 @@
     <!-- Provider Editor -->
     <string name="provider_section_basic">General</string>
     <string name="provider_section_type">Upstream Format</string>
-    <string name="provider_section_options">Options</string>    <string name="provider_show_api_key">Show API Key</string>
+    <string name="provider_section_options">Options</string>
+    <string name="provider_section_advanced">Advanced options</string>
+    <string name="provider_show_api_key">Show API Key</string>
     <string name="provider_hide_api_key">Hide API Key</string>
     <string name="provider_api_key">API Key</string>
     <string name="provider_base_url">Base URL</string>
@@ -1701,6 +1713,9 @@
     <string name="provider_models_aligned_removed">Removed %1$d model(s) no longer offered by the vendor</string>
     <string name="provider_please_wait">Please wait…</string>
     <string name="provider_test">Test</string>
+    <string name="provider_test_all">Test all</string>
+    <string name="provider_test_stop">Stop</string>
+    <string name="provider_test_batch_summary">Tested %1$d/%2$d · %3$d ok</string>
 
     <!-- Provider Logo -->
     <string name="provider_brand_doubao">Doubao</string>
@@ -2193,8 +2208,10 @@
     <string name="plugins_store_empty_title">No plugins available</string>
     <string name="plugins_store_empty_hint">This index has no published plugins yet. Add third-party plugin sources from Plugin settings in the top-right menu.</string>
     <string name="plugins_settings_title">Plugin settings</string>
-    <string name="plugins_config_card_title">Plugin Configuration</string>
-    <string name="plugins_config_card_hint">This plugin provides its own settings page. Tap to configure.</string>
+    <string name="plugins_config_enable_first">Enable the plugin to edit its settings</string>
+    <string name="plugins_detail_reinstall_hint">Reinstall a compatible plugin package</string>
+    <string name="plugins_manage_installed">Manage installed plugin</string>
+    <string name="plugins_store_update_other_source">This listing cannot update the installed copy from another source</string>
     <string name="plugins_status_active">Active</string>
     <string name="plugins_status_disabled">Disabled</string>
     <string name="plugins_status_damaged">Damaged</string>
@@ -2215,11 +2232,12 @@
     <string name="plugins_preview_contents">What it provides</string>
     <string name="plugins_install">Install</string>
     <string name="plugins_install_replace">Replace</string>
-    <string name="plugins_install_source_changed">The source has changed. Replacing the plugin revokes its existing Shizuku and overlay permissions and closes any open overlays.</string>
+    <string name="plugins_install_source_changed">The source has changed. Replacing the plugin revokes its Shizuku, overlay, and backup permissions and closes any open overlays.</string>
 
     <string name="plugins_store_install">Install</string>
     <string name="plugins_store_update">Update</string>
     <string name="plugins_store_installed">Installed</string>
+    <string name="plugins_store_unavailable">This plugin is unavailable from this source</string>
     <string name="plugins_store_incompatible">Incompatible</string>
     <string name="plugins_store_requires_min_version">Requires AiCode >= %1$s</string>
     <string name="plugins_store_retry">Retry</string>
@@ -2227,29 +2245,32 @@
     <string name="plugins_store_error_invalid">The index is invalid and was rejected.</string>
     <string name="plugins_store_error_no_release">No installable release found.</string>
     <string name="plugins_store_error_download">Failed to download the plugin package. Try again later.</string>
-    <string name="plugins_store_error_preview">The plugin package cannot be read. Installation was cancelled.</string>
+    <string name="plugins_store_error_package_check">The package does not match the store listing. Nothing was installed.</string>
+    <string name="plugins_store_error_listing_changed">The listing or installation has changed. Try again.</string>
+    <string name="plugins_store_downloading">Downloading plugin package…</string>
     <string name="plugins_store_refresh_done">Index refreshed</string>
     <string name="plugins_store_refresh_done_failed">Index refreshed, %1$d failed</string>
     <string name="plugins_store_detail_version">Version</string>
-    <string name="plugins_store_detail_tags">Tags</string>
+    <string name="plugins_store_detail_tags">Categories</string>
+    <string name="plugins_store_tag_provider">Model providers</string>
+    <string name="plugins_store_tag_ui">Interface extensions</string>
+    <string name="plugins_store_tag_integration">Service integrations</string>
     <string name="plugins_store_detail_source">Source repository</string>
     <string name="plugins_store_detail_license">License</string>
     <string name="plugins_store_detail_homepage">Homepage</string>
     <string name="plugins_store_version_latest">Latest</string>
     <string name="plugins_store_detail_index_source">Index source</string>
+    <string name="plugins_store_detail_index_source_community">%1$s (third-party)</string>
     <string name="plugins_store_badge_unofficial">Unofficial</string>
     <string name="plugins_store_sources_label">Third-party sources</string>
-    <string name="plugins_store_sources_hint">One URL per line; the official index is always kept first.</string>
+    <string name="plugins_store_sources_hint">One URL per line. Custom sources appear after the built-in AiCode and Vanta indexes.</string>
     <string name="plugins_store_mirror_label">Download mirror</string>
-    <string name="plugins_store_mirror_hint">Accelerates GitHub index and package downloads. Leave empty for direct access.</string>
+    <string name="plugins_store_mirror_hint">Speeds up custom GitHub indexes and unofficial Release downloads. Built-in indexes, official AiCode plugins, and direct links always connect directly.</string>
     <string name="plugins_store_mirror_invalid">Enter a URL starting with http:// or https://</string>
-    <string name="plugins_install_source_official">Source: %1$s (official index)</string>
-    <string name="plugins_install_source_community">Source: %1$s (community index)</string>
-    <string name="plugins_install_repository_header">Confirm plugin source</string>
-    <string name="plugins_install_repository_reason">Community sources require typing the plugin\'s source repository. This is required for every install and update.</string>
-    <string name="plugins_install_repository_label">Plugin source repository</string>
-    <string name="plugins_install_repository_hint">Type the full source repository shown above</string>
-    <string name="plugins_install_repository_mismatch">The addresses do not match</string>
+    <string name="plugins_install_source_official">%1$s (official plugin)</string>
+    <string name="plugins_install_source_community">%1$s (third-party plugin)</string>
+    <string name="plugins_install_untrusted_notice">Only install plugins you trust. Review the source and what the plugin provides before installing.</string>
+    <string name="plugins_install_third_party_provider_notice">The plugin and its upstream services can process the messages and attachments you send. Use only services you trust and avoid sending sensitive information.</string>
 
     <string name="plugins_permissions_section">Permissions</string>
     <string name="plugins_shizuku_section">Shizuku</string>
@@ -2265,6 +2286,8 @@
     <string name="plugins_overlay_notification_close">Close all</string>
     <string name="plugins_overlay_channel">Plugin overlays</string>
     <string name="plugins_overlay_channel_desc">Keeps the foreground service while plugin overlays are visible</string>
+    <string name="plugins_auto_update">Auto-install updates</string>
+    <string name="plugins_auto_update_desc">Off by default. When on, opening the store installs updates whose contributions are unchanged; updates that add tools, hooks, or MCP capabilities still ask for confirmation first.</string>
     <string name="plugins_dev_mode">Developer sideload</string>
     <string name="plugins_dev_mode_desc">When enabled, the Dev tab lists plugin projects in the dev directory and reloads them when files change. For development only.</string>
     <string name="plugins_dev_root">Dev directory: %1$s</string>
@@ -2368,6 +2391,8 @@
     <string name="plugins_info_repository">Source repository</string>
     <string name="plugins_info_origin">Source</string>
     <string name="plugins_origin_local">Imported from a local file</string>
+    <string name="plugins_origin_index">Plugin store</string>
+    <string name="plugins_origin_development">Developer sideload</string>
     <string name="plugins_no_contents">Nothing to show</string>
     <string name="plugins_uninstall">Uninstall plugin</string>
     <string name="plugins_uninstall_confirm_title">Uninstall plugin?</string>
@@ -2487,9 +2512,71 @@
     <string name="appearance_ui_style_standard">Standard</string>
     <string name="appearance_ui_style_miuix">Miuix</string>
     <string name="appearance_interface_scale">Interface scale</string>
-    <string name="appearance_interface_scale_desc">Scale global text size (85%–115%)</string>
+    <string name="appearance_interface_scale_desc" formatted="false">Scale global text size (85%–115%)</string>
     <string name="appearance_pure_black">Pure black</string>
     <string name="appearance_pure_black_desc">Use a pure black background in dark mode for higher contrast and less power use</string>
     <string name="appearance_pure_black_dark_only">Only applies in dark mode (currently light)</string>
     <string name="appearance_entry_desc">Theme mode, colors, UI style, scale and pure black</string>
+    <string name="team_chat_append_draft">Append to chat draft</string>
+    <string name="team_chat_clear">Clear history</string>
+    <string name="team_chat_clear_confirm">Clear this team’s discussion history in the current workspace? This cannot be undone.</string>
+    <string name="team_chat_confirm_title">Send to the team?</string>
+    <string name="team_chat_confirm_body">This message and recent discussion history will be sent to the models below. Avoid sending sensitive information.</string>
+    <string name="team_chat_edit">Edit team</string>
+    <string name="team_chat_empty">Nobody has spoken yet</string>
+    <string name="team_chat_input_hint">Say something to the group</string>
+    <string name="team_chat_more">More</string>
+    <string name="team_chat_no_draft_target">The current chat could not be verified. Copy the proposal, or start a new chat and try again.</string>
+    <string name="team_chat_no_models">No models are available for this team. Check members and provider settings.</string>
+    <string name="team_chat_no_proposal">No proposal was generated. Any replies were kept.</string>
+    <string name="team_chat_proposal">Discussion proposal</string>
+    <string name="team_chat_send">Send</string>
+    <string name="team_chat_skipped">Members without replies: %1$s</string>
+    <string name="team_chat_stop">Stop</string>
+    <string name="team_chat_failed">The discussion operation did not finish. Try again.</string>
+    <string name="team_chat_storage_error">Could not read or write team data.</string>
+    <string name="team_chat_unavailable">This team could not be found.</string>
+    <string name="team_chat_title">Team discussion</string>
+    <string name="team_delete">Delete team</string>
+    <string name="team_delete_confirm">Delete “%1$s” and its discussion history in every workspace? This cannot be undone.</string>
+    <string name="team_delete_failed">Deletion did not complete. Check the team and its discussion history.</string>
+    <string name="team_description_hint">What this team discusses</string>
+    <string name="team_editor_add_agent">Add from subagents</string>
+    <string name="team_editor_add_model">Add from models</string>
+    <string name="team_editor_autocompose">Auto-compose</string>
+    <string name="team_editor_autocompose_action">Let AI assign roles</string>
+    <string name="team_editor_autocompose_hint">Extra requirements (optional)</string>
+    <string name="team_editor_autocompose_placeholder">e.g. frontend focused, must review code</string>
+    <string name="team_editor_autocomposing">Composing…</string>
+    <string name="team_editor_compose_failed">Could not suggest a team. Check your model settings and try again.</string>
+    <string name="team_editor_compose_notice">This sends the team name, your requirements, and the names of available members and models to a model provider.</string>
+    <string name="team_editor_basic">Basics</string>
+    <string name="team_editor_description">Team purpose</string>
+    <string name="team_editor_edit">Edit team</string>
+    <string name="team_editor_members">Members</string>
+    <string name="team_editor_new">New team</string>
+    <string name="team_editor_no_agents">No subagents available yet. Create one under Subagents first</string>
+    <string name="team_editor_no_members">No members yet — pull in a subagent or a model</string>
+    <string name="team_editor_no_models">No models configured yet — add one under AI Vendors</string>
+    <string name="team_editor_owner">Owner</string>
+    <string name="team_editor_owner_name">Your display name</string>
+    <string name="team_editor_pick_avatar">Pick an avatar</string>
+    <string name="team_editor_pick_image">Choose image from gallery</string>
+    <string name="team_editor_pick_model">Pick a model</string>
+    <string name="team_editor_remove_member">Remove from group</string>
+    <string name="team_editor_rename_member">Rename member</string>
+    <string name="team_editor_strategy">How they work together</string>
+    <string name="team_error_invalid_name">Invalid or taken team name</string>
+    <string name="team_error_member_limit">Too many members (max 12) — remove some first</string>
+    <string name="team_error_name_conflict">A team with this name already exists</string>
+    <string name="team_error_no_members">Pick at least one member</string>
+    <string name="team_local_workspace_required">Select an available local workspace first</string>
+    <string name="team_name_hint">e.g. Frontend crew</string>
+    <string name="team_strategy_hint">Who does what, in which order, and how results are handed over</string>
+    <string name="teams_empty">No teams yet</string>
+    <string name="teams_empty_hint">Gather a few subagents into a team and let them talk it through together</string>
+    <string name="teams_list_header">Teams</string>
+    <string name="teams_member_count">%1$d members</string>
+    <string name="teams_new">New team</string>
+    <string name="settings_teams">Teams</string>
 </resources>

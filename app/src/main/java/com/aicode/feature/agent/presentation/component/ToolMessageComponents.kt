@@ -819,10 +819,19 @@ internal fun DiffView(diff: String, startLine: Int) {
     val mono = MaterialTheme.typography.bodySmall.copy(
         fontFamily = FontFamily.Monospace
     )
-    val removeCount = lines.count { it.startsWith("-") }
-    val addCount = lines.count { it.startsWith("+") }
-    val maxLineNo = startLine + lines.size - removeCount - addCount + maxOf(removeCount, addCount)
-    val gutterChars = maxOf(2, maxLineNo.toString().length)
+    val gutterChars = remember(lines, startLine) {
+        var removed = 0
+        var added = 0
+        for (line in lines) {
+            when (line.firstOrNull()) {
+                '-' -> removed++
+                '+' -> added++
+                else -> Unit
+            }
+        }
+        val maxLineNo = startLine + lines.size - minOf(removed, added)
+        maxOf(2, maxLineNo.toString().length)
+    }
     val gutterColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
 
     Column(modifier = Modifier.fillMaxWidth()) {

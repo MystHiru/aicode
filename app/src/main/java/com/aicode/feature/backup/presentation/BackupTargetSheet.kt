@@ -117,7 +117,7 @@ fun BackupTargetSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentWindowInsets = { WindowInsets(0.dp) },
         dialogMaxWidth = 600.dp
     ) {

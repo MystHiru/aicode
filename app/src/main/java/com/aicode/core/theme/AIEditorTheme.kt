@@ -8,6 +8,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
@@ -30,6 +31,23 @@ object Spacing {
     val lg = 16.dp
     val xl = 24.dp
     val xxl = 32.dp
+}
+
+/**
+ * 动效 token：曲线取「前快后缓」的减速落位，与页面转场、弹层、开关共用同一节奏。
+ * 业务代码只引用名字，后续调整只改这里。
+ */
+object Motion {
+    /** 减速曲线：起步快、尾段缓，用于位移类过渡（页面切换、弹层进出）。 */
+    val Decelerate = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f)
+
+    /** 强调曲线：起步与收尾都更柔和，用于需要「重量感」的交互反馈。 */
+    val Emphasized = CubicBezierEasing(0.4f, 0.48f, 0.3f, 1f)
+
+    const val QUICK_MS = 140
+    const val STANDARD_MS = 240
+    const val SMOOTH_MS = 320
+    const val PAGE_MS = 300
 }
 
 /**

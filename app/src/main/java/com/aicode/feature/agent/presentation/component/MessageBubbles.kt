@@ -390,7 +390,7 @@ internal fun AgentMessageItem(
                         }
                     }
                 }
-                if ((isUser || message.role == MessageRole.ASSISTANT) && hasAttachments) {
+                if (isChunkFooter && hasAttachments && (isUser || message.role == MessageRole.ASSISTANT)) {
                     MessageAttachmentList(attachments = message.attachments)
                 }
                 // 气泡下方的元信息行（工具消息不显示）：用户消息每条都常驻「时间 + 复制/回退/更多」，

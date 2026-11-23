@@ -4,9 +4,8 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -15,8 +14,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -28,8 +31,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.aicode.core.theme.Radius
+import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
 
 /**
@@ -47,17 +56,21 @@ fun SegmentedTabs(
     labels: List<String>,
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    icons: List<ImageVector> = emptyList()
 ) {
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val trackColor = MaterialTheme.semanticColors.mutedSurface
     val thumbColor = if (dark) MaterialTheme.semanticColors.capsuleSurface else MaterialTheme.semanticColors.cardSurface
+    // 高度不跟 fontScale 放大：分段控件本身只承载短标签，跟字体等比膨胀会让条变胖、
+    // 与抽屉 / MCP 弹窗里的同款控件对不齐。图标模式只多留 2dp 给 16dp 图标。
+    val tabHeight = if (icons.isEmpty()) 42.dp else 44.dp
 
     BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
-            .height(42.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .height(tabHeight)
+            .clip(RoundedCornerShape(Radius.mdLarge))
             .background(trackColor)
             .padding(3.dp)
             .alpha(if (enabled) 1f else 0.55f)
@@ -74,39 +87,55 @@ fun SegmentedTabs(
                 .offset(x = thumbOffset)
                 .width(thumbWidth)
                 .fillMaxHeight(),
-            shape = RoundedCornerShape(9.dp),
+            shape = RoundedCornerShape(Radius.sm),
             color = thumbColor,
             shadowElevation = 2.dp,
             content = {}
         )
-        Row(modifier = Modifier.fillMaxSize()) {
+        Row(modifier = Modifier.fillMaxSize().selectableGroup()) {
             labels.forEachIndexed { index, label ->
                 val isSelected = selected == index
-                Box(
+                val icon = icons.getOrNull(index)
+                val color = when {
+                    !isSelected -> MaterialTheme.colorScheme.onSurfaceVariant
+                    icon != null -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurface
+                }
+                Row(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .clip(RoundedCornerShape(9.dp))
+                        .clip(RoundedCornerShape(Radius.sm))
                         // 禁用点击波纹：选中滑块位移已是反馈，ripple 残留的深色阴影反而扎眼。
-                        // 锁定时完全去掉 clickable（含无障碍点击语义），再叠整体置灰。
+                        // 锁定时不暴露无障碍点击操作。
                         .then(
                             if (enabled) {
-                                Modifier.clickable(
+                                Modifier.selectable(
+                                    selected = isSelected,
                                     interactionSource = remember { MutableInteractionSource() },
-                                    indication = null
-                                ) { onSelect(index) }
+                                    indication = null,
+                                    role = Role.Tab,
+                                    onClick = { onSelect(index) }
+                                )
                             } else {
                                 Modifier
                             }
-                        ),
-                    contentAlignment = Alignment.Center
+                        )
+                        .padding(horizontal = if (icon == null) 0.dp else Spacing.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm, Alignment.CenterHorizontally)
                 ) {
+                    if (icon != null) {
+                        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(Spacing.lg))
+                    }
                     Text(
                         text = label,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (isSelected) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = color,
+                        textAlign = TextAlign.Center,
+                        maxLines = if (icon == null) Int.MAX_VALUE else 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }

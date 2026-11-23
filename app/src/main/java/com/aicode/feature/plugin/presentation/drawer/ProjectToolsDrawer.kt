@@ -72,7 +72,8 @@ fun ProjectToolsDrawer(
     Surface(
         modifier = modifier
             .fillMaxSize(),
-        color = MaterialTheme.colorScheme.background
+        // 不能用 colorScheme.background：壁纸模式下它 alpha = 0，整个抽屉几乎全透。
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(
             modifier = Modifier

@@ -97,7 +97,7 @@ internal fun GitHubDeviceFlowSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onCancel,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = settingsPageBackground()
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(
             modifier = Modifier

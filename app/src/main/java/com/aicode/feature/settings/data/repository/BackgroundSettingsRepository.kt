@@ -1,6 +1,8 @@
 package com.aicode.feature.settings.data.repository
 
 import android.content.Context
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -8,13 +10,16 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.aicode.core.datastore.preferencesCorruptionHandler
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
+import java.io.IOException
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -234,39 +239,66 @@ class BackgroundSettingsRepository @Inject constructor(
 
     /**
      * 选择新背景：把 [uri] 拷贝到私有目录 backgrounds/ 后替换旧文件。
-     * 先写新文件成功再更新 DataStore，失败时旧背景保持不变。
-     *
-     * @param mime 选择器返回的 MIME；为空时回退到 ContentResolver 查询，再失败按静态图片处理。
-     *   [二开] 该参数用于判定背景类型（图片 / GIF / MP4），上游只有静态图片时无此参数。
+     * 先复制并检查可读性，再更新 DataStore；失败时保留旧背景。
      */
-    suspend fun setBackgroundImage(uri: Uri, mime: String? = null) {
-        val resolvedMime = mime ?: runCatching { context.contentResolver.getType(uri) }.getOrNull()
-        val extension = extensionFor(resolvedMime)
-        val target = File(context.filesDir, "backgrounds/bg_${System.currentTimeMillis()}.$extension")
-        target.parentFile?.mkdirs()
-        val copied = withContext(Dispatchers.IO) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
+    suspend fun setBackgroundImage(uri: Uri): Boolean = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        val extension = extensionFor(runCatching { resolver.getType(uri) }.getOrNull())
+        val directory = File(context.filesDir, "backgrounds").apply { mkdirs() }
+        val target = try {
+            File.createTempFile("bg_", ".$extension", directory)
+        } catch (_: IOException) {
+            return@withContext false
+        }
+        var published = false
+        try {
+            val source = resolver.openInputStream(uri) ?: return@withContext false
+            source.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+            val kind = detectKind(target)
+            if (!isReadableBackground(target, kind)) return@withContext false
+            ensureActive()
+            // 发布与标记必须一起完成，否则取消操作可能清理掉已生效的文件。
+            withContext(NonCancellable) {
+                var oldPath: String? = null
+                context.backgroundDataStore.edit {
+                    oldPath = it[IMAGE_PATH_KEY]
+                    it[IMAGE_PATH_KEY] = target.absolutePath
+                    it[IMAGE_KIND_KEY] = kind.name
                 }
-                target.length() > 0
-            }.getOrDefault(false)
+                published = true
+                oldPath?.let { runCatching { File(it).delete() } }
+            }
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        } finally {
+            if (!published) target.delete()
         }
-        if (!copied) return
-        val oldPath = context.backgroundDataStore.data.first()[IMAGE_PATH_KEY]
-        // [二开] 以文件头为准：MIME 可能为 null，且分不出动图 / 静态 WebP。
-        val detected = withContext(Dispatchers.IO) { detectKind(target) }
-        context.backgroundDataStore.edit {
-            it[IMAGE_PATH_KEY] = target.absolutePath
-            it[IMAGE_KIND_KEY] = detected.name
+    }
+
+    private fun isReadableBackground(file: File, kind: Kind): Boolean {
+        if (kind == Kind.MP4) {
+            val metadata = MediaMetadataRetriever()
+            try {
+                metadata.setDataSource(file.absolutePath)
+                return metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) == "yes" &&
+                    metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE) == "video/mp4"
+            } finally {
+                metadata.release()
+            }
         }
-        oldPath?.let { runCatching { File(it).delete() } }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        return bounds.outWidth > 0 && bounds.outHeight > 0
     }
 
     /** 移除背景：删媒体文件并清路径与类型。 */
     suspend fun clearBackground() {
-        val oldPath = context.backgroundDataStore.data.first()[IMAGE_PATH_KEY]
+        var oldPath: String? = null
         context.backgroundDataStore.edit {
+            oldPath = it[IMAGE_PATH_KEY]
             it.remove(IMAGE_PATH_KEY)
             it.remove(IMAGE_KIND_KEY)
         }
