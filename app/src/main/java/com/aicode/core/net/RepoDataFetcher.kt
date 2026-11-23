@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.Reader
 import java.util.concurrent.TimeUnit
 
 /**
@@ -153,9 +154,12 @@ class RepoDataFetcher(
      * 同步读取磁盘缓存（不发网络）：存在则返回文本，否则 null。
      * 供「纯只读链路」复用统一缓存目录，避免调用方硬编码缓存路径。
      */
-    fun readLocalCache(pathInRepo: String): String? {
+    fun readLocalCache(pathInRepo: String): String? =
+        runCatching { openLocalCache(pathInRepo)?.use { it.readText() } }.getOrNull()
+
+    internal fun openLocalCache(pathInRepo: String): Reader? {
         val file = getCacheFile(pathInRepo.trim().removePrefix("/"))
-        return if (file.isFile) runCatching { file.readText(Charsets.UTF_8) }.getOrNull() else null
+        return if (file.isFile) file.bufferedReader(Charsets.UTF_8) else null
     }
 
     fun clearCache(pathInRepo: String? = null) {

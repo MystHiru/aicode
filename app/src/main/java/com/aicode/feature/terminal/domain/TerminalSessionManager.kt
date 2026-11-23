@@ -11,6 +11,7 @@ import com.termux.terminal.TerminalSession
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -408,22 +409,28 @@ class TerminalSessionManager @Inject constructor(
                 } else {
                     delay(EXIT_MARKER_GRACE_MS)
                     // 缓冲后再查：正常 onFinished 回调若已触发，状态不再 Running，此处直接退出。
-                    val current = tab(tabId) ?: return@launch
-                    if (current.runState is RunState.Running) {
-                        val exitCode = extractExitCode(getTabOutput(tabId) ?: "") ?: 0
-                        current.runState = RunState.Finished(exitCode)
-                        outputChannels.remove(tabId)?.close()
-                        bumpRevision()
-                        FileLogger.i(TAG, "兜底：标签 $tabId 检测到退出标记，强制收尾 exit=$exitCode")
-                        if (current.isBackground) maybeStopKeepalive(current)
-                        if (current.notifyOnExit && !current.finishedNotified) {
-                            current.finishedNotified = true
-                            _tabFinishedEvents.tryEmit(
-                                TabFinishedEvent(
-                                    current.id, current.title, current.command, exitCode, current.sourceSessionId,
-                                    tailOutput = getTabOutput(current.id)?.takeTailLines(TAIL_LINES)
+                    // 本监控跑在 IO 线程，按类约定 runState / finishedNotified 只在主线程读写；
+                    // 收尾段整体切主线程，避开与 onFinished 回调并发写同一字段（双通知 / 丢退出码）。
+                    val stillRunning = tab(tabId)?.runState is RunState.Running
+                    if (!stillRunning) return@launch
+                    withContext(Dispatchers.Main) {
+                        val current = tab(tabId) ?: return@withContext
+                        if (current.runState is RunState.Running) {
+                            val exitCode = extractExitCode(getTabOutput(tabId) ?: "") ?: 0
+                            current.runState = RunState.Finished(exitCode)
+                            outputChannels.remove(tabId)?.close()
+                            bumpRevision()
+                            FileLogger.i(TAG, "兜底：标签 $tabId 检测到退出标记，强制收尾 exit=$exitCode")
+                            if (current.isBackground) maybeStopKeepalive(current)
+                            if (current.notifyOnExit && !current.finishedNotified) {
+                                current.finishedNotified = true
+                                _tabFinishedEvents.tryEmit(
+                                    TabFinishedEvent(
+                                        current.id, current.title, current.command, exitCode, current.sourceSessionId,
+                                        tailOutput = getTabOutput(current.id)?.takeTailLines(TAIL_LINES)
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                     return@launch

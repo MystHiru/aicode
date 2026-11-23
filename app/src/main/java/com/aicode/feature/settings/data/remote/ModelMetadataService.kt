@@ -7,22 +7,17 @@ import com.aicode.feature.settings.data.local.CustomModelMetadataStore
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.domain.model.ProviderType
 import com.aicode.feature.settings.domain.model.mergeModelMetadata
+import com.google.gson.Gson
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonToken
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.Reader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -31,7 +26,6 @@ class ModelMetadataService @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val customModelMetadataStore: CustomModelMetadataStore
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
     private val activeCatalogParses = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** 串行化目录加载：并发的 resolve 会同时穿透 [cached] 未命中的空窗，各自把 5MB 目录读盘并解析一遍。 */
@@ -90,7 +84,8 @@ class ModelMetadataService @Inject constructor(
             } ?: return@withContext
             if (body.isBlank()) return@withContext
             // 解析放在锁外：持锁解析 5MB 目录会让同时进来的 resolve（发送消息前的必经路径）一直排队。
-            runCatching { parseCatalogWithDiagnostics(body, "refresh").also { fresh -> catalogLock.withLock { cached = fresh } } }
+            runCatching { body.reader().use { parseCatalogWithDiagnostics(it, "refresh") } }
+                .onSuccess { fresh -> catalogLock.withLock { cached = fresh } }
                 .onFailure { FileLogger.w(TAG, "解析模型元数据失败", it) }
         }
     }
@@ -101,18 +96,18 @@ class ModelMetadataService @Inject constructor(
 
         val readStartedNs = System.nanoTime()
         FileLogger.memoryCheckpoint(TAG, "catalog.disk.start", details = "operation=$readStartedNs")
-        val diskBody = repoFetcher.readLocalCache(MODELS_REPO_PATH)
+        val diskCatalog = runCatching {
+            repoFetcher.openLocalCache(MODELS_REPO_PATH)?.use { parseCatalogWithDiagnostics(it, "disk") }
+        }.getOrNull()
         FileLogger.memoryCheckpoint(
             TAG,
             "catalog.disk.finished",
             elapsedMs = (System.nanoTime() - readStartedNs) / 1_000_000,
-            details = "operation=$readStartedNs chars=${diskBody?.length ?: 0} present=${diskBody != null}"
+            details = "operation=$readStartedNs validCatalog=${diskCatalog != null}"
         )
-        diskBody?.let { body ->
-            runCatching { parseCatalogWithDiagnostics(body, "disk") }.getOrNull()?.let {
-                cached = it
-                return it
-            }
+        diskCatalog?.let {
+            cached = it
+            return it
         }
 
         loadCatalogFromAssets()?.let {
@@ -126,33 +121,28 @@ class ModelMetadataService @Inject constructor(
     private fun loadCatalogFromAssets(): Catalog? = runCatching {
         val readStartedNs = System.nanoTime()
         FileLogger.memoryCheckpoint(TAG, "catalog.assets.start", details = "operation=$readStartedNs")
-        val body = context.assets.open(ASSET_FILE_NAME).bufferedReader().use { it.readText() }
+        val catalog = context.assets.open(ASSET_FILE_NAME).bufferedReader(Charsets.UTF_8).use {
+            parseCatalogWithDiagnostics(it, "assets")
+        }
         FileLogger.memoryCheckpoint(
             TAG,
             "catalog.assets.ready",
             elapsedMs = (System.nanoTime() - readStartedNs) / 1_000_000,
-            details = "operation=$readStartedNs chars=${body.length}"
+            details = "operation=$readStartedNs providers=${catalog.byProvider.size}"
         )
-        parseCatalogWithDiagnostics(body, "assets")
+        catalog
     }.getOrNull()
 
-    private fun parseCatalogWithDiagnostics(body: String, source: String): Catalog {
+    private fun parseCatalogWithDiagnostics(reader: Reader, source: String): Catalog {
         val startedNs = System.nanoTime()
         val concurrent = activeCatalogParses.incrementAndGet()
         try {
             FileLogger.memoryCheckpoint(
                 TAG,
                 "catalog.parse.start",
-                details = "operation=$startedNs source=$source chars=${body.length} activeParses=$concurrent"
+                details = "operation=$startedNs source=$source activeParses=$concurrent"
             )
-            val root = json.parseToJsonElement(body)
-            FileLogger.memoryCheckpoint(
-                TAG,
-                "catalog.json.ready",
-                elapsedMs = (System.nanoTime() - startedNs) / 1_000_000,
-                details = "operation=$startedNs source=$source activeParses=${activeCatalogParses.get()}"
-            )
-            val catalog = parseCatalog(root)
+            val catalog = parseCatalog(reader)
             FileLogger.memoryCheckpoint(
                 TAG,
                 "catalog.parse.ready",
@@ -180,36 +170,6 @@ class ModelMetadataService @Inject constructor(
     )
 
     companion object {
-        /** reasoning_options 数组（统一成 JsonObject 列表，非数组/空返回空表）。 */
-        private fun reasoningOptionEntries(reasoningOptions: JsonElement?): List<JsonObject> =
-            reasoningOptions?.takeIf { it !is JsonNull }
-                ?.let { runCatching { it.jsonArray }.getOrNull() }
-                ?.mapNotNull { runCatching { it.jsonObject }.getOrNull() }
-                .orEmpty()
-
-        /** 从 models.dev 的 reasoning_options 数组中提取 effort 类型的档位 values；无 effort 档位时返回空列表。 */
-        fun parseReasoningOptions(reasoningOptions: JsonElement?): List<String> =
-            reasoningOptionEntries(reasoningOptions)
-                .firstOrNull { it["type"]?.jsonPrimitive?.content == "effort" }
-                ?.get("values")?.jsonArray
-                ?.mapNotNull { it.jsonPrimitive.contentOrNull }
-                .orEmpty()
-
-        /**
-         * models.dev 的 `toggle` 类型：声明该模型可以开关思考。
-         * 具体用哪个线上字段关闭由 [com.aicode.feature.agent.domain.provider.ReasoningResolver] 按厂商判定。
-         */
-        fun parseReasoningToggle(reasoningOptions: JsonElement?): Boolean =
-            reasoningOptionEntries(reasoningOptions).any { it["type"]?.jsonPrimitive?.content == "toggle" }
-
-        /** models.dev 的 `budget_tokens` 类型：返回 (min, max)，非预算型返回 null。 */
-        fun parseReasoningBudget(reasoningOptions: JsonElement?): Pair<Int?, Int?>? =
-            reasoningOptionEntries(reasoningOptions)
-                .firstOrNull { it["type"]?.jsonPrimitive?.content == "budget_tokens" }
-                ?.let { entry ->
-                    entry["min"]?.jsonPrimitive?.intOrNull to entry["max"]?.jsonPrimitive?.intOrNull
-                }
-
         /**
          * 解析后的模型目录：[byProvider] 保留目录里的原始 id 大小写；[lowerByProvider] 结构相同但键统一小写
          * （复用同一批 [ModelMetadata] 实例），用于大小写不敏感匹配。
@@ -219,56 +179,99 @@ class ModelMetadataService @Inject constructor(
             val lowerByProvider: Map<String, Map<String, ModelMetadata>>
         )
 
-        internal fun parseCatalog(root: JsonElement): Catalog {
-            val byProvider = root.jsonObject.mapValues { (providerId, providerEl) ->
-                val models = providerEl.jsonObject["models"]?.jsonObject.orEmpty()
-                models.mapValues { (_, modelEl) ->
-                    val model = modelEl.jsonObject
-                    val limit = model["limit"]?.jsonObject
-                    val modalities = model["modalities"]?.jsonObject
-                    val inputModalities = modalities?.get("input")?.jsonArray
-                        ?.mapNotNull { it.jsonPrimitive.content }
-                        .orEmpty()
-                    val outputModalities = modalities?.get("output")?.jsonArray
-                        ?.mapNotNull { it.jsonPrimitive.content }
-                        .orEmpty()
-                    val cost = model["cost"]?.jsonObject
-                    val reasoningOptions = model["reasoning_options"]
-                    val reasoningLevels = parseReasoningOptions(reasoningOptions)
-                    val reasoningBudget = parseReasoningBudget(reasoningOptions)
-                    ModelMetadata(
-                        id = model["id"]?.jsonPrimitive?.content ?: "",
-                        providerId = providerId,
-                        displayName = model["name"]?.jsonPrimitive?.content ?: model["id"]?.jsonPrimitive?.content.orEmpty(),
-                        contextTokens = limit?.get("context")?.jsonPrimitive?.intOrNull ?: 0,
-                        inputTokens = limit?.get("input")?.jsonPrimitive?.intOrNull,
-                        outputTokens = limit?.get("output")?.jsonPrimitive?.intOrNull,
-                        supportsTools = model["tool_call"]?.jsonPrimitive?.booleanOrNull == true,
-                        supportsVision = "image" in inputModalities || "video" in inputModalities || "pdf" in inputModalities,
-                        // 图像输出能力：models.dev 的 modalities.output 标注，或 Nano Banana 系 id 后缀兜底
-                        // （内置快照缺 output 模态时也能识别 gemini-*-image 模型）。
-                        supportsImageOutput = "image" in outputModalities ||
-                            (model["id"]?.jsonPrimitive?.content.orEmpty().endsWith("-image")),
-                        supportsReasoning = model["reasoning"]?.jsonPrimitive?.booleanOrNull == true,
-                        supportsCustomTemperature = model["temperature"]?.jsonPrimitive?.booleanOrNull == true,
-                        reasoningLevels = reasoningLevels.takeIf { it.isNotEmpty() },
-                        reasoningCanDisable = parseReasoningToggle(reasoningOptions),
-                        reasoningBudgetMin = reasoningBudget?.first,
-                        reasoningBudgetMax = reasoningBudget?.second,
-                        inputCostUsdPerM = cost?.get("input")?.jsonPrimitive?.doubleOrNull,
-                        outputCostUsdPerM = cost?.get("output")?.jsonPrimitive?.doubleOrNull,
-                        cacheReadCostUsdPerM = cost?.get("cache_read")?.jsonPrimitive?.doubleOrNull,
-                        cacheWriteCostUsdPerM = cost?.get("cache_write")?.jsonPrimitive?.doubleOrNull,
-                        source = ModelMetadata.Source.MODELS_DEV
-                    )
+        internal fun parseCatalog(reader: Reader): Catalog {
+            val json = JsonReader(reader)
+            val byProvider = LinkedHashMap<String, Map<String, ModelMetadata>>()
+            json.beginObject()
+            while (json.hasNext()) {
+                val providerId = json.nextName()
+                var models = emptyMap<String, ModelMetadata>()
+                json.beginObject()
+                while (json.hasNext()) {
+                    if (json.nextName() == "models") {
+                        models = readModels(json, providerId)
+                    } else {
+                        json.skipValue()
+                    }
                 }
+                json.endObject()
+                byProvider[providerId] = models
             }
+            json.endObject()
+            check(json.peek() == JsonToken.END_DOCUMENT)
             return Catalog(
                 byProvider = byProvider,
                 lowerByProvider = byProvider.mapValues { (_, models) ->
                     models.mapKeys { (id, _) -> id.lowercase() }
                 }
             )
+        }
+
+        private val jsonElementAdapter = Gson().getAdapter(JsonElement::class.java)
+        private val modelFields = setOf(
+            "id", "name", "limit", "modalities", "cost", "reasoning_options", "tool_call", "reasoning", "temperature"
+        )
+
+        private fun readModels(json: JsonReader, providerId: String): Map<String, ModelMetadata> = buildMap {
+            json.beginObject()
+            while (json.hasNext()) {
+                val key = json.nextName()
+                val fields = JsonObject()
+                json.beginObject()
+                while (json.hasNext()) {
+                    val field = json.nextName()
+                    if (field in modelFields) fields.add(field, jsonElementAdapter.read(json)) else json.skipValue()
+                }
+                json.endObject()
+                put(key, toMetadata(providerId, fields))
+            }
+            json.endObject()
+        }
+
+        private fun toMetadata(providerId: String, model: JsonObject): ModelMetadata {
+            val id = model["id"].literalText().orEmpty()
+            val limit = model["limit"]?.asJsonObject
+            val modalities = model["modalities"]?.asJsonObject
+            val inputModalities = modalities?.get("input")?.asJsonArray
+            val outputModalities = modalities?.get("output")?.asJsonArray
+            val cost = model["cost"]?.asJsonObject
+            val options = model["reasoning_options"]?.takeIf { it.isJsonArray }?.asJsonArray
+                ?.mapNotNull { if (it.isJsonObject) it.asJsonObject else null }.orEmpty()
+            val levels = options.firstOrNull { it["type"].literalText() == "effort" }
+                ?.get("values")?.asJsonArray
+                ?.mapNotNull { if (it.isJsonNull) null else it.literalText() }
+            val budget = options.firstOrNull { it["type"].literalText() == "budget_tokens" }
+            return ModelMetadata(
+                id = id,
+                providerId = providerId,
+                displayName = model["name"].literalText() ?: id,
+                contextTokens = limit?.get("context").literalText()?.toIntOrNull() ?: 0,
+                inputTokens = limit?.get("input").literalText()?.toIntOrNull(),
+                outputTokens = limit?.get("output").literalText()?.toIntOrNull(),
+                supportsTools = model["tool_call"].literalText().equals("true", ignoreCase = true),
+                supportsVision = inputModalities?.any {
+                    val type = it.literalText()
+                    type == "image" || type == "video" || type == "pdf"
+                } == true,
+                supportsImageOutput = outputModalities?.any { it.literalText() == "image" } == true || id.endsWith("-image"),
+                supportsReasoning = model["reasoning"].literalText().equals("true", ignoreCase = true),
+                supportsCustomTemperature = model["temperature"].literalText().equals("true", ignoreCase = true),
+                reasoningLevels = levels?.takeIf { it.isNotEmpty() },
+                reasoningCanDisable = options.any { it["type"].literalText() == "toggle" },
+                reasoningBudgetMin = budget?.get("min").literalText()?.toIntOrNull(),
+                reasoningBudgetMax = budget?.get("max").literalText()?.toIntOrNull(),
+                inputCostUsdPerM = cost?.get("input").literalText()?.toDoubleOrNull(),
+                outputCostUsdPerM = cost?.get("output").literalText()?.toDoubleOrNull(),
+                cacheReadCostUsdPerM = cost?.get("cache_read").literalText()?.toDoubleOrNull(),
+                cacheWriteCostUsdPerM = cost?.get("cache_write").literalText()?.toDoubleOrNull(),
+                source = ModelMetadata.Source.MODELS_DEV
+            )
+        }
+
+        private fun JsonElement?.literalText(): String? = when {
+            this == null -> null
+            isJsonNull -> "null"
+            else -> asJsonPrimitive.asString
         }
 
         /**

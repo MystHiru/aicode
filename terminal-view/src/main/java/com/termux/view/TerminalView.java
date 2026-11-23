@@ -83,6 +83,9 @@ public final class TerminalView extends View {
     private final boolean mAccessibilityEnabled;
 
     private static final String LOG_TAG = "TerminalView";
+    private static final long RESIZE_SETTLE_DELAY_MS = 120L;
+    private final Handler mResizeHandler = new Handler(Looper.getMainLooper());
+    private final Runnable mApplyPendingResize = this::updateSize;
 
     public TerminalView(Context context, AttributeSet attributes) { // NO_UCD (unused code)
         super(context, attributes);
@@ -893,11 +896,18 @@ public final class TerminalView extends View {
      */
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-        updateSize();
+        if (mEmulator == null || w != oldw || oldh == 0 || h == 0 || !isAttachedToWindow()) {
+            updateSize();
+        } else {
+            // IME 的连续高度变化只通知最终行数，避免 Shell 程序在动画中按旧行数反复重绘。
+            mResizeHandler.removeCallbacks(mApplyPendingResize);
+            mResizeHandler.postDelayed(mApplyPendingResize, RESIZE_SETTLE_DELAY_MS);
+        }
     }
 
     /** Check if the terminal size in rows and columns should be updated. */
     public void updateSize() {
+        mResizeHandler.removeCallbacks(mApplyPendingResize);
         int viewWidth = getWidth();
         int viewHeight = getHeight();
         if (viewWidth == 0 || viewHeight == 0 || mTermSession == null) return;
@@ -1233,6 +1243,7 @@ public final class TerminalView extends View {
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
+        updateSize();
 
         if (mTextSelectionCursorController != null) {
             getViewTreeObserver().addOnTouchModeChangeListener(mTextSelectionCursorController);
@@ -1241,6 +1252,7 @@ public final class TerminalView extends View {
 
     @Override
     protected void onDetachedFromWindow() {
+        mResizeHandler.removeCallbacks(mApplyPendingResize);
         super.onDetachedFromWindow();
 
         if (mTextSelectionCursorController != null) {

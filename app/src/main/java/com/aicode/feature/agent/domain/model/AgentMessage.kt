@@ -95,4 +95,17 @@ data class AgentContext(
      */
     val permissionMode: AgentMode
         get() = turn?.permissionMode ?: if (goalStatus == GoalStatus.ACTIVE) AgentMode.AUTO else mode
+
+    /**
+     * 切换会话模式，同时同步 turn.permissionMode：只改 mode 会让轮次内的权限判定
+     * 继续沿用旧模式（例如刚退出 PLAN，下一轮工具仍按 PLAN 拦截）。
+     */
+    fun withMode(mode: AgentMode, modeBeforePlan: AgentMode? = this.modeBeforePlan): AgentContext {
+        val nextPermissionMode = if (goalStatus == GoalStatus.ACTIVE) AgentMode.AUTO else mode
+        return copy(
+            mode = mode,
+            modeBeforePlan = modeBeforePlan,
+            turn = turn?.copy(permissionMode = nextPermissionMode)
+        )
+    }
 }

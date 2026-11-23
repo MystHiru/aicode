@@ -5,6 +5,7 @@ import com.aicode.feature.agent.presentation.AgentUIMessage
 import com.aicode.feature.agent.presentation.MessageRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -261,6 +262,36 @@ class ToolGroupExpansionTest {
     }
 
     @Test
+    fun truncatedWindow_attachmentsKeepTheirPositionWhenExpanded() {
+        val file = AgentAttachment("report.pdf", "/report.pdf", "/report.pdf", "application/pdf", 1, false)
+        val send = tool("send").copy(attachments = listOf(file))
+        val answer = assistant("answer").copy(reasoning = "thinking")
+        val messages = listOf(tool("before"), send, tool("after"), answer, user("u0"))
+        val headerKey = "turn:head:answer"
+        val expanded = flattenChatProcesses(items(messages, turnOverrides = mapOf(headerKey to true)))
+        assertEquals(
+            listOf("$headerKey#header", "before", "send", "after", "answer#reasoning", "answer", "u0"),
+            expanded.map { it.key }
+        )
+        assertEquals(listOf("$headerKey#header", "send", "answer", "u0"), flattenChatProcesses(items(messages)).map { it.key })
+    }
+
+    @Test
+    fun assistantImageRemainsVisibleWithFoldedProcessAndLaterText() {
+        val image = AgentAttachment("image.png", "/image.png", "/image.png", "image/png", 1, true)
+        val reply = assistant("image").copy(content = "", attachments = listOf(image), reasoning = "thinking")
+        val messages = listOf(user("u0"), tool("t0"), reply, tool("t1"), assistant("answer"))
+        assertEquals(
+            listOf("u0", "turn:u0#header", "image", "answer"),
+            flattenChatProcesses(items(messages)).map { it.key }
+        )
+        assertEquals(
+            listOf("u0", "turn:u0#header", "t0", "image#reasoning", "image", "t1", "answer"),
+            flattenChatProcesses(items(messages, turnOverrides = mapOf("turn:u0" to true))).map { it.key }
+        )
+    }
+
+    @Test
     fun truncatedWindow_keepsTrailingAnswerVisible() {
         // 这一截的结尾通常就是上一轮的最终回复：它照旧常显，不跟着过程一起折起来
         val messages = listOf(
@@ -289,29 +320,52 @@ class ToolGroupExpansionTest {
 
     @Test
     fun truncatedWindow_manualExpansionSurvivesToolUpdatesAndWindowShift() {
-        val key = "turn:head:session:s1"
-        val overrides = mapOf(key to true)
         val windows = listOf(
             listOf(assistant("a1"), tool("t1"), tool("t2")),
             listOf(assistant("a1"), tool("t1"), tool("t2"), tool("t3")),
             listOf(tool("t2"), tool("t3"), tool("t4")),
             listOf(assistant("older"), tool("t2"), tool("t3"), tool("t4")),
         )
+        val key = leadingHeadKey(windows.first().last(), "s1")
+        val overrides = mapOf(key to true)
+        val history = mutableMapOf<String, String>()
         windows.forEach { messages ->
+            val keys = reconcileTurnKeys(messages, history, "s1")
+            history.putAll(keys)
             val header = buildChatItems(
-                messages, emptyMap(), overrides, sessionId = "s1"
+                messages, emptyMap(), overrides, sessionId = "s1", turnKeys = keys,
             ).header().turnHeader!!
             assertEquals(key, header.key)
             assertTrue(header.expanded)
         }
         val otherSession = buildChatItems(
-            windows.first(), emptyMap(), overrides, sessionId = "s2"
+            windows.first(), emptyMap(), overrides, sessionId = "s2",
         ).header().turnHeader!!
         assertFalse(otherSession.expanded)
         val collapsed = buildChatItems(
-            windows.last(), emptyMap(), mapOf(key to false), sessionId = "s1"
+            windows.last(), emptyMap(), mapOf(key to false), sessionId = "s1", turnKeys = history,
         ).header().turnHeader!!
         assertFalse(collapsed.expanded)
+    }
+
+    @Test
+    fun disjointTruncatedTurnsKeepDistinctHeadersWhenHistoryIsRestored() {
+        val first = listOf(tool("t1"), assistant("a1"))
+        val second = listOf(tool("t2"), assistant("a2"))
+        val history = reconcileTurnKeys(first, emptyMap(), "s1").toMutableMap()
+        history.putAll(reconcileTurnKeys(second, history, "s1"))
+        val firstKey = history.getValue("a1")
+        val secondKey = history.getValue("a2")
+        assertTrue(firstKey != secondKey)
+
+        val complete = listOf(user("u1")) + first + user("u2") + second
+        val keys = reconcileTurnKeys(complete, history, "s1")
+        val rows = flattenChatProcesses(buildChatItems(
+            complete, emptyMap(), turnOverrides = mapOf(firstKey to true), sessionId = "s1", turnKeys = keys,
+        ))
+        assertEquals(listOf(firstKey, secondKey), rows.mapNotNull { it.turnHeader?.key })
+        assertEquals(listOf(true, false), rows.mapNotNull { it.turnHeader?.expanded })
+        assertEquals(rows.size, rows.map { it.key }.toSet().size)
     }
 
     @Test
@@ -469,6 +523,23 @@ class ToolGroupExpansionTest {
         assertEquals(headKey, keys.getValue("u1"))
         assertTrue(rendered.first { it.turnHeader?.key == headKey }.turnHeader!!.expanded)
         assertEquals(rendered.size, rendered.map { it.key }.toSet().size)
+    }
+
+    @Test
+    fun searchResultRevealsTheCollapsedTurnBeforeLocatingIntermediateText() {
+        val messages = listOf(user("u0"), assistant("interim"), tool("t1"), assistant("answer"))
+        val keys = reconcileTurnKeys(messages, emptyMap(), "s1")
+        val collapsed = flattenChatProcesses(buildChatItems(messages, emptyMap(), turnKeys = keys))
+        assertEquals(-1, findChatMessageIndex(collapsed, "interim"))
+        assertNull(collapsedTurnForSearchHit(collapsed, keys, "deleted"))
+        val turn = requireNotNull(collapsedTurnForSearchHit(collapsed, keys, "interim"))
+        assertEquals("turn:u0", turn)
+
+        val expanded = flattenChatProcesses(buildChatItems(
+            messages, emptyMap(), turnOverrides = mapOf(turn to true), turnKeys = keys,
+        ))
+        assertEquals("interim", expanded[findChatMessageIndex(expanded, "interim")].key)
+        assertNull(collapsedTurnForSearchHit(expanded, keys, "interim"))
     }
 
     @Test

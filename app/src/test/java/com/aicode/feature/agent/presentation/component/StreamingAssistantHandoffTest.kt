@@ -6,6 +6,7 @@ import com.aicode.feature.agent.presentation.MessageRole
 import com.aicode.feature.agent.presentation.StreamingAssistantMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -17,6 +18,17 @@ class StreamingAssistantHandoffTest {
     private fun render(messages: List<AgentUIMessage>) = flattenChatProcesses(buildChatItems(
         messages, emptyMap(), activeTurnKey = "turn:u1",
     ))
+
+    @Test
+    fun largeTimelineUsesOnlySameSessionSnapshotsWhileBuilding() {
+        val snapshot = ChatTimelineSnapshot("s1", Any(), listOf(user), render(listOf(user)))
+        val failIfBuilt = { error("large timeline built synchronously") }
+        assertNull(resolveChatTimeline("s1", messagesReady = true, useAsyncItems = true, previous = null, buildSynchronously = failIfBuilt))
+        assertNull(resolveChatTimeline("s2", messagesReady = true, useAsyncItems = true, previous = snapshot, buildSynchronously = failIfBuilt))
+        assertNull(resolveChatTimeline("s1", messagesReady = false, useAsyncItems = true, previous = snapshot, buildSynchronously = failIfBuilt))
+        assertSame(snapshot, resolveChatTimeline("s1", messagesReady = true, useAsyncItems = true, previous = snapshot, buildSynchronously = failIfBuilt))
+        assertSame(snapshot, resolveChatTimeline("s1", messagesReady = true, useAsyncItems = false, previous = null) { snapshot })
+    }
 
     @Test
     fun finalSnapshotRemainsUntilItsMessageIsInTheRenderedList() {
@@ -60,6 +72,16 @@ class StreamingAssistantHandoffTest {
         assertTrue(canAcknowledgeStreamingAssistant(empty, emptyList(), listOf(user), "s1", true))
         assertFalse(canAcknowledgeStreamingAssistant(empty.copy(persisted = false), emptyList(), listOf(user), "s1", true))
         assertFalse(canAcknowledgeStreamingAssistant(empty, listOf(stream.copy(messageId = "earlier")), listOf(user), "s1", true))
+    }
+
+    @Test
+    fun previousInvisibleResponseDoesNotBlockTheNextVisibleResponse() {
+        val older = stream.copy(content = "\u200B", reasoning = "", settled = true, persisted = true)
+        val current = stream.copy(messageId = "a2", content = "answer", settled = true, persisted = true)
+        val saved = AgentUIMessage("a2", MessageRole.ASSISTANT, "answer")
+
+        assertEquals(listOf(current), reconcileStreamingAssistants(listOf(older), current, listOf(user), "s1"))
+        assertTrue(canAcknowledgeStreamingAssistant(current, listOf(older), listOf(user, saved), "s1", true))
     }
 
     @Test

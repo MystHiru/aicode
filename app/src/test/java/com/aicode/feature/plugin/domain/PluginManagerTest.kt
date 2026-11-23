@@ -305,6 +305,61 @@ class PluginManagerTest {
     }
 
     @Test
+    fun removedInstallationInvalidatesReplacementPreview() = runTest {
+        installValid()
+        val replacement = previewOf(PluginFixtures.validPackage(manifest = PluginFixtures.manifest(version = "1.1.0")))
+        assertTrue(manager.uninstall(PluginFixtures.PLUGIN_ID))
+
+        val failed = manager.install(replacement.token) { error("失效的预览不应进入提交") } as PluginInstallResult.Failed
+        assertEquals(PluginErrorCode.PREVIEW_EXPIRED, failed.error.code)
+        assertTrue(manager.plugins.value.isEmpty())
+    }
+
+    @Test
+    fun invalidatedListingDoesNotPublishReplacement() = runTest {
+        installValid()
+        val current = manager.plugins.value.single().record
+        val replacement = previewOf(PluginFixtures.validPackage(manifest = PluginFixtures.manifest(version = "1.1.0")))
+        val failed = manager.install(replacement.token, isCurrent = { false }) {
+            error("失效的预览不应进入提交")
+        } as PluginInstallResult.Failed
+        assertEquals(PluginErrorCode.PREVIEW_EXPIRED, failed.error.code)
+        assertEquals(current, manager.plugins.value.single().record)
+    }
+
+    @Test
+    fun configPageSurvivesDisableAndUsesNewCacheKeyOnReplacement() = runTest {
+        val manifest = PluginFixtures.manifest(extra = """, "configPage": "pages/config.html"""")
+        val bytes = PluginFixtures.zip(
+            "plugin.json" to manifest,
+            PluginFixtures.SKILL_FILE to PluginFixtures.SKILL_MD,
+            PluginFixtures.AGENT_FILE to PluginFixtures.AGENT_MD,
+            "pages/config.html" to "<!doctype html><title>Config</title>"
+        )
+        val preview = previewOf(bytes)
+        assertTrue(manager.install(preview.token) is PluginInstallResult.Installed)
+        val first = manager.plugins.value.single()
+        assertTrue(first.isActive)
+        val config = checkNotNull(first.content.configPage)
+        val slotPage = config.copy(slot = "settings.ai", isConfiguration = false)
+        assertEquals(config.key, slotPage.key)
+        assertTrue(config.cacheKey != slotPage.cacheKey)
+
+        assertTrue(manager.setEnabled(first.id, false))
+        val disabled = manager.plugins.value.single()
+        assertFalse(disabled.isActive)
+        assertEquals(config.cacheKey, disabled.content.configPage?.cacheKey)
+
+        assertTrue(manager.install(previewOf(bytes).token) is PluginInstallResult.Installed)
+        val replaced = manager.plugins.value.single()
+        assertFalse(replaced.isActive)
+        assertEquals(config.pageFile, replaced.content.configPage?.pageFile)
+        assertTrue(config.cacheKey != checkNotNull(replaced.content.configPage).cacheKey)
+        assertTrue(manager.setEnabled(first.id, true))
+        assertTrue(manager.plugins.value.single().isActive)
+    }
+
+    @Test
     fun discard_removesStagingDirectory() = runTest {
         val preview = previewOf()
         assertTrue(File(root, "staging/${preview.token}").isDirectory)

@@ -7,6 +7,15 @@ import org.junit.Test
 class HasVisibleContentTest {
 
     @Test
+    fun assistantAttachmentSurvivesWithoutText() {
+        val message = AgentUIMessage("image", MessageRole.ASSISTANT, "\u200B")
+        val image = AgentAttachment("image.png", "/image.png", "/image.png", "image/png", 1, true)
+        assertFalse(message.hasRenderableChatContent())
+        assertTrue(message.copy(attachments = listOf(image)).hasRenderableChatContent())
+        assertTrue(message.copy(reasoning = "thinking").hasRenderableChatContent())
+    }
+
+    @Test
     fun emptyString_hasNoVisibleContent() {
         assertFalse("".hasVisibleContent())
     }

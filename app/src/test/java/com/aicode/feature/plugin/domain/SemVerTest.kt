@@ -85,4 +85,17 @@ class SemVerTest {
         assertEquals("only", LocalizedText(mapOf("ja" to "only")).resolve("fr"))
         assertNotNull(LocalizedText.single("x").resolve("zh"))
     }
+
+    @Test
+    fun localizedText_preservesChineseScriptAndRegion() {
+        val text = LocalizedText(
+            mapOf("default" to "English", "zh-cn" to "简体", "zh-tw" to "繁體", "zh-hk" to "香港繁體")
+        )
+        assertEquals("简体", text.resolve("zh"))
+        assertEquals("简体", text.resolve("zh-Hans-TW"))
+        assertEquals("繁體", text.resolve("zh-Hant-CN"))
+        assertEquals("繁體", text.resolve("zh-Hant-TW"))
+        assertEquals("香港繁體", text.resolve("zh-Hant-HK"))
+        assertEquals("English", text.resolve("en-US"))
+    }
 }

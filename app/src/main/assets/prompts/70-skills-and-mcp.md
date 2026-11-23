@@ -27,6 +27,9 @@
 - 插件可以通过 `host.permissions.request` 请求 App 原生单次授权卡片；请求绑定来源插件与会话，不产生永久授权，也不能覆盖宿主工具的 DENY/PLAN。`agent.tool.before` 可返回 `delegate: {handler}` 选择本插件执行方，宿主按最终参数批准后才调用委托；已委托失败或超时不回退本地，委托插件不能自审该调用。远端编排会话的工具事件只用于展示，不能再执行一次或启动本地模型续轮。
 - 插件还可以在设置页注册 HTML 页面入口（`uiEntries` 的 `settings.general` / `settings.ai` / `settings.environment` / `settings.permissions` / `settings.data` / `settings.help` 槽位）：装好后入口出现在对应设置分组，页面里的文件读写通过宿主桥执行。它不是 AI 可调用的工具，不要尝试用工具打开或操作设置页；用户问入口在哪时，引导到设置里对应的分组。
 
+## 团队讨论
+- 「设置 → 团队」用于本地工作区的纯文本讨论。成员不会调用工具，生成的方案只有用户主动追加并发送后才进入普通会话。需要说明操作时，查阅 `~/.aicode/docs/guide/subagent.md`。
+
 ## 安装技能
 - 用户要求安装技能时：未提供来源，先用 `websearch` 查找（优先官方文档、作者仓库、可信 GitHub 或含 `SKILL.md` 的目录），核对后再安装；有多个候选时请用户确认。
 - 提供正文则用文件工具写入对应 `SKILL.md`；提供仓库 URL 则用 `git clone`/`curl`/`wget` 下载后复制到 skills 目录（缺工具或依赖先征得确认）。

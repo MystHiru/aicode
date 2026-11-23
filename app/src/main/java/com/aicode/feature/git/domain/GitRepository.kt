@@ -484,12 +484,21 @@ class GitRepository @Inject constructor(
             .let { it.isNotBlank() && !it.startsWith("fatal") }
 
     /**
-     * 拉取：直接 `git pull`，凭据由容器 `credential.helper` 链自动注入——`store` 命中已有凭据秒过，
-     * 未命中时自定义 helper 经文件 IPC 触发 app 弹窗回填，git 自动续跑（见 [CredentialRequestBridge]）。
-     * 故不再在此预查 host 凭据：三端（UI/终端/AI）共用同一 helper 兜底，逻辑单一来源。remote 不存在
-     * 或真实失败由 [gitChecked] 据退出码抛 [GitCommandFailureException]，上层 toast。
+     * 拉取：显式指定 `--no-rebase`（merge 策略）。git 2.27+ 对「本地与上游分叉且未配置 pull.rebase」
+     * 的裸 `git pull` 会拒绝执行（fatal: Need to specify how to reconcile divergent branches），
+     * 显式给策略后分叉场景走 merge 正常拉取。凭据由容器 `credential.helper` 链自动注入——
+     * `store` 命中已有凭据秒过，未命中时自定义 helper 经文件 IPC 触发 app 弹窗回填，git 自动续跑
+     * （见 [CredentialRequestBridge]）。remote 不存在或真实失败（含合并冲突）由 [gitChecked]
+     * 据退出码抛 [GitCommandFailureException]，上层 toast。
      */
-    suspend fun pull(): String = gitChecked("pull")
+    suspend fun pull(): String = gitChecked("pull", "--no-rebase")
+
+    /**
+     * 仅同步远端引用（`git fetch --all`），不改动工作区与本地分支。
+     * BRANCHES 页的远程分支列表与 ahead/behind 数字在 fetch 前是上次网络操作时的快照，
+     * 用户据此判断是否需要拉取——没有 fetch 就看不到远端的新提交与新分支。
+     */
+    suspend fun fetchAll(): String = gitChecked("fetch", "--all")
 
     /**
      * 推送：有上游则 `git push`；当前分支无上游时自动 `git push --set-upstream <remote> <branch>` 首推建关联，
@@ -619,12 +628,18 @@ class GitRepository @Inject constructor(
 
     /**
      * 切换到指定分支或标签。branch 可以是本地分支名、远程分支名或 tag 名。
-     * 远程分支用 `git checkout -b <local> <remote>` 创建本地跟踪分支，去掉远程前缀（如 origin/）。
+     * 远程分支优先复用已存在的同名本地分支：用户 checkout 过一次 `origin/dev`（生成 dev）后
+     * 切回 main，再点 `origin/dev` 时若仍走 `checkout -b` 会报「branch already exists」，
+     * 故先查本地是否已有该分支，有则直接切换。
      */
     suspend fun checkout(branch: String, isRemote: Boolean): String {
         return if (isRemote) {
             val localName = branch.substringAfter('/', branch)
-            gitChecked("checkout", "-b", localName, "--track", branch)
+            val localExists = runCatching { git("rev-parse", "--verify", "--quiet", "refs/heads/$localName") }
+                .getOrDefault("")
+                .let { it.removeSuffix("\r").trim().isNotBlank() && !it.startsWith("fatal") }
+            if (localExists) gitChecked("checkout", localName)
+            else gitChecked("checkout", "-b", localName, "--track", branch)
         } else {
             gitChecked("checkout", branch)
         }

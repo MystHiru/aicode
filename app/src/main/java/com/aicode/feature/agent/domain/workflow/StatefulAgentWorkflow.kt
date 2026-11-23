@@ -578,7 +578,7 @@ class StatefulAgentWorkflow @Inject constructor(
                             val compaction = contextCompactor.compactIfNeeded(
                                 state.messages,
                                 compactionProvider,
-                                currentContext.sessionId.takeIf { currentContext.turn == null },
+                                currentContext.sessionId.takeIf { currentContext.turn == null || currentContext.turn.sessionRef is SessionRef.Room },
                                 windowProvider = aiProvider,
                                 systemPrompt = systemPrompt,
                                 tools = currentTools,
@@ -658,7 +658,7 @@ class StatefulAgentWorkflow @Inject constructor(
                                 val recovery = contextCompactor.compactIfNeeded(
                                     state.messages,
                                     compactionProvider,
-                                    currentContext.sessionId.takeIf { currentContext.turn == null },
+                                    currentContext.sessionId.takeIf { currentContext.turn == null || currentContext.turn.sessionRef is SessionRef.Room },
                                     force = true,
                                     windowProvider = aiProvider,
                                     systemPrompt = systemPrompt,
@@ -718,7 +718,7 @@ class StatefulAgentWorkflow @Inject constructor(
                                 val recovery = contextCompactor.compactIfNeeded(
                                     state.messages,
                                     compactionProvider,
-                                    currentContext.sessionId.takeIf { currentContext.turn == null },
+                                    currentContext.sessionId.takeIf { currentContext.turn == null || currentContext.turn.sessionRef is SessionRef.Room },
                                     force = true,
                                     windowProvider = aiProvider,
                                     systemPrompt = systemPrompt,
@@ -825,6 +825,16 @@ class StatefulAgentWorkflow @Inject constructor(
                         }
                     }
                     is AgentSideEffect.RequestPermission -> {
+                        // 进入权限判定前先吸收待送达的模式切换通知，否则刚切到 AUTO/PLAN 的
+                        // 第一批工具仍按旧模式授权。
+                        if (hookSessionId != null) {
+                            agentNotificationCenter.peek(hookSessionId)
+                                .lastOrNull { it.kind == AgentNotificationKind.MODE_CHANGE }
+                                ?.newMode
+                                ?.let { newMode ->
+                                    currentContext = applyExternalModeChange(currentContext, newMode)
+                                }
+                        }
                         val tool = toolRegistry.getTool(effect.toolCall.name)
                         var toolCall = effect.toolCall
                         val hookDecision = if (tool != null && hookSessionId != null) {
@@ -979,7 +989,7 @@ class StatefulAgentWorkflow @Inject constructor(
                                         rawResult = appendPlanModeNotice(rawResult, buildModeSwitchNotice(newCtx.mode))
                                     } else {
                                         // 用户选择继续反馈，回滚到 PLAN 模式，修正工具结果让 AI 知道切换被取消并等待用户反馈
-                                        currentContext = currentContext.copy(mode = AgentMode.PLAN)
+                                        currentContext = currentContext.withMode(AgentMode.PLAN)
                                         rawResult = ToolResult.Error(
                                             appContext.getString(R.string.plan_mode_refinement_requested),
                                             "MODE_SWITCH_REJECTED"
@@ -1037,16 +1047,7 @@ class StatefulAgentWorkflow @Inject constructor(
                             val newMode = modeChange?.newMode
                             if (newMode != null) {
                                 // 用户在工作期间切换模式：本轮后续批次的权限判定立即改用新模式。
-                                // 与 SessionUseCase.updateMode 保持同一套语义：进入 PLAN 记下进入前的模式，其余情况清空。
-                                val prevMode = currentContext.mode
-                                currentContext = if (newMode == AgentMode.PLAN) {
-                                    currentContext.copy(
-                                        mode = AgentMode.PLAN,
-                                        modeBeforePlan = if (prevMode != AgentMode.PLAN) prevMode else currentContext.modeBeforePlan
-                                    )
-                                } else {
-                                    currentContext.copy(mode = newMode, modeBeforePlan = null)
-                                }
+                                currentContext = applyExternalModeChange(currentContext, newMode)
                             }
                             val last = batchResults.last()
                             val outgoingNotifications = if (newMode != null) {
@@ -1504,6 +1505,22 @@ class StatefulAgentWorkflow @Inject constructor(
         else -> "png"
     }
 
+    /**
+     * 外部切换模式（用户在会话外切到 PLAN/AUTO/BUILD）：同步写入 turn.permissionMode，
+     * 与 SessionUseCase.updateMode 保持同一套语义：进入 PLAN 记下进入前的模式，其余情况清空。
+     */
+    private fun applyExternalModeChange(context: AgentContext, newMode: AgentMode): AgentContext {
+        val previousMode = context.mode
+        return if (newMode == AgentMode.PLAN) {
+            context.withMode(
+                mode = AgentMode.PLAN,
+                modeBeforePlan = if (previousMode != AgentMode.PLAN) previousMode else context.modeBeforePlan
+            )
+        } else {
+            context.withMode(mode = newMode, modeBeforePlan = null)
+        }
+    }
+
     private fun checkAndUpdateMode(toolCall: ToolCall, isError: Boolean, currentContext: AgentContext): Pair<AgentContext, Boolean> {
         if (toolCall.name == "planMode" && !isError) {
             val action = (toolCall.arguments["action"] as? JsonPrimitive)?.content?.trim()?.lowercase()
@@ -1511,10 +1528,16 @@ class StatefulAgentWorkflow @Inject constructor(
             when (action) {
                 // 进入 PLAN 时记住当前模式；退出时恢复到它（AUTO→PLAN 的规划往返结束后回到 AUTO 而非 BUILD）。
                 "enter" -> if (currentContext.mode != AgentMode.PLAN) {
-                    return currentContext.copy(mode = AgentMode.PLAN, modeBeforePlan = currentContext.mode) to true
+                    return currentContext.withMode(
+                        mode = AgentMode.PLAN,
+                        modeBeforePlan = currentContext.mode
+                    ) to true
                 }
                 "exit" -> if (currentContext.mode == AgentMode.PLAN) {
-                    return currentContext.copy(mode = currentContext.modeBeforePlan ?: AgentMode.BUILD) to true
+                    return currentContext.withMode(
+                        mode = currentContext.modeBeforePlan ?: AgentMode.BUILD,
+                        modeBeforePlan = null
+                    ) to true
                 }
             }
         }

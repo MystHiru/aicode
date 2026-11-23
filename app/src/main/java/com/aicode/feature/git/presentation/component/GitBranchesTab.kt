@@ -174,7 +174,7 @@ internal fun BranchesTab(
         AdaptiveModalBottomSheet(
             onDismissRequest = { showCreateDialog = false },
             sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
         ) {
             Column(
                 modifier = Modifier
@@ -308,7 +308,7 @@ internal fun BranchesTab(
         AdaptiveModalBottomSheet(
             onDismissRequest = { showCreateTagDialog = false },
             sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
         ) {
             Column(
                 modifier = Modifier
@@ -763,7 +763,7 @@ private fun RefActionSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(
             modifier = Modifier

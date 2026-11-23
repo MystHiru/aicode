@@ -81,7 +81,9 @@ object SkillParser {
             val yaml = Yaml()
             val loaded = yaml.load<Map<String, Any>>(block)
             loaded ?: emptyMap()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // 必须捕 Throwable：snakeyaml 类初始化失败会抛 NoClassDefFoundError（Error 而非
+            // Exception），一个坏掉的前置声明不该把调用方线程带走。
             FileLogger.w(TAG, "解析 YAML 失败", e)
             emptyMap()
         }

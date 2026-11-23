@@ -189,12 +189,14 @@ class ContextCompactorTest {
     }
 
     @Test
-    fun missingPersistedAnchorFailsBeforeSummaryCall() = runTest {
+    fun missingPersistedAnchorSkipsCommitButKeepsCompaction() = runTest {
         prepare()
         coEvery { dao.getMessagesBySessionOnce("session") } returns emptyList()
-        val original = history()
-        assertSame(original, compactor.compactIfNeeded(original, provider, sessionId = "session", force = true).messages)
-        coVerify(exactly = 0) { provider.complete(any(), any(), any(), any()) }
+        val result = compactor.compactIfNeeded(history(), provider, sessionId = "session", force = true)
+        // 历史还没全部落库时只做瞬态压缩，不提交 Room（避免删掉不存在的行），
+        // 也不能因此整轮失败——否则大历史会卡在「压缩失败 → 下轮重试」循环。
+        assertTrue(result.compacted)
+        coVerify(exactly = 0) { dao.commitCompaction(any(), any(), any(), any()) }
     }
 
     @Test

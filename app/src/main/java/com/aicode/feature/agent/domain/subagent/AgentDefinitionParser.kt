@@ -95,7 +95,9 @@ object AgentDefinitionParser {
 
         val loaded = try {
             Yaml().load<Any>(block)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // 必须捕 Throwable：snakeyaml 类初始化失败会抛 NoClassDefFoundError（Error 而非
+            // Exception），一个坏掉的声明不该把整条工具线程带走。
             FileLogger.w(TAG, "解析子代理定义 YAML 失败", e)
             null
         }

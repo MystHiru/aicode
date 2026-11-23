@@ -1,17 +1,21 @@
 package com.aicode.feature.settings.data.remote
 
+import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.domain.model.ProviderType
-import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModelMetadataServiceTest {
 
-    private val json = Json { ignoreUnknownKeys = true }
+    private fun parseCatalog(raw: String) = raw.reader().use { ModelMetadataService.parseCatalog(it) }
 
     private fun parse(raw: String): List<String> =
-        ModelMetadataService.parseReasoningOptions(json.parseToJsonElement(raw))
+        parseCatalog("""{"sample":{"models":{"example":{"id":"example","reasoning_options":$raw}}}}""")
+            .byProvider.getValue("sample").getValue("example").reasoningLevels.orEmpty()
 
     @Test
     fun effortType_extractsValues() {
@@ -51,9 +55,8 @@ class ModelMetadataServiceTest {
 
     // ---- 模型 id 匹配：原名精确 → 忽略大小写 → 兜底剥 vendor 前缀 ----
 
-    private val catalog = ModelMetadataService.parseCatalog(
-        json.parseToJsonElement(
-            """
+    private val catalog = parseCatalog(
+        """
             {
               "openrouter": {
                 "models": {
@@ -80,9 +83,58 @@ class ModelMetadataServiceTest {
                 }
               }
             }
-            """.trimIndent()
-        )
+        """.trimIndent()
     )
+
+    @Test
+    fun streamsModelFieldsAndKeepsBothIndexesOnTheSameObject() {
+        val catalog = parseCatalog(
+            """{
+                "sample": {
+                    "description": {"nested": [null, {"ignored": true}]},
+                    "models": {
+                        "Image-V1": {
+                            "description": "ignored", "id": "image-v1", "name": "Image",
+                            "limit": {"context": 64000, "input": "32000", "output": 4096},
+                            "modalities": {"input": ["pdf"], "output": ["image"]},
+                            "cost": {"input": 1.25, "output": 5, "cache_read": 0.5, "cache_write": 0.75},
+                            "tool_call": true, "temperature": false, "reasoning": true,
+                            "reasoning_options": [
+                                {"type": "toggle"}, {"type": "effort", "values": ["low", "high", null]},
+                                {"type": "budget_tokens", "min": 1024, "max": 2048}
+                            ]
+                        }
+                    }
+                },
+                "empty": {"name": "no models"}
+            }""".trimIndent()
+        )
+        val model = catalog.byProvider.getValue("sample").getValue("Image-V1")
+        assertSame(model, catalog.lowerByProvider.getValue("sample").getValue("image-v1"))
+        assertEquals(listOf("sample", "empty"), catalog.byProvider.keys.toList())
+        assertTrue(catalog.byProvider.getValue("empty").isEmpty())
+        assertEquals(
+            ModelMetadata(
+                id = "image-v1", providerId = "sample", displayName = "Image",
+                contextTokens = 64_000, inputTokens = 32_000, outputTokens = 4096,
+                supportsTools = true, supportsVision = true, supportsImageOutput = true,
+                supportsReasoning = true, supportsCustomTemperature = false,
+                reasoningLevels = listOf("low", "high"), reasoningCanDisable = true,
+                reasoningBudgetMin = 1024, reasoningBudgetMax = 2048,
+                inputCostUsdPerM = 1.25, outputCostUsdPerM = 5.0,
+                cacheReadCostUsdPerM = 0.5, cacheWriteCostUsdPerM = 0.75,
+                source = ModelMetadata.Source.MODELS_DEV
+            ),
+            model
+        )
+    }
+
+    @Test
+    fun rejectsTruncatedCatalogAndTrailingDocument() {
+        for (raw in listOf("{\"sample\":{\"models\":{", "{} {}")) {
+            assertFalse(runCatching { parseCatalog(raw) }.isSuccess)
+        }
+    }
 
     private fun matchedProvider(modelId: String, type: ProviderType = ProviderType.OPENAI): String? =
         ModelMetadataService.findMetadata(catalog, type, modelId)?.providerId

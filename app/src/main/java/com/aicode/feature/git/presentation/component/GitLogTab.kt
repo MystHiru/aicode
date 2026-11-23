@@ -44,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,6 +58,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -73,10 +75,12 @@ import com.aicode.feature.git.domain.model.GraphCommit
 import com.aicode.feature.git.domain.model.GraphEdge
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.ChevronRight
+import compose.icons.feathericons.Check
 import compose.icons.feathericons.Cloud
 import compose.icons.feathericons.Copy
 import compose.icons.feathericons.GitBranch
 import compose.icons.feathericons.Tag
+import compose.icons.feathericons.Users
 import compose.icons.feathericons.RotateCcw
 import compose.icons.feathericons.Search
 import compose.icons.feathericons.X
@@ -110,27 +114,51 @@ internal fun LogTab(
     }
 
     var searchQuery by remember { mutableStateOf("") }
-    val filteredCommits = remember(allCommits, searchQuery) {
-        if (searchQuery.isBlank()) allCommits
-        else {
-            val q = searchQuery.trim().lowercase()
-            allCommits.filter {
-                it.message.lowercase().contains(q) ||
+    // 提交者筛选：null = 全部。选中后只显示该提交者的提交，直到点「全部提交者」或换人。
+    var authorFilter by rememberSaveable { mutableStateOf<String?>(null) }
+    var showAuthorSheet by remember { mutableStateOf(false) }
+    // 图形区：默认紧凑窄条，只画当前提交自己的连线；点一下展开完整拓扑。
+    var graphExpanded by rememberSaveable { mutableStateOf(false) }
+    val authorOptions = remember(allCommits) {
+        // 按作者首次出现的位置排序：提交列表本身是从新到旧，首现顺序即最近提交时间降序。
+        val counts = allCommits.groupingBy { it.author }.eachCount()
+        allCommits.asSequence().map { it.author }.distinct()
+            .map { it to (counts[it] ?: 0) }
+            .toList()
+    }
+    val filteredCommits = remember(allCommits, searchQuery, authorFilter) {
+        val q = searchQuery.trim().lowercase()
+        allCommits.filter {
+            (authorFilter == null || it.author == authorFilter) &&
+                (q.isEmpty() ||
+                    it.message.lowercase().contains(q) ||
                     it.author.lowercase().contains(q) ||
-                    it.shortHash.lowercase().contains(q)
-            }
+                    it.shortHash.lowercase().contains(q))
         }
     }
     val commits = filteredCommits
+    // 搜索与提交者筛选生效时拓扑图没有意义（过滤后的相邻行不再有父子关系），直接隐藏。
+    val showGraph = searchQuery.isBlank() && authorFilter == null
 
     // 泳道调色板：按列号循环取色，分支越多颜色越丰富。
     val laneColors = rememberLaneColors(graph.maxLane + 1)
     // 每个提交到其父提交的边列表（按提交索引分组），供 Canvas 绘制连线。
     val edgesByCommit = remember(graph) { groupEdgesByCommit(graph) }
-    // Canvas 宽度：每个泳道一列，加左右内边距。线性历史（无分叉/合并）时收紧泳道宽度，
-    // 让出更多空间给提交信息；有分叉时每泳道 16dp。节点在泳道内自动居中，无需改绘制。
-    val laneWidth = if (graph.maxLane == 0) 10.dp else 16.dp
-    val canvasWidth = laneWidth * (graph.maxLane + 1) + Spacing.xs * 2
+    // 图形区宽度：默认紧凑窄条（64dp）——分支再多也不占地方，只画当前提交自己的
+    // 入边/出边；展开后按完整泳道绘制，宽度上限取屏宽 45%（最多 200dp），
+    // 超出就压缩泳道间距，避免把右侧提交信息挤出屏幕。
+    val laneCount = graph.maxLane + 1
+    val compactGraphWidth = 64.dp
+    val expandedGraphCap = (LocalConfiguration.current.screenWidthDp.dp * 0.45f).coerceIn(96.dp, 200.dp)
+    val laneWidth = if (graphExpanded) {
+        minOf(
+            if (graph.maxLane == 0) 10.dp else 16.dp,
+            ((expandedGraphCap - Spacing.xs * 2) / laneCount).coerceAtLeast(3.dp)
+        )
+    } else {
+        ((compactGraphWidth - Spacing.xs * 2) / laneCount).coerceAtLeast(1.dp)
+    }
+    val canvasWidth = if (showGraph) laneWidth * laneCount + Spacing.xs * 2 else 0.dp
     // 每行高度，用于计算连线纵向跨度（节点居中）。
     val rowHeight = 72.dp
     // 预拉取下一页：列表滑动至接近底部（剩余 20 项）且还有更多提交时提前发起后台拉取，消除滑到底部等待停顿。
@@ -167,8 +195,18 @@ internal fun LogTab(
                     }
                 } else null,
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.weight(1f)
             )
+            Spacer(Modifier.width(Spacing.sm))
+            IconButton(onClick = { showAuthorSheet = true }) {
+                Icon(
+                    imageVector = FeatherIcons.Users,
+                    contentDescription = stringResource(R.string.git_filter_author),
+                    tint = if (authorFilter != null) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
         SectionHeader(stringResource(R.string.git_commit_count, commits.size))
         // 滚动容器占满整屏（与状态/分支页一致）：白色卡片是滚动内容的一部分——
@@ -183,9 +221,9 @@ internal fun LogTab(
         ) {
             itemsIndexed(commits, key = { _, c -> c.hash }) { index, c ->
                 val shape = when {
-                    index == 0 && commits.size == 1 && (!graph.hasMore || searchQuery.isNotBlank()) -> RoundedCornerShape(Radius.lg)
+                    index == 0 && commits.size == 1 && (!graph.hasMore || !showGraph) -> RoundedCornerShape(Radius.lg)
                     index == 0 -> RoundedCornerShape(topStart = Radius.lg, topEnd = Radius.lg)
-                    index == commits.lastIndex && (!graph.hasMore || searchQuery.isNotBlank()) -> RoundedCornerShape(bottomStart = Radius.lg, bottomEnd = Radius.lg)
+                    index == commits.lastIndex && (!graph.hasMore || !showGraph) -> RoundedCornerShape(bottomStart = Radius.lg, bottomEnd = Radius.lg)
                     else -> RectangleShape
                 }
                 Surface(
@@ -197,12 +235,14 @@ internal fun LogTab(
                     GraphCommitRow(
                         commit = c,
                         lane = graph.lanes[c.hash] ?: 0,
-                        edges = if (searchQuery.isBlank()) edgesByCommit[origIndex].orEmpty() else emptyList(),
-                        activeTopLanes = if (searchQuery.isBlank()) graph.activeTopLanes[c.hash].orEmpty() else emptyList(),
-                        activeBottomLanes = if (searchQuery.isBlank()) graph.activeBottomLanes[c.hash].orEmpty() else emptyList(),
+                        edges = if (showGraph) edgesByCommit[origIndex].orEmpty() else emptyList(),
+                        activeTopLanes = if (showGraph) graph.activeTopLanes[c.hash].orEmpty() else emptyList(),
+                        activeBottomLanes = if (showGraph) graph.activeBottomLanes[c.hash].orEmpty() else emptyList(),
                         laneColors = laneColors,
-                        canvasWidth = if (searchQuery.isBlank()) canvasWidth else 0.dp,
-                        laneWidth = if (searchQuery.isBlank()) laneWidth else 0.dp,
+                        canvasWidth = if (showGraph) canvasWidth else 0.dp,
+                        laneWidth = if (showGraph) laneWidth else 0.dp,
+                        compact = !graphExpanded,
+                        onToggleGraph = { graphExpanded = !graphExpanded },
                         rowHeight = rowHeight,
                         refs = graph.refs[c.hash].orEmpty(),
                         isTopTerminal = origIndex == 0,
@@ -248,6 +288,19 @@ internal fun LogTab(
         }
     }
 
+    // 提交者筛选弹层。
+    if (showAuthorSheet) {
+        AuthorFilterSheet(
+            authors = authorOptions,
+            selected = authorFilter,
+            onSelect = {
+                authorFilter = it
+                showAuthorSheet = false
+            },
+            onDismiss = { showAuthorSheet = false }
+        )
+    }
+
     // 提交详情弹层：不打断列表布局，泳道保持完整。
     detailHash?.let { hash ->
         val commit = graph.commits.find { it.hash == hash }
@@ -278,6 +331,10 @@ private fun GraphCommitRow(
     laneWidth: Dp,
     rowHeight: Dp,
     refs: List<GitGraphRef>,
+    /** true = 紧凑窄条（只画当前提交自己的连线），false = 完整拓扑。 */
+    compact: Boolean,
+    /** 点图形区切换紧凑/完整拓扑。 */
+    onToggleGraph: () -> Unit,
     /** 列表第一行（最新提交）：上方无更多提交，不画向上延伸的竖线。 */
     isTopTerminal: Boolean,
     onOpen: () -> Unit
@@ -306,10 +363,12 @@ private fun GraphCommitRow(
                 laneColors = laneColors,
                 canvasWidth = canvasWidth,
                 laneWidth = laneWidth,
+                compact = compact,
                 suppressTopLane = isTopTerminal,
                 modifier = Modifier
                     .width(canvasWidth)
                     .fillMaxHeight()
+                    .clickable(onClick = onToggleGraph)
             )
             // 右侧提交信息。上下留白只作用于内容，Canvas 撑满整行保证泳道跨行连续。
             Column(
@@ -402,20 +461,25 @@ private fun GraphCanvas(
     laneColors: List<Color>,
     canvasWidth: Dp,
     laneWidth: Dp,
+    /** 紧凑窄条：只画当前提交自己这一列的竖线，不画其它分支的贯穿线。 */
+    compact: Boolean = false,
     /** 第一行（最新提交）：不画上半段竖线，避免节点上方悬空延伸。 */
     suppressTopLane: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val nodeColor = laneColors.getOrElse(lane) { Color.Gray }
+    // 泳道被压缩时（分支很多），节点与线宽同步缩小，避免越出所在车道或互相覆盖；
+    // 16dp 是标准泳道宽度，以此为 1.0 的基准。
+    val nodeScale = (laneWidth / 16.dp).coerceIn(0.3f, 1f)
     Canvas(modifier = modifier) {
         val lanePx = laneWidth.toPx()
         val padPx = Spacing.xs.toPx()
         val centerX = lane * lanePx + lanePx / 2f + padPx
         val centerY = size.height / 2f
-        val stroke = 2.5.dp.toPx()
+        val stroke = 2.5.dp.toPx() * nodeScale
 
-        // 所有相关泳道（包含 top 和 bottom 的并集）
-        val allLanes = (activeTopLanes + activeBottomLanes + lane).toSet()
+        // 相关泳道：紧凑模式只画当前提交自己这一列，完整模式把贯穿本行的所有泳道都画出来。
+        val allLanes = if (compact) setOf(lane) else (activeTopLanes + activeBottomLanes + lane).toSet()
 
         // 跨列边（出边与入边）均在下半段绘制贝塞尔曲线。
         // curveBotLanes 记录被曲线接替下半段竖线的列：仅当该列上半段无竖线（非贯穿通道）时才排除，
@@ -506,13 +570,13 @@ private fun GraphCanvas(
         }
 
         // 3. 节点圆点：合并提交画环形双圈，普通提交画实心圆。
-        val nodeRadius = if (isMerge) 7.dp.toPx() else 5.dp.toPx()
+        val nodeRadius = (if (isMerge) 7.dp.toPx() else 5.dp.toPx()) * nodeScale
         if (isMerge) {
             drawCircle(
                 color = nodeColor,
                 radius = nodeRadius,
                 center = Offset(centerX, centerY),
-                style = Stroke(width = 2.5.dp.toPx())
+                style = Stroke(width = 2.5.dp.toPx() * nodeScale)
             )
             drawCircle(
                 color = nodeColor,
@@ -565,6 +629,94 @@ private fun RefPills(refs: List<GitGraphRef>) {
                     )
                 }
             }
+        }
+    }
+}
+
+/** 提交者筛选弹层：首项为「全部提交者」，其余按最近提交时间降序。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AuthorFilterSheet(
+    authors: List<Pair<String, Int>>,
+    selected: String?,
+    onSelect: (String?) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AdaptiveModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = Spacing.xl)
+        ) {
+            Text(
+                text = stringResource(R.string.git_filter_author),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier
+                    .padding(horizontal = Spacing.lg)
+                    .padding(bottom = Spacing.md)
+            )
+            AuthorFilterRow(
+                title = stringResource(R.string.git_filter_all_authors),
+                count = null,
+                isSelected = selected == null,
+                onClick = { onSelect(null) }
+            )
+            authors.forEach { (author, count) ->
+                AuthorFilterRow(
+                    title = author,
+                    count = count,
+                    isSelected = selected == author,
+                    onClick = { onSelect(author) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuthorFilterRow(
+    title: String,
+    count: Int?,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = Spacing.lg, vertical = Spacing.md),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (count != null) {
+                Text(
+                    text = stringResource(R.string.git_author_commit_count, count),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        if (isSelected) {
+            Icon(
+                imageVector = FeatherIcons.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }
@@ -836,7 +988,7 @@ private fun CommitDetailSheet(
     AdaptiveModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(
             modifier = Modifier

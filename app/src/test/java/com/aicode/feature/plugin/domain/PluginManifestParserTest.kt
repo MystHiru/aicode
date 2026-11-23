@@ -51,6 +51,27 @@ class PluginManifestParserTest {
         assertEquals(2, m.contributionCount)
     }
 
+    @Test
+    fun topLevelConfigPage_canBeTheOnlyContribution() {
+        val manifest = JsonObject(
+            Json.parseToJsonElement(base).let { it as JsonObject } + mapOf(
+                "contributes" to buildJsonObject {},
+                "configPage" to kotlinx.serialization.json.JsonPrimitive("pages/config.html")
+            )
+        )
+        val parsed = success(manifest.toString())
+        assertEquals("pages/config.html", parsed.configPage)
+        assertEquals(1, parsed.contributionCount)
+    }
+
+    @Test
+    fun invalidConfigPage_isRejectedEvenWhenOtherContributionsAreValid() {
+        val topLevel = PluginFixtures.manifest(extra = """, "configPage": "../config.html"""")
+        assertRejected(topLevel, PluginErrorCode.FIELD_INVALID, "configPage")
+        val nested = base.replace("\"contributes\": {", "\"contributes\": {\"configPage\": \"pages/config.js\",")
+        assertRejected(nested, PluginErrorCode.FIELD_INVALID, "contributes.configPage")
+    }
+
     /** 与 docs-site 的《开发插件》里的示例清单保持一致：文档示例必须能被真实解析器接受。 */
     @Test
     fun documentedExample_isAccepted() {

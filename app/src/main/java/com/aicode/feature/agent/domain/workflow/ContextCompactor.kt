@@ -125,13 +125,18 @@ class ContextCompactor @Inject constructor(
             }
 
             val headIds = head.map { it.id }.filter { it.isNotBlank() }.distinct()
+            // 只有 Room 历史已完全落库才能提交压缩。轮内刚产生的消息可能还没写库，
+            // 此时降级为瞬态摘要（不提交），避免整轮压缩失败、下轮再从完整历史重压。
+            var canCommitToRoom = false
             if (sessionId != null) {
-                check(headIds.isNotEmpty() && head.all { it.id.isNotBlank() }) { "History has no stable persistence IDs" }
                 val entities = agentMessageDao.getMessagesBySessionOnce(sessionId)
                 val persistedIds = entities.mapTo(HashSet()) { it.id }
-                check(headIds.all { it in persistedIds }) { "History persistence is not complete yet" }
                 val tailIds = tail.map { it.id }.toSet()
-                check(entities.any { it.id in tailIds }) { "Retained history has no persisted timestamp anchor" }
+                canCommitToRoom = headIds.isNotEmpty() && head.all { it.id.isNotBlank() } &&
+                    headIds.all { it in persistedIds } && entities.any { it.id in tailIds }
+                if (!canCommitToRoom) {
+                    FileLogger.i(TAG, "历史尚未完整落库，本次压缩只注入瞬态摘要")
+                }
             }
 
             val summaryMetadata = modelMetadataService.resolve(aiProvider.providerId, inferProviderType(aiProvider), aiProvider.model)
@@ -178,7 +183,12 @@ class ContextCompactor @Inject constructor(
             check(compactedTokens <= inputBudget) {
                 "Summary and retained history do not fit the main model input budget"
             }
-            if (sessionId != null && persistence == null) {
+            // Room 会话必须真正落库（软删被摘要的 head + 写入摘要）：以前只在 persistence == null
+            // 时提交，而正常对话每轮都带 roomTurnPersistence，且调用方还只在 turn == null 时传
+            // sessionId，于是压缩结果从未生效 —— 下一轮仍从完整历史（实测 2.4M → 2.7M tokens）
+            // 重新压一遍，每条消息都要压。
+            var committed = false
+            if (canCommitToRoom && sessionId != null) {
                 agentMessageDao.commitCompaction(
                     sessionId = sessionId,
                     headIds = headIds,
@@ -191,11 +201,15 @@ class ContextCompactor @Inject constructor(
                     summaryId = summaryId
                 )
                 messagePersistenceUseCase.invalidateHistory(sessionId)
+                committed = true
             }
-            if (persistence != null) {
+            if (persistence != null && !committed) {
+                // 外部会话源（非 Room）没有本地历史可删，只能把摘要作为瞬态指令注入，
+                // 令当前请求后续轮次也能看到摘要。Room 已落库，当前 state 已含摘要，
+                // 再注入会用同一个 id 覆写摘要行并丢掉 isContextSummary 标记。
                 persistence.publishTransientInstruction(summaryId, summary)
             }
-            FileLogger.i(TAG, "上下文压缩完成：$block 块，$estimatedTokens → $compactedTokens tokens")
+            FileLogger.i(TAG, "上下文压缩完成：$block 块，$estimatedTokens → $compactedTokens tokens，落库=$committed")
             return CompactionResult(compacted, compacted = true)
         } catch (e: CancellationException) {
             throw e

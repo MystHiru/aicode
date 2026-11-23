@@ -120,6 +120,14 @@
 -dontwarn java.beans.**
 -dontwarn sun.security.x509.**
 
+# ---- SnakeYAML ----
+# TypeDescription 的静态初始化是 Class.getPackage().getName()，R8 优化后可能拿到 null
+# （类被合并 / 重打包后 getPackage() 不再返回原包），静态块抛 NPE → 该类永久变成
+# NoClassDefFoundError；业务侧若只 catch Exception 抓不到 Error，会把整个进程带走。
+# 整包保留类名与方法名，避开会改变 getPackage() 语义的优化。
+-keep class org.yaml.snakeyaml.** { *; }
+-dontwarn org.yaml.snakeyaml.**
+
 # ---- jlatexmath（LaTeX 公式渲染）----
 # jlatexmath 的宏系统在运行时用反射调用宏实现：MacroInfo 构造时
 # Class.forName("org.scilab.forge.jlatexmath.NewCommandMacro") +
