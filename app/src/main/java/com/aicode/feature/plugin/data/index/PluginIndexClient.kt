@@ -2,7 +2,7 @@ package com.aicode.feature.plugin.data.index
 
 import android.content.Context
 import android.graphics.BitmapFactory
-import com.aicode.core.net.awaitResponse
+import com.aicode.core.net.readResponseCancellable
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.plugin.data.PluginStoreSettingsRepository
 import com.aicode.feature.plugin.domain.SemVer
@@ -232,15 +232,16 @@ class PluginIndexClient @Inject constructor(
             .header("User-Agent", "aicode-plugin-index")
             .header("X-GitHub-Api-Version", "2022-11-28")
             .build()
-        https.newCall(request).awaitResponse().use { response ->
+        val bytes = https.newCall(request).readResponseCancellable { response ->
             if (response.code == 404) throw NoMatchingReleaseException("GitHub Release 不存在")
             if (!response.isSuccessful) throw IOException("GitHub Release 请求失败: HTTP ${response.code}")
             val body = response.body ?: throw IOException("GitHub Release 响应为空")
-            return try {
-                PluginIndexJson.decodeFromString<T>(readStoreBody(body, MAX_RELEASE_RESPONSE_BYTES, null).decodeToString())
-            } catch (e: kotlinx.serialization.SerializationException) {
-                throw IOException("GitHub Release 响应解析失败", e)
-            }
+            readStoreBody(body, MAX_RELEASE_RESPONSE_BYTES, null)
+        }
+        return try {
+            PluginIndexJson.decodeFromString<T>(bytes.decodeToString())
+        } catch (e: kotlinx.serialization.SerializationException) {
+            throw IOException("GitHub Release 响应解析失败", e)
         }
     }
 
@@ -255,10 +256,10 @@ class PluginIndexClient @Inject constructor(
         val builder = Request.Builder().url(url).header("User-Agent", "aicode-plugin-index")
         if (noCache) builder.cacheControl(CacheControl.Builder().noCache().build())
         val client = if (httpsOnly) https else http
-        client.newCall(builder.build()).awaitResponse().use { response ->
+        return client.newCall(builder.build()).readResponseCancellable { response ->
             if (!response.isSuccessful) throw IOException("HTTP ${response.code}: ${response.request.url.host}")
             val body = response.body ?: throw IOException("空响应")
-            return readStoreBody(body, maxBytes, expectedSize)
+            readStoreBody(body, maxBytes, expectedSize)
         }
     }
 

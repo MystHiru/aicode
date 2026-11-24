@@ -2,7 +2,7 @@ package com.aicode.feature.settings.data.remote
 
 import android.content.Context
 import com.aicode.R
-import com.aicode.core.net.awaitResponse
+import com.aicode.core.net.readResponseCancellable
 import com.aicode.core.util.toUserMessage
 import com.aicode.feature.agent.domain.provider.joinUrl
 import com.aicode.feature.settings.domain.model.ProviderType
@@ -21,11 +21,13 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /** 网络类失败重试前的退避时长：跨过 libcore 解析失败缓存的有效期，否则重试必然复现同一失败。 */
 private const val NETWORK_RETRY_BACKOFF_MS = 3_000L
+private const val MODEL_TEST_TIMEOUT_SECONDS = 60L
 
 /** 拉取模型列表的结果，包含解析出的模型列表及完整的调试信息。 */
 data class FetchModelsResult(
@@ -63,6 +65,7 @@ class ModelApiService @Inject constructor(
     @param:ApplicationContext private val context: Context
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+    private val testClient = client.newBuilder().callTimeout(MODEL_TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS).build()
 
     /** 拉取提供商可用模型列表（OpenAI 兼容 / Anthropic 均为 GET /v1/models，Gemini 为 GET /v1beta/models）。 */
     suspend fun fetchModels(
@@ -269,8 +272,7 @@ class ModelApiService @Inject constructor(
             }
             capturedHeaders = reqHeadersMap
 
-            val response = client.newCall(request).awaitResponse()
-            response.use {
+            testClient.newCall(request).readResponseCancellable { response ->
                 val latency = (System.nanoTime() - start) / 1_000_000
                 val body = response.body?.string().orEmpty()
                 val respHeadersMap = response.headers.names().associateWith { response.header(it).orEmpty() }

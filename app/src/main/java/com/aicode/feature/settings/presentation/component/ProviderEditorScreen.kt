@@ -280,6 +280,7 @@ fun ProviderEditorScreen(
     val testResults by viewModel.testResults.collectAsStateWithLifecycle()
     val testing by viewModel.testing.collectAsStateWithLifecycle()
     val batchTestState by viewModel.batchTestState.collectAsStateWithLifecycle()
+    val batchRunning = batchTestState.running && batchTestState.providerId == providerId
     val proxyTestState by viewModel.proxyTestState.collectAsStateWithLifecycle()
     val dashboardTestState by viewModel.dashboardTestState.collectAsStateWithLifecycle()
     val dashboardScripts by viewModel.dashboardScripts.collectAsStateWithLifecycle()
@@ -288,7 +289,7 @@ fun ProviderEditorScreen(
         derivedStateOf { models.toSet() }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(providerId) {
         viewModel.resetFetchState()
         viewModel.clearTestResults(providerId)
         viewModel.clearDashboardTestState()
@@ -813,9 +814,9 @@ fun ProviderEditorScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.weight(1f)
                         )
-                        if (batchTestState.running) {
+                        if (batchRunning) {
                             TextButton(
-                                onClick = { viewModel.stopAllModels() },
+                                onClick = { viewModel.stopAllModels(providerId) },
                                 colors = ButtonDefaults.textButtonColors(
                                     contentColor = MaterialTheme.colorScheme.error
                                 )
@@ -852,7 +853,7 @@ fun ProviderEditorScreen(
                             Text(stringResource(R.string.provider_fetch_models))
                         }
                     }
-                    if (batchTestState.running) {
+                    if (batchRunning) {
                         Text(
                             text = stringResource(
                                 R.string.provider_test_batch_summary,
@@ -940,8 +941,8 @@ fun ProviderEditorScreen(
                                         ProviderModelRow(
                                             model = model,
                                             metadata = mergeModelMetadata(model, modelMetadata[modelMetadataKey(providerId, model)], customMetadata[modelMetadataKey(providerId, model)]),
-                                            testing = modelMetadataKey(providerId, model) in testing,
-                                            result = testResults[modelMetadataKey(providerId, model)],
+                                            testing = (providerId to model) in testing,
+                                            result = testResults[providerId to model],
                                             onTest = { viewModel.testModel(currentConfig(), model) },
                                             onEdit = {
                                                 editingModel = model
@@ -1028,7 +1029,7 @@ fun ProviderEditorScreen(
                 ),
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {
-                val anySelectedTesting = selectedModels.any { modelMetadataKey(providerId, it) in testing }
+                val anySelectedTesting = selectedModels.any { (providerId to it) in testing }
                 SelectionActionButton(
                     text = stringResource(R.string.provider_models_batch_test),
                     icon = FeatherIcons.Play,
@@ -1036,7 +1037,7 @@ fun ProviderEditorScreen(
                     loading = anySelectedTesting,
                     tint = MaterialTheme.colorScheme.primary,
                     onClick = {
-                        selectedModels.filterNot { modelMetadataKey(providerId, it) in testing }.forEach { m ->
+                        selectedModels.filterNot { (providerId to it) in testing }.forEach { m ->
                             viewModel.testModel(currentConfig(), m)
                         }
                     }

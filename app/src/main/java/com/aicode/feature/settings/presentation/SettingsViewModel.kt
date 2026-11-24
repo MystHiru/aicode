@@ -128,13 +128,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
@@ -751,21 +746,14 @@ class SettingsViewModel @Inject constructor(
     private val _fetchState = MutableStateFlow<FetchState>(FetchState.Idle)
     val fetchState: StateFlow<FetchState> = _fetchState.asStateFlow()
 
-    private val _testResults = MutableStateFlow<Map<String, ModelTestResult>>(emptyMap())
-    val testResults: StateFlow<Map<String, ModelTestResult>> = _testResults.asStateFlow()
+    private val providerModelTests = ProviderModelTests(viewModelScope, ::runModelTest)
+    val testResults = providerModelTests.results
+    val testing = providerModelTests.testing
+    val batchTestState = providerModelTests.batch
 
     /** 模型元数据缓存，键为 [modelMetadataKey]（渠道 + 模型）——单价与能力都可能因渠道而异。 */
     private val _modelMetadata = MutableStateFlow<Map<String, ModelMetadata>>(emptyMap())
     val modelMetadata: StateFlow<Map<String, ModelMetadata>> = _modelMetadata.asStateFlow()
-
-    private val _testing = MutableStateFlow<Set<String>>(emptySet())
-    val testing: StateFlow<Set<String>> = _testing.asStateFlow()
-
-    private val _batchTestState = MutableStateFlow(BatchTestState())
-    val batchTestState: StateFlow<BatchTestState> = _batchTestState.asStateFlow()
-
-    private var batchTestJob: Job? = null
-    private var batchTestGeneration = 0L
 
     private val _dashboardTestState = MutableStateFlow<ProviderDashboardState>(ProviderDashboardState.Idle)
     val dashboardTestState: StateFlow<ProviderDashboardState> = _dashboardTestState.asStateFlow()
@@ -3464,102 +3452,19 @@ class SettingsViewModel @Inject constructor(
         _fetchState.value = FetchState.Idle
     }
 
-    fun testModel(provider: AIProviderConfig, model: String) {
-        val key = modelMetadataKey(provider.id, model)
-        viewModelScope.launch {
-            _testing.update { it + key }
-            try {
-                val result = modelApiService.testModel(provider.effectiveBaseUrl(), provider.firstUsableApiKey, provider.type, provider.useFullUrl, provider.useResponseApi, model, provider.customHeaders)
-                _testResults.update { it + (key to result) }
-            } finally {
-                _testing.update { it - key }
-            }
-        }
-    }
+    fun testModel(provider: AIProviderConfig, model: String) = providerModelTests.startSingle(provider, model)
 
     /**
-     * 主页模型弹层用：直接跑一次连通性测试并返回结果。
-     * 不落 ViewModel 状态——弹层跨多个 provider，同名模型会撞 key，
-     * 测试中的行集合与结果由弹层自己按 provider+模型持有。
+     * 直接测试模型连通性。主页弹层可调用此方法并自行管理结果。
      */
     suspend fun runModelTest(provider: AIProviderConfig, model: String): ModelTestResult =
         modelApiService.testModel(provider.effectiveBaseUrl(), provider.firstUsableApiKey, provider.type, provider.useFullUrl, provider.useResponseApi, model, provider.customHeaders)
 
-    fun clearTestResults(providerId: String? = null) {
-        if (providerId == null) {
-            _testResults.value = emptyMap()
-            _testing.value = emptySet()
-            return
-        }
-        val prefix = "$providerId:"
-        _testResults.update { results -> results.filterKeys { !it.startsWith(prefix) } }
-        _testing.update { testing -> testing.filterNot { it.startsWith(prefix) }.toSet() }
-        if (_batchTestState.value.providerId == providerId) stopAllModels()
-    }
+    fun clearTestResults(providerId: String) = providerModelTests.clear(providerId)
 
-    /**
-     * 一键测试 [provider] 全部模型的连通性，限并发 4：复用单测的 [_testing] / [_testResults]，
-     * 逐条实时反映到每行模型；running 时调 [stopAllModels] 取消。
-     */
-    fun testAllModels(provider: AIProviderConfig) {
-        if (batchTestJob?.isActive == true) return
-        val models = provider.models
-        if (models.isEmpty()) return
-        val generation = ++batchTestGeneration
-        fun scopeOf(model: String) = modelMetadataKey(provider.id, model)
-        batchTestJob = viewModelScope.launch {
-            _batchTestState.value = BatchTestState(provider.id, models.size, 0, 0, true)
-            val semaphore = Semaphore(4)
-            try {
-                coroutineScope {
-                    models.map { model ->
-                        async {
-                            semaphore.withPermit {
-                                if (generation != batchTestGeneration) return@withPermit
-                                val key = scopeOf(model)
-                                _testing.update { it + key }
-                                try {
-                                    val result = modelApiService.testModel(
-                                        provider.effectiveBaseUrl(),
-                                        provider.firstUsableApiKey,
-                                        provider.type,
-                                        provider.useFullUrl,
-                                        provider.useResponseApi,
-                                        model,
-                                        provider.customHeaders
-                                    )
-                                    if (generation != batchTestGeneration) return@withPermit
-                                    _testResults.update { it + (key to result) }
-                                    _batchTestState.update {
-                                        it.copy(
-                                            done = it.done + 1,
-                                            success = it.success + if (result.success) 1 else 0
-                                        )
-                                    }
-                                } finally {
-                                    _testing.update { it - key }
-                                }
-                            }
-                        }
-                    }.awaitAll()
-                }
-            } finally {
-                // 旧批次（被 stop 或新一轮取代）不得改写新批次的状态。
-                if (generation == batchTestGeneration) {
-                    _batchTestState.update { it.copy(running = false) }
-                    _testing.value = emptySet()
-                }
-            }
-        }
-    }
+    fun testAllModels(provider: AIProviderConfig) = providerModelTests.startBatch(provider)
 
-    fun stopAllModels() {
-        batchTestGeneration++
-        batchTestJob?.cancel()
-        batchTestJob = null
-        _testing.value = emptySet()
-        _batchTestState.update { it.copy(running = false) }
-    }
+    fun stopAllModels(providerId: String) = providerModelTests.stopBatch(providerId)
 
     /**
      * 加载可用面板脚本列表（打开脚本选择器时调用）。经引擎在 IO 线程枚举，

@@ -1,16 +1,24 @@
 package com.aicode.core.net
 
+import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.yield
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody
+import okio.Buffer
+import okio.BufferedSource
+import okio.ForwardingSource
 import okio.Timeout
+import okio.buffer
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -20,23 +28,61 @@ class OkHttpCallAwaitTest {
     @Test
     fun cancellingTheCoroutineCancelsTheUnderlyingCall() = runBlocking {
         val call = FakeCall()
-        val job = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
-            call.awaitResponse()
+        val job = launch(start = CoroutineStart.UNDISPATCHED) {
+            call.readResponseCancellable { error("不应读到响应") }
         }
-        yield()
-        assertTrue("请求应已发起且仍在等响应", job.isActive && call.isExecuted() && !call.isCanceled())
+        assertTrue(job.isActive && call.isExecuted() && !call.isCanceled())
 
-        job.cancel()
-        job.join()
+        job.cancelAndJoin()
 
-        assertTrue("协程取消应触发 Call.cancel()", call.awaitCancelInvoked.get())
-        assertTrue("协程应已结束", job.isCancelled)
+        assertTrue(call.isCanceled())
+        assertTrue(job.isCancelled)
+    }
+
+    @Test
+    fun cancellingWhileReadingTheBodyCancelsCallAndClosesResponse() = runBlocking {
+        val call = FakeCall()
+        val reading = CountDownLatch(1)
+        val closed = AtomicBoolean(false)
+        val job = launch(start = CoroutineStart.UNDISPATCHED) {
+            call.readResponseCancellable { response -> response.body!!.string() }
+        }
+        val source = object : ForwardingSource(Buffer()) {
+            override fun read(sink: Buffer, byteCount: Long): Long {
+                reading.countDown()
+                check(call.cancelledSignal.await(5, TimeUnit.SECONDS))
+                throw IOException("Cancelled")
+            }
+
+            override fun close() {
+                closed.set(true)
+                super.close()
+            }
+        }.buffer()
+        val response = Response.Builder().request(call.request()).protocol(Protocol.HTTP_1_1)
+            .code(200).message("OK").body(object : ResponseBody() {
+                override fun contentType() = null
+                override fun contentLength() = -1L
+                override fun source(): BufferedSource = source
+            }).build()
+        val networkThread = Thread { call.deliver(response) }.apply { start() }
+        try {
+            assertTrue(reading.await(5, TimeUnit.SECONDS))
+            job.cancelAndJoin()
+        } finally {
+            job.cancelAndJoin()
+            networkThread.join(6_000)
+        }
+        assertTrue(call.isCanceled())
+        assertTrue(closed.get())
+        assertTrue(!networkThread.isAlive)
     }
 
     private class FakeCall : Call {
-        val awaitCancelInvoked = AtomicBoolean(false)
+        val cancelledSignal = CountDownLatch(1)
         private var callback: Callback? = null
-        private var canceled = false
+
+        fun deliver(response: Response) = checkNotNull(callback).onResponse(this, response)
 
         override fun request(): Request = Request.Builder().url("https://example.com").build()
 
@@ -47,11 +93,10 @@ class OkHttpCallAwaitTest {
         }
 
         override fun cancel() {
-            canceled = true
-            awaitCancelInvoked.set(true)
+            cancelledSignal.countDown()
         }
 
-        override fun isCanceled(): Boolean = canceled
+        override fun isCanceled(): Boolean = cancelledSignal.count == 0L
 
         override fun isExecuted(): Boolean = callback != null
 
