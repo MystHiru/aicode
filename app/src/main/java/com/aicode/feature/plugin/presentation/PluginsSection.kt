@@ -160,7 +160,7 @@ internal fun PluginsSection(
     onToggleEnabled: (InstalledPlugin, Boolean) -> Unit,
     onOpenStoreDetail: (PluginStoreItem) -> Unit,
     autoUpdatePlugins: Boolean = false,
-    onAutoUpdatePlugins: (List<PluginStoreItem>) -> Unit = {}
+    onAutoUpdatePlugins: (List<PluginStoreItem>, () -> Boolean) -> Unit = { _, _ -> }
 ) {
     if (!loaded) return
 
@@ -168,25 +168,36 @@ internal fun PluginsSection(
     var searchQuery by rememberSaveable { mutableStateOf("") }
     val storeViewModel: PluginStoreViewModel = hiltViewModel()
     val storeState by storeViewModel.state.collectAsStateWithLifecycle()
+    val pluginImportState by hiltViewModel<PluginsViewModel>().importState.collectAsStateWithLifecycle()
     val pageCount = if (devMode) 3 else 2
     val installedListState = rememberLazyListState()
     val devListState = rememberLazyListState()
-
-    // 商店拉到新版本后，开关开启时逐个走安装链；贡献有变化的插件会停在预览页等用户确认。
-    LaunchedEffect(autoUpdatePlugins, storeState.loading, storeState.updatesByPluginId) {
-        if (!autoUpdatePlugins || storeState.loading) return@LaunchedEffect
-        val pending = storeState.updatesByPluginId.values.toList()
-        if (pending.isNotEmpty()) onAutoUpdatePlugins(pending)
-    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         // 开发者侧载开关会改变 tab 数量；连同底栏一起重建，避免底栏内部缓存的 tab 位置残留。
         key(pageCount) {
             val pagerState = rememberPagerState { pageCount }
-            // 每次切到商店页都拉一次最新索引，插件作者发新版本后不用手动下拉；
-            // ViewModel 先展示磁盘缓存，刷新失败时保留旧列表。
+            // 仅在商店页触发刷新与自动安装；进入设置页或已安装 tab 都不启动下载。
             LaunchedEffect(pagerState.currentPage) {
                 if (pagerState.currentPage == pageCount - 1) storeViewModel.openStore()
+            }
+            LaunchedEffect(
+                pagerState.currentPage,
+                autoUpdatePlugins,
+                storeState.loading,
+                storeState.freshSourceIds,
+                storeState.updatesByPluginId,
+                pluginImportState
+            ) {
+                if (pagerState.currentPage != pageCount - 1 || !autoUpdatePlugins || storeState.loading ||
+                    storeState.freshSourceIds.isEmpty() || pluginImportState !is PluginImportState.Idle
+                ) return@LaunchedEffect
+                val current = storeState.updatesByPluginId.values.toList()
+                if (current.isNotEmpty()) {
+                    onAutoUpdatePlugins(current) {
+                        pagerState.currentPage == pageCount - 1 && storeViewModel.areCurrent(current)
+                    }
+                }
             }
             val listScrolling by remember {
                 derivedStateOf {

@@ -290,11 +290,11 @@ fun ProviderEditorScreen(
 
     DisposableEffect(Unit) {
         viewModel.resetFetchState()
-        viewModel.clearTestResults()
+        viewModel.clearTestResults(providerId)
         viewModel.clearDashboardTestState()
         onDispose {
             viewModel.resetFetchState()
-            viewModel.clearTestResults()
+            viewModel.clearTestResults(providerId)
             viewModel.clearDashboardTestState()
         }
     }
@@ -940,8 +940,8 @@ fun ProviderEditorScreen(
                                         ProviderModelRow(
                                             model = model,
                                             metadata = mergeModelMetadata(model, modelMetadata[modelMetadataKey(providerId, model)], customMetadata[modelMetadataKey(providerId, model)]),
-                                            testing = model in testing,
-                                            result = testResults[model],
+                                            testing = modelMetadataKey(providerId, model) in testing,
+                                            result = testResults[modelMetadataKey(providerId, model)],
                                             onTest = { viewModel.testModel(currentConfig(), model) },
                                             onEdit = {
                                                 editingModel = model
@@ -1028,7 +1028,7 @@ fun ProviderEditorScreen(
                 ),
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {
-                val anySelectedTesting = selectedModels.any { it in testing }
+                val anySelectedTesting = selectedModels.any { modelMetadataKey(providerId, it) in testing }
                 SelectionActionButton(
                     text = stringResource(R.string.provider_models_batch_test),
                     icon = FeatherIcons.Play,
@@ -1036,7 +1036,7 @@ fun ProviderEditorScreen(
                     loading = anySelectedTesting,
                     tint = MaterialTheme.colorScheme.primary,
                     onClick = {
-                        selectedModels.filterNot { it in testing }.forEach { m ->
+                        selectedModels.filterNot { modelMetadataKey(providerId, it) in testing }.forEach { m ->
                             viewModel.testModel(currentConfig(), m)
                         }
                     }

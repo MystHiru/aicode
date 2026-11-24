@@ -2,6 +2,7 @@ package com.aicode.feature.plugin.data.index
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import com.aicode.core.net.awaitResponse
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.plugin.data.PluginStoreSettingsRepository
 import com.aicode.feature.plugin.domain.SemVer
@@ -224,14 +225,14 @@ class PluginIndexClient @Inject constructor(
         return segments[0] to segments[1].removeSuffix(".git")
     }
 
-    private inline fun <reified T> apiGet(url: String): T {
+    private suspend inline fun <reified T> apiGet(url: String): T {
         val request = Request.Builder()
             .url(url)
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "aicode-plugin-index")
             .header("X-GitHub-Api-Version", "2022-11-28")
             .build()
-        https.newCall(request).execute().use { response ->
+        https.newCall(request).awaitResponse().use { response ->
             if (response.code == 404) throw NoMatchingReleaseException("GitHub Release 不存在")
             if (!response.isSuccessful) throw IOException("GitHub Release 请求失败: HTTP ${response.code}")
             val body = response.body ?: throw IOException("GitHub Release 响应为空")
@@ -243,7 +244,7 @@ class PluginIndexClient @Inject constructor(
         }
     }
 
-    private fun getBytes(
+    private suspend fun getBytes(
         url: String,
         maxBytes: Long,
         noCache: Boolean,
@@ -254,7 +255,7 @@ class PluginIndexClient @Inject constructor(
         val builder = Request.Builder().url(url).header("User-Agent", "aicode-plugin-index")
         if (noCache) builder.cacheControl(CacheControl.Builder().noCache().build())
         val client = if (httpsOnly) https else http
-        client.newCall(builder.build()).execute().use { response ->
+        client.newCall(builder.build()).awaitResponse().use { response ->
             if (!response.isSuccessful) throw IOException("HTTP ${response.code}: ${response.request.url.host}")
             val body = response.body ?: throw IOException("空响应")
             return readStoreBody(body, maxBytes, expectedSize)

@@ -2250,6 +2250,7 @@
     <string name="plugins_store_downloading">Downloading plugin package…</string>
     <string name="plugins_store_refresh_done">Index refreshed</string>
     <string name="plugins_store_refresh_done_failed">Index refreshed, %1$d failed</string>
+    <string name="plugins_store_cache_fallback">Some indexes failed; showing cached entries</string>
     <string name="plugins_store_detail_version">Version</string>
     <string name="plugins_store_detail_tags">Categories</string>
     <string name="plugins_store_tag_provider">Model providers</string>

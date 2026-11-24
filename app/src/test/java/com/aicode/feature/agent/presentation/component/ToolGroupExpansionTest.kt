@@ -292,6 +292,20 @@ class ToolGroupExpansionTest {
     }
 
     @Test
+    fun truncatedWindow_keepsReplyVisibleWhenSystemCardFollowsIt() {
+        val summary = assistant("summary").copy(isContextSummary = true)
+        val messages = listOf(tool("t1"), tool("t2"), assistant("answer"), summary, user("u0"))
+
+        val rendered = items(messages)
+        val leading = rendered.first { it.turnHeader != null }
+
+        assertFalse(leading.turnHeader!!.expanded)
+        assertEquals(listOf("toolgroup:t1", "summary"), leading.turnProcess.map { it.key })
+        assertTrue("系统卡后的最终回复仍常显", rendered.any { it.key == "answer" })
+        assertFalse(rendered.any { it.key == "summary" })
+    }
+
+    @Test
     fun truncatedWindow_keepsTrailingAnswerVisible() {
         // 这一截的结尾通常就是上一轮的最终回复：它照旧常显，不跟着过程一起折起来
         val messages = listOf(
@@ -316,6 +330,24 @@ class ToolGroupExpansionTest {
         val after = items(older + tail, turnOverrides = mapOf("turn:head:t2" to true))
         assertTrue(before.first { it.turnHeader?.key == "turn:head:t2" }.turnHeader!!.expanded)
         assertTrue(after.first { it.turnHeader?.key == "turn:head:t2" }.turnHeader!!.expanded)
+    }
+
+    @Test
+    fun truncatedToolGroup_prependingEarlierMemberKeepsGroupKey() {
+        val oldWindow = listOf(tool("t2"), tool("t3"), assistant("answer"))
+        val previous = reconcileToolGroupKeys(oldWindow, emptyMap())
+        assertEquals("toolgroup:t2", previous["t3"])
+
+        val expanded = buildChatItems(
+            messages = listOf(tool("t1")) + oldWindow,
+            groupOverrides = mapOf("toolgroup:t2" to true),
+            toolGroupKeys = reconcileToolGroupKeys(listOf(tool("t1")) + oldWindow, previous)
+        )
+        val group = expanded.first { it.turnHeader != null }.turnProcess.first { it.toolGroup != null }
+
+        assertEquals("toolgroup:t2", group.key)
+        assertEquals(listOf("t1", "t2", "t3"), group.toolGroup!!.map { it.id })
+        assertTrue(group.groupExpanded)
     }
 
     @Test

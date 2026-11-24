@@ -166,6 +166,29 @@ internal fun PluginStoreSection(
                     )
                 }
                 else -> {
+                    if (state.failedSourceIds.isNotEmpty()) {
+                        item(key = "cache-fallback", contentType = "notice") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = Spacing.xs, vertical = Spacing.xs),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = FeatherIcons.CloudOff,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.semanticColors.warningContainer,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(Spacing.xs))
+                                Text(
+                                    text = stringResource(R.string.plugins_store_cache_fallback),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                     if (state.items.size >= 3) {
                         item(key = "search", contentType = "search") {
                             ModelSearchField(
@@ -308,6 +331,14 @@ private fun StorePluginRow(
                         else stringResource(R.string.plugins_store_badge_unofficial),
                         textColor = MaterialTheme.semanticColors.onWarningContainer,
                         backgroundColor = MaterialTheme.semanticColors.warningContainer
+                    )
+                }
+                item.plugin.version?.let { version ->
+                    Spacer(modifier = Modifier.width(6.dp))
+                    McpPill(
+                        text = "v$version",
+                        textColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        backgroundColor = MaterialTheme.colorScheme.secondaryContainer
                     )
                 }
             }

@@ -765,6 +765,7 @@ class SettingsViewModel @Inject constructor(
     val batchTestState: StateFlow<BatchTestState> = _batchTestState.asStateFlow()
 
     private var batchTestJob: Job? = null
+    private var batchTestGeneration = 0L
 
     private val _dashboardTestState = MutableStateFlow<ProviderDashboardState>(ProviderDashboardState.Idle)
     val dashboardTestState: StateFlow<ProviderDashboardState> = _dashboardTestState.asStateFlow()
@@ -3464,11 +3465,15 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun testModel(provider: AIProviderConfig, model: String) {
+        val key = modelMetadataKey(provider.id, model)
         viewModelScope.launch {
-            _testing.update { it + model }
-            val result = modelApiService.testModel(provider.effectiveBaseUrl(), provider.firstUsableApiKey, provider.type, provider.useFullUrl, provider.useResponseApi, model, provider.customHeaders)
-            _testResults.update { it + (model to result) }
-            _testing.update { it - model }
+            _testing.update { it + key }
+            try {
+                val result = modelApiService.testModel(provider.effectiveBaseUrl(), provider.firstUsableApiKey, provider.type, provider.useFullUrl, provider.useResponseApi, model, provider.customHeaders)
+                _testResults.update { it + (key to result) }
+            } finally {
+                _testing.update { it - key }
+            }
         }
     }
 
@@ -3480,9 +3485,16 @@ class SettingsViewModel @Inject constructor(
     suspend fun runModelTest(provider: AIProviderConfig, model: String): ModelTestResult =
         modelApiService.testModel(provider.effectiveBaseUrl(), provider.firstUsableApiKey, provider.type, provider.useFullUrl, provider.useResponseApi, model, provider.customHeaders)
 
-    fun clearTestResults() {
-        _testResults.value = emptyMap()
-        _testing.value = emptySet()
+    fun clearTestResults(providerId: String? = null) {
+        if (providerId == null) {
+            _testResults.value = emptyMap()
+            _testing.value = emptySet()
+            return
+        }
+        val prefix = "$providerId:"
+        _testResults.update { results -> results.filterKeys { !it.startsWith(prefix) } }
+        _testing.update { testing -> testing.filterNot { it.startsWith(prefix) }.toSet() }
+        if (_batchTestState.value.providerId == providerId) stopAllModels()
     }
 
     /**
@@ -3493,6 +3505,8 @@ class SettingsViewModel @Inject constructor(
         if (batchTestJob?.isActive == true) return
         val models = provider.models
         if (models.isEmpty()) return
+        val generation = ++batchTestGeneration
+        fun scopeOf(model: String) = modelMetadataKey(provider.id, model)
         batchTestJob = viewModelScope.launch {
             _batchTestState.value = BatchTestState(provider.id, models.size, 0, 0, true)
             val semaphore = Semaphore(4)
@@ -3501,37 +3515,46 @@ class SettingsViewModel @Inject constructor(
                     models.map { model ->
                         async {
                             semaphore.withPermit {
-                                _testing.update { it + model }
-                                val result = modelApiService.testModel(
-                                    provider.effectiveBaseUrl(),
-                                    provider.firstUsableApiKey,
-                                    provider.type,
-                                    provider.useFullUrl,
-                                    provider.useResponseApi,
-                                    model,
-                                    provider.customHeaders
-                                )
-                                _testResults.update { it + (model to result) }
-                                _testing.update { it - model }
-                                _batchTestState.update {
-                                    it.copy(
-                                        done = it.done + 1,
-                                        success = it.success + if (result.success) 1 else 0
+                                if (generation != batchTestGeneration) return@withPermit
+                                val key = scopeOf(model)
+                                _testing.update { it + key }
+                                try {
+                                    val result = modelApiService.testModel(
+                                        provider.effectiveBaseUrl(),
+                                        provider.firstUsableApiKey,
+                                        provider.type,
+                                        provider.useFullUrl,
+                                        provider.useResponseApi,
+                                        model,
+                                        provider.customHeaders
                                     )
+                                    if (generation != batchTestGeneration) return@withPermit
+                                    _testResults.update { it + (key to result) }
+                                    _batchTestState.update {
+                                        it.copy(
+                                            done = it.done + 1,
+                                            success = it.success + if (result.success) 1 else 0
+                                        )
+                                    }
+                                } finally {
+                                    _testing.update { it - key }
                                 }
                             }
                         }
                     }.awaitAll()
                 }
             } finally {
-                _batchTestState.update { it.copy(running = false) }
-                // 取消时正在跑的 OkHttp 阻塞调用不响应 cancel，清空残留 testing 标记兜底
-                _testing.value = emptySet()
+                // 旧批次（被 stop 或新一轮取代）不得改写新批次的状态。
+                if (generation == batchTestGeneration) {
+                    _batchTestState.update { it.copy(running = false) }
+                    _testing.value = emptySet()
+                }
             }
         }
     }
 
     fun stopAllModels() {
+        batchTestGeneration++
         batchTestJob?.cancel()
         batchTestJob = null
         _testing.value = emptySet()

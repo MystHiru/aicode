@@ -113,6 +113,18 @@ class PluginStoreCatalogTest {
         assertTrue(after.isListingCurrent(refreshed))
     }
 
+    @Test
+    fun autoInstallRequiresFreshNetworkListings() {
+        val stale = catalog(listOf(vanta), record(vanta))
+        assertFalse("只有缓存时不允许自动安装", stale.hasFreshListings(listOf(vanta)))
+
+        val fresh = stale.copy(freshSourceIds = setOf(vanta.source.id))
+        assertTrue(fresh.hasFreshListings(listOf(vanta)))
+
+        val otherSource = fresh.copy(freshSourceIds = setOf(official.source.id))
+        assertFalse("条目所属来源没刷新过就不算当前", otherSource.hasFreshListings(listOf(vanta)))
+    }
+
     private fun catalog(items: List<PluginStoreItem>, installed: PluginRecord) =
         PluginStoreUiState().withCatalog(items, mapOf(installed.id to installed))
 

@@ -391,6 +391,30 @@ internal fun reconcileTurnKeys(
     }
 }
 
+/** 连续工具分组跨过分页边界时，沿用任一重叠消息已有的分组 key。 */
+internal fun reconcileToolGroupKeys(
+    messages: List<AgentUIMessage>,
+    previousKeys: Map<String, String>,
+): Map<String, String> = buildMap {
+    val (leading, turns) = splitChatTurns(messages)
+    for (block in listOf(leading) + turns.map { it.messages }) {
+        var index = 0
+        while (index < block.size) {
+            if (!block[index].isGroupableTool()) {
+                index++
+                continue
+            }
+            var end = index + 1
+            while (end < block.size && block[end].isGroupableTool()) end++
+            val members = block.subList(index, end)
+            val key = members.firstNotNullOfOrNull { previousKeys[it.id] }
+                ?: toolGroupKey(members.first())
+            members.forEach { put(it.id, key) }
+            index = end
+        }
+    }
+}
+
 /**
  * 消息列表 → LazyColumn item 列表。
  *
@@ -417,6 +441,7 @@ internal fun buildChatItems(
     activeTurnKey: String? = null,
     sessionId: String? = null,
     turnKeys: Map<String, String> = emptyMap(),
+    toolGroupKeys: Map<String, String> = emptyMap(),
 ): List<ChatRenderItem> {
     val items = ArrayList<ChatRenderItem>(messages.size)
     val (leading, turns) = splitChatTurns(messages)
@@ -426,9 +451,11 @@ internal fun buildChatItems(
         // 这一截通常结尾就是上一轮的最终回复（窗口从某一轮中间切开）：它照旧常显，
         // 只有它的思考与更早的过程步骤折进折叠头，与完整轮次的呈现一致。
         val running = headKey == activeTurnKey
-        val resultId = if (running) null else leading.last().takeIf { it.isResultCandidate() }?.id
+        // 只把片段最后一条非系统卡消息当候选：窗口切在工具调用中间时，更早的中间正文应留在过程里。
+        val trailing = leading.lastOrNull { !it.isSystemCardInTurn() }
+        val resultId = if (running) null else trailing?.takeIf { it.isResultCandidate() }?.id
         items += buildTurnItems(
-            leading, resultId, groupOverrides,
+            leading, resultId, groupOverrides, toolGroupKeys,
             header = ChatRenderItem(
                 message = leading.last(),
                 key = "$headKey#header",
@@ -451,7 +478,7 @@ internal fun buildChatItems(
         val running = stableTurnKey == activeTurnKey
         val resultId = if (running) null else turn.messages.lastOrNull { it.isResultCandidate() }?.id
         items += buildTurnItems(
-            turn.messages, resultId, groupOverrides,
+            turn.messages, resultId, groupOverrides, toolGroupKeys,
             header = ChatRenderItem(
                 message = turn.userMessage,
                 key = "$stableTurnKey#header",
@@ -554,7 +581,8 @@ private fun AgentUIMessage.isSystemCardInTurn(): Boolean =
 
 /** 能否作为一轮的「结果」：最后一条有可见正文的普通助手消息（系统卡片不算，见 [isSystemCardInTurn]）。 */
 private fun AgentUIMessage.isResultCandidate(): Boolean =
-    role == MessageRole.ASSISTANT && !isSystemCardInTurn() && content.hasVisibleContent()
+    role == MessageRole.ASSISTANT && !isSystemCardInTurn() &&
+        (content.hasVisibleContent() || attachments.isNotEmpty())
 
 /**
  * 轮内「过程」项（保持原序）：思考、连续工具调用分组、中间助手正文、后台通知条与压缩卡片。
@@ -566,6 +594,7 @@ private fun buildTurnItems(
     messages: List<AgentUIMessage>,
     resultId: String?,
     groupOverrides: Map<String, Boolean>,
+    toolGroupKeys: Map<String, String>,
     header: ChatRenderItem,
     keepEmptyHeader: Boolean = false,
 ): List<ChatRenderItem> {
@@ -582,7 +611,7 @@ private fun buildTurnItems(
             if (members.size == 1) {
                 process += messageRenderItems(members.first())
             } else {
-                val key = toolGroupKey(members.first())
+                val key = toolGroupKeys[members.first().id] ?: toolGroupKey(members.first())
                 process += ChatRenderItem(
                     message = members.first(),
                     key = key,
@@ -903,9 +932,17 @@ fun AIChatPanel(
         }
     }
     SideEffect { turnKeyHistory.putAll(stableTurnKeys) }
+    val toolGroupKeyHistory = remember(currentSessionId) {
+        currentSessionId?.let { viewModel.toolMessageGroupKeys.getOrPut(it) { mutableMapOf() } }
+            ?: mutableMapOf()
+    }
+    val stableToolGroupKeys = remember(messages, currentSessionId, messagesReady) {
+        if (messagesReady) reconcileToolGroupKeys(messages, toolGroupKeyHistory) else emptyMap()
+    }
+    SideEffect { toolGroupKeyHistory.putAll(stableToolGroupKeys) }
     val activeTurnKey = if (isBusy) messages.lastOrNull()?.let { stableTurnKeys[it.id] } else null
     // 列表与用于流式交接的消息一起提交；首屏没有同会话快照时，不在界面线程重建长列表。
-    val chatItemsKey = remember(messages, toolGroupOverrideSnapshot, turnOverrideSnapshot, activeTurnKey, currentSessionId, stableTurnKeys) { Any() }
+    val chatItemsKey = remember(messages, toolGroupOverrideSnapshot, turnOverrideSnapshot, activeTurnKey, currentSessionId, stableTurnKeys, stableToolGroupKeys) { Any() }
     val timelineSessionId = currentSessionId
     val buildTimeline = {
         ChatTimelineSnapshot(timelineSessionId, chatItemsKey, messages, flattenChatProcesses(buildChatItems(
@@ -915,6 +952,7 @@ fun AIChatPanel(
             activeTurnKey = activeTurnKey,
             sessionId = timelineSessionId,
             turnKeys = stableTurnKeys,
+            toolGroupKeys = stableToolGroupKeys,
         )))
     }
     val useAsyncItems = messages.size > ASYNC_CHAT_ITEMS_THRESHOLD

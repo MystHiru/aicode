@@ -67,6 +67,11 @@ object LegacySchemaRepair {
                 if (db.version != schemaVersion) return@use false
                 if (!hasColumn(db, "ai_providers", "useResponseWebSocket")) return@use false
                 if (!hasColumn(db, "chat_sessions", "fastMode")) return@use false
+                // 除了补列结果，再核对几处标志性结构；缺任何一项都不像“只是 hash 落后”，
+                // 宁可继续报 Room 校验失败，也不改写真实不一致的库。
+                if (!hasColumn(db, "chat_sessions", "workflow")) return@use false
+                if (!hasColumn(db, "chat_sessions", "workspaceId")) return@use false
+                if (!hasTable(db, "root_grants")) return@use false
                 val current = readIdentityHash(db) ?: return@use false
                 if (current == EXPECTED_IDENTITY_HASH) return@use false
                 db.execSQL(
@@ -99,6 +104,12 @@ object LegacySchemaRepair {
                 false
             }
         }.getOrDefault(true)
+
+    private fun hasTable(db: SQLiteDatabase, table: String): Boolean = runCatching {
+        db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name = ?", arrayOf(table)).use { cursor ->
+            cursor.moveToFirst()
+        }
+    }.getOrDefault(false)
 
     private fun legacyRecordIsOurs(db: SQLiteDatabase): Boolean = runCatching {
         db.rawQuery(

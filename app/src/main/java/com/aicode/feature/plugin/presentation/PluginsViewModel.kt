@@ -390,14 +390,18 @@ class PluginsViewModel @Inject constructor(
         manifest.configPage
     ).joinToString("\u0000")
 
-    /** 打开商店拉到更新列表后调用：逐个走现有安装链（下载、SHA-256、清单核对），贡献未变才自动确认。 */
-    internal fun autoUpdateFromStore(items: List<PluginStoreItem>) {
+    /**
+     * 打开商店拉到更新列表后调用：逐个走现有安装链（下载、SHA-256、清单核对），贡献未变才自动确认。
+     * [isCurrent] 必须能在下载前后重新确认条目仍属于本轮刚拉到的索引，避免拿缓存条目静默升级。
+     */
+    internal fun autoUpdateFromStore(items: List<PluginStoreItem>, isCurrent: () -> Boolean) {
         if (!_autoUpdatePlugins.value || items.isEmpty()) return
         if (_importState.value !is PluginImportState.Idle) return
+        if (!isCurrent()) return
         // 同一版本只自动尝试一次：停在预览或失败后回到 Idle 时不能反复重试。
         val item = items.firstOrNull { "${it.plugin.id}@${it.plugin.version}" !in autoUpdateAttempted } ?: return
         autoUpdateAttempted += "${item.plugin.id}@${item.plugin.version}"
-        installFromStore(item, isListingCurrent = { true }, autoIfSafe = true)
+        installFromStore(item, isListingCurrent = isCurrent, autoIfSafe = true)
     }
 
     internal fun installFromStore(item: PluginStoreItem, isListingCurrent: () -> Boolean, autoIfSafe: Boolean = false) {

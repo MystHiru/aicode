@@ -1896,7 +1896,9 @@ internal fun SettingsScreen(
                         section = SettingsSection.PluginStoreDetail
                     },
                     autoUpdatePlugins = pluginAutoUpdate,
-                    onAutoUpdatePlugins = pluginsViewModel::autoUpdateFromStore
+                    onAutoUpdatePlugins = { items, isCurrent ->
+                        pluginsViewModel.autoUpdateFromStore(items, isCurrent)
+                    }
                 )
                 SettingsSection.PluginDetail -> selectedPlugin?.let { plugin ->
                     val storeViewModel: PluginStoreViewModel = androidx.hilt.navigation.compose.hiltViewModel()

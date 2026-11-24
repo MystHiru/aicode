@@ -446,6 +446,7 @@ class AIAgentViewModel @Inject constructor(
     val turnExpansionOverrides = mutableStateMapOf<String, Boolean>()
 
     val turnMessageKeys = mutableMapOf<String, MutableMap<String, String>>()
+    val toolMessageGroupKeys = mutableMapOf<String, MutableMap<String, String>>()
 
     /** 记录一次整轮折叠的手动展开/收起。 */
     fun setTurnExpanded(key: String, expanded: Boolean) {

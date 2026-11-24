@@ -2,10 +2,12 @@ package com.aicode.feature.settings.data.remote
 
 import android.content.Context
 import com.aicode.R
+import com.aicode.core.net.awaitResponse
 import com.aicode.core.util.toUserMessage
 import com.aicode.feature.agent.domain.provider.joinUrl
 import com.aicode.feature.settings.domain.model.ProviderType
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -267,7 +269,8 @@ class ModelApiService @Inject constructor(
             }
             capturedHeaders = reqHeadersMap
 
-            client.newCall(request).execute().use { response ->
+            val response = client.newCall(request).awaitResponse()
+            response.use {
                 val latency = (System.nanoTime() - start) / 1_000_000
                 val body = response.body?.string().orEmpty()
                 val respHeadersMap = response.headers.names().associateWith { response.header(it).orEmpty() }
@@ -299,6 +302,8 @@ class ModelApiService @Inject constructor(
                     ))
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val latency = (System.nanoTime() - start) / 1_000_000
             TestAttempt(
