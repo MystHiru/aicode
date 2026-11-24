@@ -7,10 +7,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * 68 → 69：补齐被跳过的 ADD COLUMN。
  *
  * 本分支曾把本地 `66_add_root_grants.sql` 整体后移到 68，把上游 66（provider websocket）
- * 与 67（session fast mode）填进空出的编号。已装机用户的 user_version 停在 66，且
- * migration_history 记着 `66_add_root_grants.sql`，Room 认为 66 已完成，新编号的 66/67
- * 永远不会执行，`ai_providers.useResponseWebSocket` 与 `chat_sessions.fastMode` 因此缺失，
- * 迁移后的列集合校验直接失败。
+ * 与 67（session fast mode）填进空出的编号。旧分支的 66 号数据库会跳过新的 66，
+ * 因而需要补上 `ai_providers.useResponseWebSocket`；部分 68 号数据库也可能缺少
+ * `chat_sessions.fastMode`。Room 在整条迁移链完成后才校验列集合。
  *
  * SQLite 没有 `ADD COLUMN IF NOT EXISTS`，这里按列是否存在条件补列；这两列都是
  * `NOT NULL DEFAULT 0`，对已有行安全。重复执行不会报错。

@@ -40,7 +40,8 @@ abstract class AgentDatabase : RoomDatabase() {
     abstract fun rootGrantDao(): RootGrantDao
 
     companion object {
-        const val SCHEMA_VERSION = 69
+        // 69 → 70 不改表，让 Room 完整校验结构后再写入 identity hash。
+        const val SCHEMA_VERSION = 70
 
         /** 数据库文件名（落在 `databases/` 下，另有 Room 默认 WAL 模式产生的 `-wal`/`-shm`）。 */
         const val DATABASE_NAME = "aicode_agent_db"

@@ -7,7 +7,9 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.aicode.feature.agent.data.local.database.AgentDatabase
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
 import org.junit.BeforeClass
 import org.junit.Rule
@@ -127,38 +129,84 @@ class MigrationTest {
     }
 
     /**
-     * 老库的 user_version 停在 66，migration_history 记着本分支的 66_add_root_grants，
-     * 新编号的 66（websocket）/ 67（fastMode）永远不会被 Room 执行。68→69 的条件补列
-     * 必须把这两列补回来，否则迁移后的列集合校验直接失败。
+     * 旧分支的 66 号库会跳过新版 66（websocket），但仍会执行 67（fastMode）。
      */
     @Test
-    fun migrate_66_to_69_repairs_skipped_columns() {
-        helper.createDatabase(dbName, 66).apply {
-            // 真实老库：user_version 停在 66、跑的是本分支旧的 66_add_root_grants，
-            // 迁移 66 加的列没执行过。这里删掉列复现。
-            execSQL("ALTER TABLE ai_providers DROP COLUMN useResponseWebSocket")
-            execSQL(
-                "CREATE TABLE IF NOT EXISTS migration_history (" +
-                        "version INTEGER PRIMARY KEY, script_name TEXT, executed_at INTEGER)"
-            )
-            execSQL("INSERT OR REPLACE INTO migration_history VALUES (66, '66_add_root_grants.sql', 0)")
-        }.close()
+    fun migrate_fork_66_preserves_root_grants_and_repairs_skipped_columns() {
+        helper.createDatabase(dbName, 65).use { db ->
+            val rootGrantMigration = MigrationLoader.loadMigrations(context)
+                .filterIsInstance<FileMigration>().single { it.version == 68 }
+            FileMigration(66, "66_add_root_grants.sql", rootGrantMigration.sqlStatements).migrate(db)
+            db.version = 66
+            db.execSQL("INSERT INTO root_grants VALUES ('existing', '/tmp/example', 'READ', 'ALWAYS', 0, 1)")
+        }
 
-        val db = Room.databaseBuilder(context, AgentDatabase::class.java, dbName)
-            .addMigrations(MIGRATION_68_69)
-            .addMigrations(*MigrationLoader.loadMigrations(context))
-            .build()
-        val columns = mutableSetOf<String>()
-        db.openHelper.writableDatabase
-            .query("PRAGMA table_info(`ai_providers`)")
-            .use { cursor -> while (cursor.moveToNext()) columns += cursor.getString(1) }
-        val sessionColumns = mutableSetOf<String>()
-        db.openHelper.writableDatabase
-            .query("PRAGMA table_info(`chat_sessions`)")
-            .use { cursor -> while (cursor.moveToNext()) sessionColumns += cursor.getString(1) }
-        db.close()
-
-        assertTrue("升级后 ai_providers 应补回 useResponseWebSocket，实际：$columns", columns.contains("useResponseWebSocket"))
-        assertTrue("升级后 chat_sessions 应补回 fastMode，实际：$sessionColumns", sessionColumns.contains("fastMode"))
+        openMigratedDatabase().let { db ->
+            try {
+                val sqlite = db.openHelper.writableDatabase
+                assertEquals(AgentDatabase.SCHEMA_VERSION, sqlite.version)
+                sqlite.query("SELECT useResponseWebSocket FROM ai_providers").close()
+                sqlite.query("SELECT fastMode FROM chat_sessions").close()
+                sqlite.query("SELECT id FROM root_grants").use { cursor ->
+                    assertTrue(cursor.moveToFirst())
+                    assertEquals("existing", cursor.getString(0))
+                }
+            } finally {
+                db.close()
+            }
+        }
     }
+
+    @Test
+    fun migrate_69_with_stale_hash_revalidates_and_preserves_data() {
+        helper.createDatabase(dbName, 69).use { db ->
+            db.execSQL("UPDATE room_master_table SET identity_hash = 'stale' WHERE id = 42")
+            db.execSQL("INSERT INTO root_grants VALUES ('existing', '/tmp/example', 'READ', 'ALWAYS', 0, 1)")
+        }
+        val db = openMigratedDatabase()
+        try {
+            assertEquals(AgentDatabase.SCHEMA_VERSION, db.openHelper.writableDatabase.version)
+            db.openHelper.writableDatabase.query("SELECT id FROM root_grants").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("existing", cursor.getString(0))
+            }
+            db.openHelper.writableDatabase.query("SELECT identity_hash FROM room_master_table WHERE id = 42").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertTrue(cursor.getString(0) != "stale")
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun migrate_69_with_incompatible_schema_fails_without_overwriting_hash() {
+        helper.createDatabase(dbName, 69).use { db ->
+            db.execSQL("UPDATE room_master_table SET identity_hash = 'stale' WHERE id = 42")
+            db.execSQL("DROP INDEX index_root_grants_realPath_operation")
+        }
+        val db = openMigratedDatabase()
+        try {
+            db.openHelper.writableDatabase
+            fail("缺少索引时 Room 应拒绝升级")
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message.orEmpty().contains("root_grants"))
+        } finally {
+            db.close()
+        }
+        android.database.sqlite.SQLiteDatabase.openDatabase(
+            context.getDatabasePath(dbName).path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY
+        ).use { unchanged ->
+            assertEquals(69, unchanged.version)
+            unchanged.rawQuery("SELECT identity_hash FROM room_master_table WHERE id = 42", null).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("stale", cursor.getString(0))
+            }
+        }
+    }
+
+    private fun openMigratedDatabase(): AgentDatabase =
+        Room.databaseBuilder(context, AgentDatabase::class.java, dbName)
+            .addMigrations(MIGRATION_68_69, *MigrationLoader.loadMigrations(context))
+            .build()
 }

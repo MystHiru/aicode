@@ -14,6 +14,8 @@
 用法：python3 scripts/check_migrations.py   （退出码 0 = 通过，1 = 有冲突）
 """
 
+import glob
+import json
 import os
 import re
 import subprocess
@@ -61,8 +63,6 @@ if versions:
     notes.append("本地文件式迁移版本 %d..%d，共 %d 个" % (all_vers[0], all_vers[-1], len(all_vers)))
 
 # ---------- 1b. Kotlin 迁移（文件式表达不了的按列条件补列等） ----------
-import glob
-
 kotlin_migs = {}  # to_version -> (file, from, to)
 for rel in KOTLIN_MIGRATION_FILES:
     path = os.path.join(ROOT, rel)
@@ -128,8 +128,6 @@ schema_jsons = sorted(
 )
 latest_columns = set()
 if schema_jsons:
-    import json
-
     with open(schema_jsons[-1][1], encoding="utf-8") as f:
         schema_doc = json.load(f)
     for table in schema_doc.get("database", {}).get("entities", []):
@@ -159,34 +157,18 @@ for ver, name in sorted(versions.items()):
                 % (name, column)
             )
 
-# ---------- 3c. LegacySchemaRepair 的 identity hash 与编译期一致 ----------
-# 用户库被手工改过（或装过临时修复包）时，启动前会把 room_master_table 重写成这里的常量；
-# 常量落后于编译期生成的 hash，修复就变成新的崩溃源。
-LEGACY_REPAIR_REL = "app/src/main/java/com/aicode/core/db/LegacySchemaRepair.kt"
-legacy_repair_file = os.path.join(ROOT, LEGACY_REPAIR_REL)
-if os.path.isfile(legacy_repair_file):
-    with open(legacy_repair_file, encoding="utf-8", errors="replace") as f:
-        repair_src = f.read()
-    m = re.search(r'EXPECTED_IDENTITY_HASH\s*=\s*"([0-9a-fA-F]+)"', repair_src)
-    repair_hash = m.group(1).lower() if m else None
-    impls = glob.glob(
-        os.path.join(
-            ROOT,
-            "app/build/generated/ksp/*/kotlin/com/aicode/feature/agent/data/local/database/AgentDatabase_Impl.kt",
-        )
-    )
-    if repair_hash and impls:
-        with open(sorted(impls)[-1], encoding="utf-8", errors="replace") as f:
-            impl_src = f.read()
-        m2 = re.search(r'"([0-9a-f]{32})",\s*"([0-9a-f]{32})"', impl_src)
-        compile_hash = m2.group(1).lower() if m2 else None
-        if compile_hash and compile_hash != repair_hash:
-            errors.append(
-                "LegacySchemaRepair 的 EXPECTED_IDENTITY_HASH=%s 与编译期 hash=%s 不一致；"
-                "改了实体或迁移后要同步更新" % (repair_hash, compile_hash)
-            )
-        elif compile_hash:
-            notes.append("LegacySchemaRepair identity hash 与编译期一致：%s" % compile_hash)
+# ---------- 3c. 当前版本必须有 Room 导出的 schema 与匹配的初始化语句 ----------
+if schema_ver is not None:
+    if not schema_jsons or schema_jsons[-1][0] != schema_ver:
+        errors.append("缺少当前版本的 Room schema %d.json，请运行 KSP 导出" % schema_ver)
+    else:
+        database = schema_doc["database"]
+        identity = database.get("identityHash", "")
+        setup = "\n".join(database.get("setupQueries", []))
+        if database.get("version") != schema_ver or not re.fullmatch(r"[0-9a-f]{32}", identity):
+            errors.append("Room schema %d.json 的版本或 identityHash 无效" % schema_ver)
+        elif "VALUES(42, '%s')" % identity not in setup:
+            errors.append("Room schema %d.json 的 identityHash 与初始化 SQL 不一致" % schema_ver)
 
 # ---------- 4. 已发布冻结校验 ----------
 _, tags_out = git(["for-each-ref", "--sort=-creatordate", "--format=%(refname:short)", "refs/tags/v*"])
@@ -232,12 +214,13 @@ elif versions and published_max > 0:
                     "已发布迁移不可修改或复用。若是 hotfix 合流后 main 未后移，"
                     "请把该迁移重编号为 %d+1 及之后的连续号再提交。" % (ver, name, tag, tag_name, published_max)
                 )
-    # 内容搬家：同一段 SQL 在本地不同编号出现，说明只是改了编号，老用户库里的
-    # migration_history 仍指向旧编号，被跳过的迁移永远不会补。
+    # 空迁移只推进版本并让 Room 重新校验结构，可以出现在不同版本。
     by_content = {}
     for ver, name in versions.items():
         with open(os.path.join(MIGRATIONS_DIR, name), encoding="utf-8", errors="replace") as f:
-            by_content.setdefault(norm(f.read()), []).append((ver, name))
+            content = norm(f.read())
+            if content.strip():
+                by_content.setdefault(content, []).append((ver, name))
     for content, entries in by_content.items():
         if len(entries) > 1:
             errors.append(

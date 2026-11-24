@@ -36,9 +36,11 @@ class MigrationFilesParseTest {
 
     @Test
     fun versions_are_contiguous_unique_and_match_schema_version() {
-        val versions = migrationFiles().mapNotNull { file ->
+        val fileVersions = migrationFiles().mapNotNull { file ->
             Regex("(\\d+)_").find(file.name)?.groupValues?.get(1)?.toInt()
-        }.sorted()
+        }
+        assertEquals(68, MIGRATION_68_69.startVersion)
+        val versions = (fileVersions + MIGRATION_68_69.endVersion).sorted()
         assertTrue("没有解析到任何迁移版本号", versions.isNotEmpty())
         assertEquals("版本号必须严格递增连续（允许从 8 起步，但不能缺档）",
             (versions.first()..versions.last()).toList(), versions)
