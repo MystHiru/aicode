@@ -73,14 +73,14 @@ class StarPromptCoordinatorTest {
         store: FakeStarPromptStore,
         isForeground: MutableStateFlow<Boolean>,
         aiBusy: MutableStateFlow<Boolean>,
-        wallClockStartMs: Long = 1_700_000_000_000L
+        wallClockMs: () -> Long = { 1_700_000_000_000L + testScheduler.currentTime }
     ): StarPromptCoordinator = StarPromptCoordinator(
         store = store,
         aiBusyFlow = aiBusy,
         isForegroundFlow = isForeground,
         scope = backgroundScope,
         elapsedRealtimeMs = { testScheduler.currentTime },
-        wallClockMs = { wallClockStartMs + testScheduler.currentTime },
+        wallClockMs = wallClockMs,
         triggerThresholdMs = StarPromptRepository.TRIGGER_FOREGROUND_MS,
         foregroundSettleMs = StarPromptCoordinator.DEFAULT_FOREGROUND_SETTLE_MS,
         persistIntervalMs = StarPromptCoordinator.DEFAULT_PERSIST_INTERVAL_MS,
@@ -159,7 +159,7 @@ class StarPromptCoordinatorTest {
     @Test
     fun `snooze delays follow 3, 7, 14 days and repeat every 14 days`() = runTest {
         val day = StarPromptRepository.DAY_MS
-        val wallStart = 1_700_000_000_000L
+        var wallClock = 1_700_000_000_000L
         val store = FakeStarPromptStore(
             StarPromptRecord(
                 status = StarPromptStatus.TRACKING,
@@ -168,7 +168,7 @@ class StarPromptCoordinatorTest {
         )
         val foreground = MutableStateFlow(true)
         val aiBusy = MutableStateFlow(false)
-        val coordinator = createCoordinator(store, foreground, aiBusy, wallStart)
+        val coordinator = createCoordinator(store, foreground, aiBusy) { wallClock }
         coordinator.updateUiGate(defaultGate())
 
         // 首次弹出（30s settle + 1.5s debounce）
@@ -176,54 +176,25 @@ class StarPromptCoordinatorTest {
         runCurrent()
         assertTrue(coordinator.dialogVisible.value)
 
-        // 第 1 次点「下次一定」-> 推迟 3 天
-        coordinator.onSnooze()
-        runCurrent()
-        assertFalse(coordinator.dialogVisible.value)
-        assertEquals(1, store.state.value.snoozeCount)
+        // 直接推进墙钟，避免为几周冷却时间实际跑十万次前台 ticker。
+        listOf(3L, 7L, 14L, 14L).forEachIndexed { index, days ->
+            val deadline = wallClock + days * day
+            coordinator.onSnooze()
+            runCurrent()
+            assertFalse(coordinator.dialogVisible.value)
+            assertEquals(index + 1, store.state.value.snoozeCount)
+            assertEquals(deadline, store.state.value.nextPromptAtMs)
 
-        advanceTimeBy(3L * day - 60_000L)
-        runCurrent()
-        assertFalse(coordinator.dialogVisible.value)
+            wallClock = deadline - 60_000L
+            advanceTimeBy(31_500L)
+            runCurrent()
+            assertFalse(coordinator.dialogVisible.value)
 
-        advanceTimeBy(60_000L + 30_000L + 1_500L)
-        runCurrent()
-        assertTrue(coordinator.dialogVisible.value)
-
-        // 第 2 次点「下次一定」-> 推迟 7 天
-        coordinator.onSnooze()
-        runCurrent()
-        assertEquals(2, store.state.value.snoozeCount)
-
-        advanceTimeBy(7L * day - 60_000L)
-        runCurrent()
-        assertFalse(coordinator.dialogVisible.value)
-
-        advanceTimeBy(60_000L + 30_000L + 1_500L)
-        runCurrent()
-        assertTrue(coordinator.dialogVisible.value)
-
-        // 第 3 次点「下次一定」-> 推迟 14 天
-        coordinator.onSnooze()
-        runCurrent()
-        assertEquals(3, store.state.value.snoozeCount)
-
-        advanceTimeBy(14L * day - 60_000L)
-        runCurrent()
-        assertFalse(coordinator.dialogVisible.value)
-
-        advanceTimeBy(60_000L + 30_000L + 1_500L)
-        runCurrent()
-        assertTrue(coordinator.dialogVisible.value)
-
-        // 第 4 次点「下次一定」-> 仍按每 14 天周期弹出
-        coordinator.onSnooze()
-        runCurrent()
-        assertEquals(4, store.state.value.snoozeCount)
-
-        advanceTimeBy(14L * day + 30_000L + 1_500L)
-        runCurrent()
-        assertTrue(coordinator.dialogVisible.value)
+            wallClock = deadline
+            advanceTimeBy(31_500L)
+            runCurrent()
+            assertTrue(coordinator.dialogVisible.value)
+        }
     }
 
     @Test
