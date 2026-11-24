@@ -7,6 +7,7 @@ import com.aicode.feature.agent.domain.container.friendlySshError
 import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import com.aicode.feature.workspace.domain.WorkspacePathMapper.Companion.CONTAINER_ROOT
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import net.schmizz.sshj.sftp.FileAttributes
@@ -95,7 +96,9 @@ class RemoteSftpFileAccess @Inject constructor(
             try {
                 guarded(lease.client) { block(lease.client) }
             } finally {
-                lease.release()
+                // 取消时也要把通道还回池：release() 内部是挂起调用，协程已被取消时
+                // 直接 await 会抛 CancellationException，通道就永久占着一个额度。
+                withContext(NonCancellable) { lease.release() }
             }
         }
     }

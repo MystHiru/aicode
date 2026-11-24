@@ -2267,6 +2267,7 @@
     <string name="plugins_store_version_latest">Latest</string>
     <string name="plugins_store_detail_index_source">Index source</string>
     <string name="plugins_store_detail_index_source_community">%1$s (third-party)</string>
+    <string name="plugins_store_source_third_party">third-party</string>
     <string name="plugins_store_badge_unofficial">Unofficial</string>
     <string name="plugins_store_badge_official">Official</string>
     <string name="plugins_store_sources_label">Third-party sources</string>

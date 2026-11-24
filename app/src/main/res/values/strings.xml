@@ -2266,6 +2266,7 @@
     <string name="plugins_store_version_latest">最新版</string>
     <string name="plugins_store_detail_index_source">索引来源</string>
     <string name="plugins_store_detail_index_source_community">%1$s（第三方）</string>
+    <string name="plugins_store_source_third_party">第三方</string>
     <string name="plugins_store_badge_unofficial">非官方</string>
     <string name="plugins_store_badge_official">官方</string>
     <string name="plugins_store_sources_label">第三方插件源</string>

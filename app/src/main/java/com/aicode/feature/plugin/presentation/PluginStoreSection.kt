@@ -407,11 +407,13 @@ internal fun PluginStoreDetailSection(
     val context = LocalContext.current
     val languageTag = currentLanguageTag()
     val canUpdate = available?.canUpdate(installed) == true
-    // 非官方来源的显示后缀（如「（第三方）」），在组合作用域内取一次供下面的字符串拼接复用。
-    val communityLabel = stringResource(
-        R.string.plugins_store_detail_index_source_community,
-        ""
-    ).trim().trim('（', '）', '(', ')')
+    // 第三方来源后缀的纯文本（如「第三方」/「third-party」），来源显示名由它拼成。
+    val thirdPartyLabel = stringResource(R.string.plugins_store_source_third_party)
+    val sourceLabels = latest.allSources.map { source ->
+        if (source.official) source.name
+        else "${source.name} (${thirdPartyLabel})"
+    }
+    val sourceLabel = sourceLabels.firstOrNull() ?: latest.source.name
 
     Column(
         modifier = Modifier
@@ -500,15 +502,12 @@ internal fun PluginStoreDetailSection(
                     } else {
                         latest.allSources.joinToString("\n") { source ->
                             if (source.official) source.name
-                            else "${source.name}（${communityLabel}）"
+                            else "${source.name} (${thirdPartyLabel})"
                         }
                     }
                 },
                 trailing = {
-                    StoreInfoValue(
-                        if (latest.source.official) latest.source.name
-                        else "${latest.source.name}（${communityLabel}）"
-                    )
+                    StoreInfoValue(sourceLabel)
                 }
             )
             SettingsDivider()

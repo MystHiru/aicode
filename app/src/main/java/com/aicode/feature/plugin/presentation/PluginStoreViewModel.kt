@@ -133,8 +133,11 @@ class PluginStoreViewModel @Inject constructor(
     }
 
     /** 进入商店页时静默拉最新索引，列表先显示本地缓存。 */
+    /** 进入商店页时静默拉最新索引，列表先显示本地缓存。 */
     fun openStore() {
-        if (_state.value.loading) return
+        // 首帧的 loading 初值就是 true（还没真正开始加载），不能拿它当「正在刷新」拦掉，
+        // 否则首次进入商店不会触发拉取；只有已经在刷新时才跳过。
+        if (_state.value.refreshing) return
         _state.update { it.copy(logoRefreshVersion = it.logoRefreshVersion + 1) }
         loadAll(force = true, notifyOnCompletion = false)
     }
