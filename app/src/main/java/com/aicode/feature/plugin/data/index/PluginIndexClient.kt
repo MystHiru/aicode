@@ -331,7 +331,9 @@ class PluginIndexClient @Inject constructor(
 
     private fun parseIndex(source: PluginIndexSource, bytes: ByteArray): PluginIndexDocument {
         var skipped = 0
-        val index = PluginIndexParser.parse(bytes, skipInvalidPlugins = source.id == PluginIndexDefaults.VANTA_ID) {
+        // 内置与自定义来源一律容错：单个条目的 ID 不规范（如中文 ID）不应让整个索引
+        // 不可用，否则会出现「官方插件突然全部消失」的观感。
+        val index = PluginIndexParser.parse(bytes, skipInvalidPlugins = true) {
             skipped++
         }
         if (skipped > 0) FileLogger.w("PluginIndexClient", "索引 ${source.id} 跳过 $skipped 个无效条目")

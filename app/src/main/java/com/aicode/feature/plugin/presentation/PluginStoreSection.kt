@@ -233,6 +233,24 @@ internal fun PluginStoreSection(
 private fun pluginVersionText(version: String?): String =
     version?.let { "v$it" } ?: stringResource(R.string.plugins_store_version_latest)
 
+/**
+ * 一行合并多个索引时，把所有来源都标出来（实例：同一插件同时上架官方与 Vanta）。
+ * 官方插件不重复标「官方」，避免每行都拖着尾巴；非官方来源逐个列。
+ */
+@Composable
+private fun storeSourceBadges(item: PluginStoreItem, languageTag: String): List<String> = buildList {
+    val sources = item.allSources
+    val unofficial = sources.filterNot { it.official }
+    if (item.official) {
+        if (unofficial.isNotEmpty()) add(stringResource(R.string.plugins_store_badge_official))
+    } else if (unofficial.isEmpty()) {
+        add(stringResource(R.string.plugins_store_badge_unofficial))
+    }
+    unofficial.forEach { source ->
+        add(if (source.id == PluginIndexDefaults.VANTA_ID) "Vanta" else source.name)
+    }
+}
+
 /** 商店图标：优先读磁盘缓存即时显示，过期后后台刷新；无图或失败时回退到通用图标。 */
 @Composable
 private fun StorePluginLogo(
@@ -327,11 +345,11 @@ private fun StorePluginRow(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false)
                 )
-                if (!item.official) {
+                val badges = storeSourceBadges(item, languageTag)
+                badges.forEach { badge ->
                     Spacer(modifier = Modifier.width(6.dp))
                     McpPill(
-                        text = if (item.source.id == PluginIndexDefaults.VANTA_ID) "Vanta"
-                        else stringResource(R.string.plugins_store_badge_unofficial),
+                        text = badge,
                         textColor = MaterialTheme.semanticColors.onWarningContainer,
                         backgroundColor = MaterialTheme.semanticColors.warningContainer
                     )
@@ -389,6 +407,11 @@ internal fun PluginStoreDetailSection(
     val context = LocalContext.current
     val languageTag = currentLanguageTag()
     val canUpdate = available?.canUpdate(installed) == true
+    // 非官方来源的显示后缀（如「（第三方）」），在组合作用域内取一次供下面的字符串拼接复用。
+    val communityLabel = stringResource(
+        R.string.plugins_store_detail_index_source_community,
+        ""
+    ).trim().trim('（', '）', '(', ')')
 
     Column(
         modifier = Modifier
@@ -470,10 +493,21 @@ internal fun PluginStoreDetailSection(
             SettingsRow(
                 icon = FeatherIcons.Server,
                 title = stringResource(R.string.plugins_store_detail_index_source),
+                // 合并多来源时列出全部来源；只有一条时不重复主值。
+                subtitle = remember(latest.allSources) {
+                    if (latest.alsoInSources.isEmpty()) {
+                        null
+                    } else {
+                        latest.allSources.joinToString("\n") { source ->
+                            if (source.official) source.name
+                            else "${source.name}（${communityLabel}）"
+                        }
+                    }
+                },
                 trailing = {
                     StoreInfoValue(
                         if (latest.source.official) latest.source.name
-                        else stringResource(R.string.plugins_store_detail_index_source_community, latest.source.name)
+                        else "${latest.source.name}（${communityLabel}）"
                     )
                 }
             )
@@ -552,11 +586,10 @@ private fun StoreHeaderCard(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (!item.official) {
+                    storeSourceBadges(item, languageTag).forEach { badge ->
                         Spacer(modifier = Modifier.width(Spacing.xs))
                         McpPill(
-                            text = if (item.source.id == PluginIndexDefaults.VANTA_ID) "Vanta"
-                            else stringResource(R.string.plugins_store_badge_unofficial),
+                            text = badge,
                             textColor = MaterialTheme.semanticColors.onWarningContainer,
                             backgroundColor = MaterialTheme.semanticColors.warningContainer
                         )

@@ -23,8 +23,36 @@ class PluginStoreCatalogTest {
     @Test
     fun newInstallsUseSourcePriorityBeforeVersion() {
         val state = PluginStoreUiState().withCatalog(listOf(official, vanta, custom), emptyMap())
-        assertEquals(official, state.items.single())
+        val merged = state.items.single()
+        // 存盘与安装以优先级最高的官方来源为准，其余来源作为标签合并展示
+        assertEquals(official.source.id, merged.source.id)
+        assertEquals(official.plugin, merged.plugin)
         assertTrue(state.updatesByPluginId.isEmpty())
+    }
+
+    @Test
+    fun duplicatePluginAcrossSourcesMergesIntoOneRowKeepingAllSources() {
+        val state = PluginStoreUiState().withCatalog(listOf(official, vanta, custom), emptyMap())
+        val merged = state.items.single()
+        // 合并而不是隐去：主条目录用优先级最高的来源，其余来源作为标签列出
+        assertEquals(official.source.id, merged.source.id)
+        assertEquals(
+            listOf(vanta.source.id, custom.source.id),
+            merged.alsoInSources.map { it.id }
+        )
+        assertEquals(3, merged.allSources.size)
+        assertTrue(merged.official)
+    }
+
+    @Test
+    fun mergedDuplicateKeepsTheInstalledSourceForUpdates() {
+        // 已从 Vanta 安装时，合并后的条目仍以 Vanta 为主来源，更新才能落到原渠道
+        val state = catalog(listOf(official, vanta), record(vanta))
+        val merged = state.items.single()
+        assertEquals(vanta.source.id, merged.source.id)
+        assertEquals(listOf(official.source.id), merged.alsoInSources.map { it.id })
+        assertTrue(merged.updateAvailable)
+        assertEquals(merged, state.updatesByPluginId.getValue(merged.plugin.id))
     }
 
     @Test

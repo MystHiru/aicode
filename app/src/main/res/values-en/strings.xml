@@ -2263,6 +2263,7 @@
     <string name="plugins_store_detail_index_source">Index source</string>
     <string name="plugins_store_detail_index_source_community">%1$s (third-party)</string>
     <string name="plugins_store_badge_unofficial">Unofficial</string>
+    <string name="plugins_store_badge_official">Official</string>
     <string name="plugins_store_sources_label">Third-party sources</string>
     <string name="plugins_store_sources_hint">One URL per line. Custom sources appear after the built-in AiCode and Vanta indexes.</string>
     <string name="plugins_store_mirror_label">Download mirror</string>

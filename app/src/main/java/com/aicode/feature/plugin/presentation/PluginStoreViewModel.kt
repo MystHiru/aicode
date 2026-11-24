@@ -40,8 +40,17 @@ data class PluginStoreItem(
     val source: PluginIndexSource,
     val compatible: Boolean,
     val installedVersion: String? = null,
-    val updateAvailable: Boolean = false
+    val updateAvailable: Boolean = false,
+    /**
+     * 同一个插件 ID 在其他索引里的条目来源。多个商店都收录同一个插件时合并为一行，
+     * 在标签里把来源全部列出，而不是隐去其余来源。
+     */
+    val alsoInSources: List<PluginIndexSource> = emptyList()
 ) {
+    /** 安装与镜像策略以 [source] 为准；标签展示用全部来源。 */
+    val allSources: List<PluginIndexSource>
+        get() = if (alsoInSources.isEmpty()) listOf(source) else listOf(source) + alsoInSources
+
     val official: Boolean
         get() = source.official && plugin.packageUrl == null && PluginOfficialRepositories.isOfficial(plugin.repository)
 }
@@ -253,8 +262,13 @@ internal fun PluginStoreUiState.withCatalog(
 ): PluginStoreUiState {
     val visible = candidates.groupBy { it.plugin.id }.map { (id, entries) ->
         val installed = records[id]
-        val item = entries.firstOrNull { it.matchesInstalledSource(installed) } ?: entries.first()
-        item.copy(installedVersion = installed?.version, updateAvailable = item.canUpdate(installed))
+        // 已安装的优先显示原来源；未安装按传入顺序（官方 → Vanta → 自定义）。
+        val primary = entries.firstOrNull { it.matchesInstalledSource(installed) } ?: entries.first()
+        primary.copy(
+            installedVersion = installed?.version,
+            updateAvailable = primary.canUpdate(installed),
+            alsoInSources = entries.map { it.source }.filter { it.id != primary.source.id }
+        )
     }
     return copy(
         allItems = candidates,

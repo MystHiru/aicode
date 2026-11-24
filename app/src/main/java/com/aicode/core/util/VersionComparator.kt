@@ -48,6 +48,17 @@ internal fun compareVersions(v1: String, v2: String): Int {
     return comparePreRelease(pre1, pre2)
 }
 
+/**
+ * SemVer 的「同版本」判定：[candidate] 是否属于 [current] 那一版。
+ *
+ * 与 [compareVersions] 的区别在于忽略预发布标识：自己编译的包版本形如
+ * `1.13.0-dev.173+<hash>`，它已经包含 `1.13.0` 的全部代码，不该再被同号正式版
+ * `v1.13.0` 判定为「有新版本」，否则开发包会一直弹更新。
+ * 只有主.次.修不同才算换版本。
+ */
+internal fun isSameBaseVersion(candidate: String, current: String): Boolean =
+    splitVersion(candidate).first == splitVersion(current).first
+
 private val PRE_RELEASE_TOKEN = Regex("^(\\D*?)(\\d+)$")
 
 /**

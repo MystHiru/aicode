@@ -141,4 +141,21 @@ class VersionComparatorTest {
         // 1.7.0 == 1.7.0+g04bc2fa (build hash stripped)
         assertTrue(isUpToDate("1.7.0", "1.7.0+g04bc2fa"))
     }
+
+    // ---- 自编译开发包不应被同号正式版判定为更新 ----
+
+    @Test
+    fun sameBaseVersion_devPackageAgainstRelease_isSameVersion() {
+        // 自编译包的版本形如 1.13.0-dev.173+717a66068，已包含 1.13.0 代码
+        assertTrue(isSameBaseVersion("1.13.0", "1.13.0-dev.173+717a66068"))
+        assertTrue(isSameBaseVersion("1.13.0-rc2", "1.13.0-dev.173+717a66068"))
+        assertTrue(isSameBaseVersion("1.13.0-dev.200+abc", "1.13.0-dev.173+def"))
+    }
+
+    @Test
+    fun sameBaseVersion_stillDetectsRealUpgrade() {
+        // 真正换了版本号时不算同一版
+        assertFalse(isSameBaseVersion("1.14.0", "1.13.0-dev.173+717a66068"))
+        assertFalse(isSameBaseVersion("1.12.0", "1.13.0-dev.173+717a66068"))
+    }
 }

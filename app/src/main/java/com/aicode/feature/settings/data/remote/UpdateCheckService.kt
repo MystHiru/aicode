@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import com.aicode.R
 import com.aicode.core.util.compareVersions
+import com.aicode.core.util.isSameBaseVersion
 import com.aicode.core.util.parseVersionTag
 import com.aicode.feature.settings.data.repository.UpdateChannel
 import com.google.gson.JsonParser
@@ -91,6 +92,9 @@ class UpdateCheckService @Inject constructor(
 
                     val updates = releases
                         .filter { if (channel == UpdateChannel.STABLE) !it.prerelease else true }
+                        // 同主.次.修的开发包（如 1.13.0-dev.173）不提示升级到 1.13.0；
+                        // 只有真正换版本号才算新版本。
+                        .filter { !isSameBaseVersion(it.version, currentVersion) }
                         .filter { compareVersions(it.version, currentVersion) > 0 }
                         .sortedWith { a, b -> compareVersions(b.version, a.version) }
 
