@@ -351,6 +351,22 @@ class ToolGroupExpansionTest {
     }
 
     @Test
+    fun splitToolGroupKeepsDistinctLazyKeys() {
+        val tools = (1..4).map { tool("t$it") }
+        val original = listOf(user("u0")) + tools
+        val previous = reconcileToolGroupKeys(original, emptyMap())
+        val summary = assistant("summary").copy(isContextSummary = true)
+        val split = original.take(3) + summary + original.drop(3)
+        val rendered = flattenChatProcesses(buildChatItems(
+            split, emptyMap(), turnOverrides = mapOf("turn:u0" to true),
+            toolGroupKeys = reconcileToolGroupKeys(split, previous)
+        ))
+
+        assertEquals(2, rendered.count { it.toolGroup != null })
+        assertEquals(rendered.size, rendered.map { it.key }.toSet().size)
+    }
+
+    @Test
     fun truncatedWindow_manualExpansionSurvivesToolUpdatesAndWindowShift() {
         val windows = listOf(
             listOf(assistant("a1"), tool("t1"), tool("t2")),

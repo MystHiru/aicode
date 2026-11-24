@@ -396,6 +396,7 @@ internal fun reconcileToolGroupKeys(
     messages: List<AgentUIMessage>,
     previousKeys: Map<String, String>,
 ): Map<String, String> = buildMap {
+    val usedKeys = HashSet<String>()
     val (leading, turns) = splitChatTurns(messages)
     for (block in listOf(leading) + turns.map { it.messages }) {
         var index = 0
@@ -407,8 +408,15 @@ internal fun reconcileToolGroupKeys(
             var end = index + 1
             while (end < block.size && block[end].isGroupableTool()) end++
             val members = block.subList(index, end)
-            val key = members.firstNotNullOfOrNull { previousKeys[it.id] }
-                ?: toolGroupKey(members.first())
+            val previous = members.firstNotNullOfOrNull { previousKeys[it.id]?.takeIf(usedKeys::add) }
+            val base = toolGroupKey(members.first())
+            val key = previous ?: run {
+                var candidate = base
+                var suffix = 0
+                // 历史分组被插入的系统卡拆开时，两个新组不能复用同一个 LazyColumn key。
+                while (!usedKeys.add(candidate)) candidate = "$base#${++suffix}"
+                candidate
+            }
             members.forEach { put(it.id, key) }
             index = end
         }
@@ -581,8 +589,7 @@ private fun AgentUIMessage.isSystemCardInTurn(): Boolean =
 
 /** 能否作为一轮的「结果」：最后一条有可见正文的普通助手消息（系统卡片不算，见 [isSystemCardInTurn]）。 */
 private fun AgentUIMessage.isResultCandidate(): Boolean =
-    role == MessageRole.ASSISTANT && !isSystemCardInTurn() &&
-        (content.hasVisibleContent() || attachments.isNotEmpty())
+    role == MessageRole.ASSISTANT && !isSystemCardInTurn() && content.hasVisibleContent()
 
 /**
  * 轮内「过程」项（保持原序）：思考、连续工具调用分组、中间助手正文、后台通知条与压缩卡片。
