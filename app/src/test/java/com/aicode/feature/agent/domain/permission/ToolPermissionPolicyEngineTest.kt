@@ -571,7 +571,7 @@ class ToolPermissionPolicyEngineTest {
             PermissionRule("Bash", "git pull")
         )
         coEvery { repo.loadEffectiveForCurrentProject() } returns listOf(PermissionRule("writeFile", "*"))
-        val e = ToolPermissionPolicyEngine(repo, mockk(relaxed = true), appContext())
+        val e = ToolPermissionPolicyEngine(repo, mockk(relaxed = true), mockk(relaxed = true), appContext())
         val captured = e.captureProject("/project-a")
 
         val write = e.evaluate(tool(ToolCapability.WRITE_WORKSPACE), "writeFile", emptyMap(), AgentMode.BUILD, captured)
@@ -587,7 +587,7 @@ class ToolPermissionPolicyEngineTest {
     fun explicitProjectRemember_dedupesAndWritesOnlyCapturedProject() = runTest {
         val repo = mockk<PermissionRulesRepository>(relaxed = true)
         val project = mockk<PermissionRulesRepository.ProjectContext>()
-        val e = ToolPermissionPolicyEngine(repo, mockk(relaxed = true), appContext())
+        val e = ToolPermissionPolicyEngine(repo, mockk(relaxed = true), mockk(relaxed = true), appContext())
 
         e.remember("Bash", listOf("git pull", "git pull", "ls"), project)
 

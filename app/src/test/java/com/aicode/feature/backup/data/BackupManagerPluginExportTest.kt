@@ -35,6 +35,7 @@ class BackupManagerPluginExportTest {
         compactionModelSettingsRepository = mockk(),
         syncSettingsRepository = mockk(),
         workspaceRepository = mockk(),
+        petOverlaySettingsRepository = mockk(),
         pluginArchive = pluginArchive
     )
 

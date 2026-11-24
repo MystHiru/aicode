@@ -49,7 +49,7 @@ class PromptFragmentCatalogTest {
         val projectRoot = mockk<ProjectAicodeRoot>()
         every { projectRoot.forPath(any()) } returns File(workspaceDir, ".aicode")
 
-        catalog = PromptFragmentCatalog(context, installer, projectRoot)
+        catalog = PromptFragmentCatalog(context, installer, projectRoot, toggleRepository = mockk())
     }
 
     @After
