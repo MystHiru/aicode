@@ -125,6 +125,9 @@ internal fun PluginStoreSection(
         }
     }
     val indexError = state.error
+    val failedSources = remember(state.sources, state.failedSourceIds) {
+        state.sources.filter { it.id in state.failedSourceIds }.joinToString(" · ") { it.name }
+    }
 
     PullToRefreshBox(
         isRefreshing = state.refreshing,
@@ -166,7 +169,7 @@ internal fun PluginStoreSection(
                     )
                 }
                 else -> {
-                    if (state.failedSourceIds.isNotEmpty()) {
+                    if (failedSources.isNotEmpty()) {
                         item(key = "cache-fallback", contentType = "notice") {
                             Row(
                                 modifier = Modifier
@@ -177,12 +180,12 @@ internal fun PluginStoreSection(
                                 Icon(
                                     imageVector = FeatherIcons.CloudOff,
                                     contentDescription = null,
-                                    tint = MaterialTheme.semanticColors.warningContainer,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(Spacing.xs))
                                 Text(
-                                    text = stringResource(R.string.plugins_store_cache_fallback),
+                                    text = stringResource(R.string.plugins_store_cache_fallback, failedSources),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -351,6 +354,14 @@ private fun StorePluginRow(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth()
             )
+            if (item.updateAvailable) {
+                Spacer(modifier = Modifier.height(Spacing.xs))
+                McpPill(
+                    text = stringResource(R.string.plugins_update_available),
+                    textColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    backgroundColor = MaterialTheme.colorScheme.primaryContainer
+                )
+            }
         }
 
         Spacer(modifier = Modifier.width(Spacing.sm))

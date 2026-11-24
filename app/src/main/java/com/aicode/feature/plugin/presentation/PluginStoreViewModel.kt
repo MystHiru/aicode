@@ -138,7 +138,7 @@ class PluginStoreViewModel @Inject constructor(
 
     internal fun isCurrent(item: PluginStoreItem): Boolean = _state.value.isListingCurrent(item)
 
-    internal fun areCurrent(items: List<PluginStoreItem>): Boolean = _state.value.hasFreshListings(items)
+    internal fun isFreshCurrent(item: PluginStoreItem): Boolean = _state.value.isFreshListing(item)
 
     private fun loadAll(force: Boolean, notifyOnCompletion: Boolean = false) {
         val sources = _state.value.sources
@@ -287,8 +287,11 @@ internal fun PluginStoreUiState.isListingCurrent(selection: PluginStoreItem): Bo
     } == true
 
 /** 自动安装的前提：条目必须来自本轮网络刷新到达的来源，不能用缓存回退结果静默升级。 */
-internal fun PluginStoreUiState.hasFreshListings(items: List<PluginStoreItem>): Boolean =
-    items.all { it.source.id in freshSourceIds && isListingCurrent(it) }
+internal fun PluginStoreUiState.isFreshListing(item: PluginStoreItem): Boolean =
+    item.source.id in freshSourceIds && isListingCurrent(item)
+
+internal fun PluginStoreUiState.freshUpdates(): List<PluginStoreItem> =
+    updatesByPluginId.values.filter { isFreshListing(it) }
 
 internal fun PluginStoreItem.matchesPackage(manifest: PluginManifest, version: String): Boolean {
     // 只硬校验 id 与 version：社区商店索引普遍把 repository 写成商店地址，包内

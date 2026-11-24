@@ -394,21 +394,21 @@ class PluginsViewModel @Inject constructor(
      * 打开商店拉到更新列表后调用：逐个走现有安装链（下载、SHA-256、清单核对），贡献未变才自动确认。
      * [isCurrent] 必须能在下载前后重新确认条目仍属于本轮刚拉到的索引，避免拿缓存条目静默升级。
      */
-    internal fun autoUpdateFromStore(items: List<PluginStoreItem>, isCurrent: () -> Boolean) {
-        if (!_autoUpdatePlugins.value || items.isEmpty()) return
-        if (_importState.value !is PluginImportState.Idle) return
-        if (!isCurrent()) return
-        // 同一版本只自动尝试一次：停在预览或失败后回到 Idle 时不能反复重试。
-        val item = items.firstOrNull { "${it.plugin.id}@${it.plugin.version}" !in autoUpdateAttempted } ?: return
+    internal fun autoUpdateFromStore(items: List<PluginStoreItem>, isCurrent: (PluginStoreItem) -> Boolean) {
+        if (!_autoUpdatePlugins.value || _importState.value != PluginImportState.Idle) return
+        // 只检查正在更新的条目，其他来源回退到缓存不影响它。
+        val item = items.firstOrNull {
+            "${it.plugin.id}@${it.plugin.version}" !in autoUpdateAttempted && isCurrent(it)
+        } ?: return
         autoUpdateAttempted += "${item.plugin.id}@${item.plugin.version}"
-        installFromStore(item, isListingCurrent = isCurrent, autoIfSafe = true)
+        installFromStore(item, isListingCurrent = { _autoUpdatePlugins.value && isCurrent(item) }, autoIfSafe = true)
     }
 
     internal fun installFromStore(item: PluginStoreItem, isListingCurrent: () -> Boolean, autoIfSafe: Boolean = false) {
         if (!isListingCurrent() || !item.compatible) return
         val installed = manager.plugins.value.firstOrNull { it.id == item.plugin.id }?.record
         val wasInstalled = installed != null
-        if (wasInstalled && !item.canUpdate(installed)) return
+        if ((autoIfSafe || wasInstalled) && !item.canUpdate(installed)) return
         if (!_importState.compareAndSet(PluginImportState.Idle, PluginImportState.Downloading)) return
         storeDownloadJob = viewModelScope.launch {
             try {

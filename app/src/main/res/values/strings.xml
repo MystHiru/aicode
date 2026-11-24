@@ -2249,7 +2249,7 @@
     <string name="plugins_store_downloading">正在下载插件包…</string>
     <string name="plugins_store_refresh_done">索引刷新完成</string>
     <string name="plugins_store_refresh_done_failed">索引刷新完成，失败 %1$d 个</string>
-    <string name="plugins_store_cache_fallback">部分索引读取失败，已回退到本地缓存</string>
+    <string name="plugins_store_cache_fallback">刷新失败：%1$s。有缓存的来源仍显示缓存版本。</string>
     <string name="plugins_store_detail_version">版本</string>
     <string name="plugins_store_detail_tags">分类</string>
     <string name="plugins_store_tag_provider">模型供应商</string>

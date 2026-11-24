@@ -116,13 +116,29 @@ class PluginStoreCatalogTest {
     @Test
     fun autoInstallRequiresFreshNetworkListings() {
         val stale = catalog(listOf(vanta), record(vanta))
-        assertFalse("只有缓存时不允许自动安装", stale.hasFreshListings(listOf(vanta)))
+        assertFalse(stale.isFreshListing(vanta))
+        assertTrue(stale.freshUpdates().isEmpty())
 
         val fresh = stale.copy(freshSourceIds = setOf(vanta.source.id))
-        assertTrue(fresh.hasFreshListings(listOf(vanta)))
+        assertTrue(fresh.isFreshListing(vanta))
+        assertEquals(listOf(vanta.plugin.id), fresh.freshUpdates().map { it.plugin.id })
 
         val otherSource = fresh.copy(freshSourceIds = setOf(official.source.id))
-        assertFalse("条目所属来源没刷新过就不算当前", otherSource.hasFreshListings(listOf(vanta)))
+        assertFalse(otherSource.isFreshListing(vanta))
+    }
+
+    @Test
+    fun staleSourceDoesNotBlockFreshUpdatesFromAnotherSource() {
+        val stale = vanta.copy(plugin = vanta.plugin.copy(id = "vanta.sample"))
+        val records = listOf(record(official), record(stale)).associateBy { it.id }
+        val state = PluginStoreUiState(
+            freshSourceIds = setOf(official.source.id),
+            failedSourceIds = setOf(stale.source.id)
+        ).withCatalog(listOf(official, stale), records)
+
+        assertEquals(2, state.updatesByPluginId.size)
+        assertEquals(listOf(official.plugin.id), state.freshUpdates().map { it.plugin.id })
+        assertFalse(state.isFreshListing(official.copy(plugin = official.plugin.copy(version = "2.1.0"))))
     }
 
     private fun catalog(items: List<PluginStoreItem>, installed: PluginRecord) =

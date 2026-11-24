@@ -160,7 +160,7 @@ internal fun PluginsSection(
     onToggleEnabled: (InstalledPlugin, Boolean) -> Unit,
     onOpenStoreDetail: (PluginStoreItem) -> Unit,
     autoUpdatePlugins: Boolean = false,
-    onAutoUpdatePlugins: (List<PluginStoreItem>, () -> Boolean) -> Unit = { _, _ -> }
+    onAutoUpdatePlugins: (List<PluginStoreItem>, (PluginStoreItem) -> Boolean) -> Unit = { _, _ -> }
 ) {
     if (!loaded) return
 
@@ -177,25 +177,30 @@ internal fun PluginsSection(
         // 开发者侧载开关会改变 tab 数量；连同底栏一起重建，避免底栏内部缓存的 tab 位置残留。
         key(pageCount) {
             val pagerState = rememberPagerState { pageCount }
-            // 仅在商店页触发刷新与自动安装；进入设置页或已安装 tab 都不启动下载。
-            LaunchedEffect(pagerState.currentPage) {
-                if (pagerState.currentPage == pageCount - 1) storeViewModel.openStore()
+            val pageMounted = remember { mutableStateOf(false) }
+            DisposableEffect(Unit) {
+                pageMounted.value = true
+                onDispose { pageMounted.value = false }
+            }
+            val storePage = pageCount - 1
+            LaunchedEffect(pagerState.settledPage) {
+                if (pagerState.settledPage == storePage) storeViewModel.openStore()
             }
             LaunchedEffect(
-                pagerState.currentPage,
+                pagerState.settledPage,
                 autoUpdatePlugins,
                 storeState.loading,
                 storeState.freshSourceIds,
                 storeState.updatesByPluginId,
                 pluginImportState
             ) {
-                if (pagerState.currentPage != pageCount - 1 || !autoUpdatePlugins || storeState.loading ||
-                    storeState.freshSourceIds.isEmpty() || pluginImportState !is PluginImportState.Idle
+                if (pagerState.settledPage != storePage || !autoUpdatePlugins || storeState.loading ||
+                    pluginImportState !is PluginImportState.Idle
                 ) return@LaunchedEffect
-                val current = storeState.updatesByPluginId.values.toList()
-                if (current.isNotEmpty()) {
-                    onAutoUpdatePlugins(current) {
-                        pagerState.currentPage == pageCount - 1 && storeViewModel.areCurrent(current)
+                val candidates = storeState.freshUpdates()
+                if (candidates.isNotEmpty()) {
+                    onAutoUpdatePlugins(candidates) { item ->
+                        pageMounted.value && pagerState.currentPage == storePage && storeViewModel.isFreshCurrent(item)
                     }
                 }
             }

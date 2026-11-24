@@ -1897,7 +1897,9 @@ internal fun SettingsScreen(
                     },
                     autoUpdatePlugins = pluginAutoUpdate,
                     onAutoUpdatePlugins = { items, isCurrent ->
-                        pluginsViewModel.autoUpdateFromStore(items, isCurrent)
+                        pluginsViewModel.autoUpdateFromStore(items) { item ->
+                            section == SettingsSection.Plugins && isCurrent(item)
+                        }
                     }
                 )
                 SettingsSection.PluginDetail -> selectedPlugin?.let { plugin ->
